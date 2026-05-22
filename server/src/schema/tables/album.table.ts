@@ -10,7 +10,7 @@ import {
   UpdateDateColumn,
 } from '@immich/sql-tools';
 import { UpdatedAtTrigger, UpdateIdColumn } from 'src/decorators';
-import type { SmartAlbumFilter } from 'src/dtos/search.dto';
+import type { SmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
 import { AlbumKind, AssetOrder } from 'src/enum';
 import { album_kind_enum } from 'src/schema/enums';
 import { AssetTable } from 'src/schema/tables/asset.table';

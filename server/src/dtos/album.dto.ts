@@ -3,11 +3,7 @@ import { createZodDto } from 'nestjs-zod';
 import { AlbumUser, AuthSharedLink } from 'src/database';
 import { BulkIdErrorReasonSchema } from 'src/dtos/asset-ids.response.dto';
 import { MapAsset } from 'src/dtos/asset-response.dto';
-// Namespace import + z.lazy() are used below to defer reading SmartAlbumFilterDto.
-// This avoids a load-time circular dependency: search.dto.ts imports
-// AlbumResponseSchema from this file.
-import type { SmartAlbumFilter } from 'src/dtos/search.dto';
-import * as searchDto from 'src/dtos/search.dto';
+import { SmartAlbumFilter, SmartAlbumFilterSchema } from 'src/dtos/smart-album-filter.dto';
 import { UserResponseSchema, mapUser } from 'src/dtos/user.dto';
 import { AlbumKind, AlbumKindSchema, AlbumUserRole, AlbumUserRoleSchema, AssetOrder, AssetOrderSchema } from 'src/enum';
 import { MaybeDehydrated } from 'src/types';
@@ -42,10 +38,7 @@ const CreateAlbumSchema = z
     albumUsers: z.array(AlbumUserCreateSchema).optional().describe('Album users'),
     assetIds: z.array(z.uuidv4()).optional().describe('Initial asset IDs'),
     kind: AlbumKindSchema.optional().default(AlbumKind.Regular).describe('Album kind'),
-    filter: z
-      .lazy(() => searchDto.SmartAlbumFilterDto.schema)
-      .optional()
-      .describe('Filter for smart albums'),
+    filter: SmartAlbumFilterSchema.optional().describe('Filter for smart albums'),
   })
   .meta({ id: 'CreateAlbumDto' });
 
@@ -70,10 +63,7 @@ const UpdateAlbumSchema = z
     albumThumbnailAssetId: z.uuidv4().optional().describe('Album thumbnail asset ID'),
     isActivityEnabled: z.boolean().optional().describe('Enable activity feed'),
     order: AssetOrderSchema.optional(),
-    filter: z
-      .lazy(() => searchDto.SmartAlbumFilterDto.schema)
-      .optional()
-      .describe('Updated filter (smart albums only)'),
+    filter: SmartAlbumFilterSchema.optional().describe('Updated filter (smart albums only)'),
   })
   .meta({ id: 'UpdateAlbumDto' });
 
@@ -150,10 +140,7 @@ export const AlbumResponseSchema = z
     order: AssetOrderSchema.optional(),
     contributorCounts: z.array(ContributorCountResponseSchema).optional(),
     kind: AlbumKindSchema.describe('Album kind'),
-    filter: z
-      .lazy(() => searchDto.SmartAlbumFilterDto.schema)
-      .nullable()
-      .describe('Filter for smart albums'),
+    filter: SmartAlbumFilterSchema.nullable().describe('Filter for smart albums'),
   })
   .meta({ id: 'AlbumResponseDto' });
 

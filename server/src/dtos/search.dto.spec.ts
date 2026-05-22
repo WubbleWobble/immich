@@ -1,4 +1,4 @@
-import { SmartAlbumFilterDto } from 'src/dtos/search.dto';
+import { SmartAlbumFilterDto } from 'src/dtos/smart-album-filter.dto';
 import { describe, expect, it } from 'vitest';
 
 describe('SmartAlbumFilterDto', () => {

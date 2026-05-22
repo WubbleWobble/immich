@@ -1,5 +1,5 @@
 import { Selectable } from 'kysely';
-import { SmartAlbumFilter } from 'src/dtos/search.dto';
+import { SmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
 import { AlbumKind, AlbumUserRole, AssetOrder } from 'src/enum';
 import { AlbumTable } from 'src/schema/tables/album.table';
 import { SharedLinkTable } from 'src/schema/tables/shared-link.table';
