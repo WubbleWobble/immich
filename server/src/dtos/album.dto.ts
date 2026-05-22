@@ -63,6 +63,7 @@ const UpdateAlbumSchema = z
     albumThumbnailAssetId: z.uuidv4().optional().describe('Album thumbnail asset ID'),
     isActivityEnabled: z.boolean().optional().describe('Enable activity feed'),
     order: AssetOrderSchema.optional(),
+    filter: SmartAlbumFilterDto.schema.optional().describe('Updated filter (smart albums only)'),
   })
   .meta({ id: 'UpdateAlbumDto' });
 
