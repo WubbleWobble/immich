@@ -180,6 +180,10 @@ export class AlbumService extends BaseService {
       throw new BadRequestException('Album kind is immutable');
     }
 
+    if (dto.filter !== undefined && album.kind !== AlbumKind.Smart) {
+      throw new BadRequestException('Filter can only be set on smart albums');
+    }
+
     if (dto.albumThumbnailAssetId) {
       const results = await this.albumRepository.getAssetIds(id, [dto.albumThumbnailAssetId]);
       if (results.size === 0) {

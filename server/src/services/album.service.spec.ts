@@ -510,6 +510,18 @@ describe(AlbumService.name, () => {
         sut.update(auth, album.id, { kind: AlbumKind.Smart } as any),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
+
+    it('should reject setting a filter on a regular album', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create(owner);
+      const album = AlbumFactory.from().owner(owner).kind(AlbumKind.Regular).build();
+      mocks.album.getById.mockResolvedValue(album);
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+
+      await expect(
+        sut.update(auth, album.id, { filter: { personIds: [newUuid()] } }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
   });
 
   describe('delete', () => {
