@@ -199,6 +199,7 @@ export class AlbumService extends BaseService {
         albumThumbnailAssetId: dto.albumThumbnailAssetId,
         isActivityEnabled: dto.isActivityEnabled,
         order: dto.order,
+        ...(dto.filter !== undefined ? { filter: dto.filter } : {}),
       },
       auth.user.id,
     );

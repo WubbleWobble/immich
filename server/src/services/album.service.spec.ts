@@ -522,6 +522,29 @@ describe(AlbumService.name, () => {
         sut.update(auth, album.id, { filter: { personIds: [newUuid()] } }),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
+
+    it('should update the filter on a smart album', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create(owner);
+      const album = AlbumFactory.from()
+        .owner(owner)
+        .kind(AlbumKind.Smart)
+        .filter({ personIds: [newUuid()] })
+        .build();
+      mocks.album.getById.mockResolvedValue(album);
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      const updatedFilter = { tagIds: [newUuid()] };
+      mocks.album.update.mockResolvedValue({ ...album, filter: updatedFilter });
+
+      const result = await sut.update(auth, album.id, { filter: updatedFilter });
+
+      expect(result.filter).toEqual(updatedFilter);
+      expect(mocks.album.update).toHaveBeenCalledWith(
+        album.id,
+        expect.objectContaining({ filter: updatedFilter }),
+        owner.id,
+      );
+    });
   });
 
   describe('delete', () => {
