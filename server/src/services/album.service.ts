@@ -109,6 +109,10 @@ export class AlbumService extends BaseService {
       throw new BadRequestException('Smart albums require a filter');
     }
 
+    if (kind === AlbumKind.Regular && dto.filter) {
+      throw new BadRequestException('Filter is only valid for smart albums');
+    }
+
     for (const { userId } of albumUsers) {
       const exists = await this.userRepository.get(userId, {});
       if (!exists) {
