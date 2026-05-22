@@ -81,6 +81,7 @@ export class AlbumService extends BaseService {
     const isShared = hasSharedUsers || hasSharedLink;
 
     let smartAssetCount: number | undefined;
+    let smartThumbnailAssetId: string | undefined;
     if (album.kind === AlbumKind.Smart && album.filter) {
       const ownerId = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
       if (ownerId) {
@@ -89,11 +90,13 @@ export class AlbumService extends BaseService {
           { ...album.filter, userIds: [ownerId] },
         );
         smartAssetCount = items.length;
+        smartThumbnailAssetId = items[0]?.id;
       }
     }
 
     return {
       ...mapAlbum(album),
+      albumThumbnailAssetId: smartThumbnailAssetId ?? album.albumThumbnailAssetId,
       startDate: asDateString(albumMetadataForIds?.startDate ?? undefined),
       endDate: asDateString(albumMetadataForIds?.endDate ?? undefined),
       assetCount: smartAssetCount ?? albumMetadataForIds?.assetCount ?? 0,

@@ -873,6 +873,29 @@ describe(AlbumService.name, () => {
       );
       expect(result.assetCount).toBe(1);
     });
+
+    it('returns most recent matching asset as thumbnail for smart album', async () => {
+      const album = AlbumFactory.from().kind(AlbumKind.Smart).filter({ personIds: [newUuid()] }).build();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const auth = AuthFactory.create(owner);
+      const recent = AssetFactory.create({ ownerId: owner.id });
+
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        {
+          albumId: album.id,
+          assetCount: 1,
+          startDate: new Date('1970-01-01'),
+          endDate: new Date('1970-01-01'),
+          lastModifiedAssetTimestamp: new Date('1970-01-01'),
+        },
+      ]);
+      mocks.search.searchMetadata.mockResolvedValue({ items: [recent], hasNextPage: false } as any);
+
+      const result = await sut.get(auth, album.id);
+      expect(result.albumThumbnailAssetId).toEqual(recent.id);
+    });
   });
 
   describe('addAssets', () => {
