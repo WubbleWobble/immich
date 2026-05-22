@@ -452,6 +452,64 @@ export type ContributorCountResponseDto = {
     /** User ID */
     userId: string;
 };
+export type SmartAlbumFilter = {
+    /** Filter by album IDs */
+    albumIds?: string[];
+    /** Filter by city name */
+    city?: string | null;
+    /** Filter by country name */
+    country?: string | null;
+    /** Filter by creation date (after) */
+    createdAfter?: string;
+    /** Filter by creation date (before) */
+    createdBefore?: string;
+    /** Filter by description text */
+    description?: string;
+    /** Filter by encoded status */
+    isEncoded?: boolean;
+    /** Filter by favorite status */
+    isFavorite?: boolean;
+    /** Filter by motion photo status */
+    isMotion?: boolean;
+    /** Filter assets not in any album */
+    isNotInAlbum?: boolean;
+    /** Filter by offline status */
+    isOffline?: boolean;
+    /** Filter by lens model */
+    lensModel?: string | null;
+    /** Library ID to filter by */
+    libraryId?: string | null;
+    /** Filter by camera make */
+    make?: string | null;
+    /** Filter by camera model */
+    model?: string | null;
+    /** Filter by OCR text content */
+    ocr?: string;
+    /** Filter by original file name */
+    originalFileName?: string;
+    /** Filter by person IDs */
+    personIds?: string[];
+    /** Filter by rating [1-5], or null for unrated */
+    rating?: number | null;
+    /** Filter by state/province name */
+    state?: string | null;
+    /** Filter by tag IDs */
+    tagIds?: string[] | null;
+    /** Filter by taken date (after) */
+    takenAfter?: string;
+    /** Filter by taken date (before) */
+    takenBefore?: string;
+    /** Filter by trash date (after) */
+    trashedAfter?: string;
+    /** Filter by trash date (before) */
+    trashedBefore?: string;
+    "type"?: AssetTypeEnum;
+    /** Filter by update date (after) */
+    updatedAfter?: string;
+    /** Filter by update date (before) */
+    updatedBefore?: string;
+    visibility?: AssetVisibility;
+};
 export type AlbumResponseDto = {
     /** Album name */
     albumName: string;
@@ -468,12 +526,15 @@ export type AlbumResponseDto = {
     description: string;
     /** End date (latest asset) */
     endDate?: string;
+    /** Filter for smart albums */
+    filter: (SmartAlbumFilter) | null;
     /** Has shared link */
     hasSharedLink: boolean;
     /** Album ID */
     id: string;
     /** Activity feed enabled */
     isActivityEnabled: boolean;
+    kind: AlbumKind;
     /** Last modified asset timestamp */
     lastModifiedAssetTimestamp?: string;
     order?: AssetOrder;
@@ -498,6 +559,10 @@ export type CreateAlbumDto = {
     assetIds?: string[];
     /** Album description */
     description?: string;
+    /** Filter for smart albums */
+    filter?: SmartAlbumFilter;
+    /** Album kind */
+    kind?: AlbumKind;
 };
 export type AlbumsAddAssetsDto = {
     /** Album IDs */
@@ -525,6 +590,8 @@ export type UpdateAlbumDto = {
     albumThumbnailAssetId?: string;
     /** Album description */
     description?: string;
+    /** Updated filter (smart albums only) */
+    filter?: SmartAlbumFilter;
     /** Enable activity feed */
     isActivityEnabled?: boolean;
     order?: AssetOrder;
@@ -6781,6 +6848,16 @@ export enum AlbumUserRole {
     Owner = "owner",
     Viewer = "viewer"
 }
+export enum AssetTypeEnum {
+    Image = "IMAGE",
+    Video = "VIDEO",
+    Audio = "AUDIO",
+    Other = "OTHER"
+}
+export enum AlbumKind {
+    Regular = "regular",
+    Smart = "smart"
+}
 export enum BulkIdErrorReason {
     Duplicate = "duplicate",
     NoPermission = "no_permission",
@@ -6962,12 +7039,6 @@ export enum AssetJobName {
     RefreshMetadata = "refresh-metadata",
     RegenerateThumbnail = "regenerate-thumbnail",
     TranscodeVideo = "transcode-video"
-}
-export enum AssetTypeEnum {
-    Image = "IMAGE",
-    Video = "VIDEO",
-    Audio = "AUDIO",
-    Other = "OTHER"
 }
 export enum AssetEditAction {
     Crop = "crop",
