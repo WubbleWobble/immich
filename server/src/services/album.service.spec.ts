@@ -238,6 +238,18 @@ describe(AlbumService.name, () => {
       );
     });
 
+    it('should reject a smart album without a filter', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create(owner);
+
+      await expect(
+        sut.create(auth, {
+          albumName: 'No filter',
+          kind: AlbumKind.Smart,
+        } as any),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
     it('creates album', async () => {
       const assetId = newUuid();
       const albumUser = { userId: newUuid(), role: AlbumUserRole.Editor };

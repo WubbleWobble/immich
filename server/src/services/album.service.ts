@@ -105,6 +105,10 @@ export class AlbumService extends BaseService {
     const kind = dto.kind ?? AlbumKind.Regular;
     const filter = kind === AlbumKind.Smart ? (dto.filter ?? null) : null;
 
+    if (kind === AlbumKind.Smart && !dto.filter) {
+      throw new BadRequestException('Smart albums require a filter');
+    }
+
     for (const { userId } of albumUsers) {
       const exists = await this.userRepository.get(userId, {});
       if (!exists) {
