@@ -503,24 +503,24 @@ describe(AlbumService.name, () => {
       const owner = UserFactory.create();
       const auth = AuthFactory.create(owner);
       const album = AlbumFactory.from().owner(owner).kind(AlbumKind.Regular).build();
-      mocks.album.getById.mockResolvedValue(album);
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
       mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
 
-      await expect(
-        sut.update(auth, album.id, { kind: AlbumKind.Smart } as any),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      await expect(sut.update(auth, album.id, { kind: AlbumKind.Smart } as any)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
     });
 
     it('should reject setting a filter on a regular album', async () => {
       const owner = UserFactory.create();
       const auth = AuthFactory.create(owner);
       const album = AlbumFactory.from().owner(owner).kind(AlbumKind.Regular).build();
-      mocks.album.getById.mockResolvedValue(album);
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
       mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
 
-      await expect(
-        sut.update(auth, album.id, { filter: { personIds: [newUuid()] } }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      await expect(sut.update(auth, album.id, { filter: { personIds: [newUuid()] } })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
     });
 
     it('should update the filter on a smart album', async () => {
@@ -531,10 +531,10 @@ describe(AlbumService.name, () => {
         .kind(AlbumKind.Smart)
         .filter({ personIds: [newUuid()] })
         .build();
-      mocks.album.getById.mockResolvedValue(album);
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
       mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
       const updatedFilter = { tagIds: [newUuid()] };
-      mocks.album.update.mockResolvedValue({ ...album, filter: updatedFilter });
+      mocks.album.update.mockResolvedValue({ ...getForAlbum(album), filter: updatedFilter });
 
       const result = await sut.update(auth, album.id, { filter: updatedFilter });
 
@@ -844,7 +844,10 @@ describe(AlbumService.name, () => {
 
     it('returns search results for smart album when fetching by id', async () => {
       const personId = newUuid();
-      const album = AlbumFactory.from().kind(AlbumKind.Smart).filter({ personIds: [personId] }).build();
+      const album = AlbumFactory.from()
+        .kind(AlbumKind.Smart)
+        .filter({ personIds: [personId] })
+        .build();
       const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
       const auth = AuthFactory.create(owner);
       const asset = AssetFactory.create({ ownerId: owner.id });
@@ -875,7 +878,10 @@ describe(AlbumService.name, () => {
     });
 
     it('returns most recent matching asset as thumbnail for smart album', async () => {
-      const album = AlbumFactory.from().kind(AlbumKind.Smart).filter({ personIds: [newUuid()] }).build();
+      const album = AlbumFactory.from()
+        .kind(AlbumKind.Smart)
+        .filter({ personIds: [newUuid()] })
+        .build();
       const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
       const auth = AuthFactory.create(owner);
       const recent = AssetFactory.create({ ownerId: owner.id });

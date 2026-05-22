@@ -6,8 +6,8 @@ import { MapAsset } from 'src/dtos/asset-response.dto';
 // Namespace import + z.lazy() are used below to defer reading SmartAlbumFilterDto.
 // This avoids a load-time circular dependency: search.dto.ts imports
 // AlbumResponseSchema from this file.
-import * as searchDto from 'src/dtos/search.dto';
 import type { SmartAlbumFilter } from 'src/dtos/search.dto';
+import * as searchDto from 'src/dtos/search.dto';
 import { UserResponseSchema, mapUser } from 'src/dtos/user.dto';
 import { AlbumKind, AlbumKindSchema, AlbumUserRole, AlbumUserRoleSchema, AssetOrder, AssetOrderSchema } from 'src/enum';
 import { MaybeDehydrated } from 'src/types';
