@@ -216,6 +216,10 @@ export class AlbumService extends BaseService {
     const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
     await this.requireAccess({ auth, permission: Permission.AlbumAssetCreate, ids: [id] });
 
+    if (album.kind === AlbumKind.Smart) {
+      throw new BadRequestException('Cannot add assets to a smart album');
+    }
+
     const results = await addAssets(
       auth,
       { access: this.accessRepository, bulk: this.albumRepository },

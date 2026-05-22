@@ -1060,6 +1060,16 @@ describe(AlbumService.name, () => {
 
       expect(mocks.access.album.checkSharedLinkAccess).toHaveBeenCalled();
     });
+
+    it('should reject adding assets to a smart album', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create(owner);
+      const album = AlbumFactory.from().owner(owner).kind(AlbumKind.Smart).filter({}).build();
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+
+      await expect(sut.addAssets(auth, album.id, { ids: [newUuid()] })).rejects.toBeInstanceOf(BadRequestException);
+    });
   });
 
   describe('addAssetsToAlbums', () => {
