@@ -312,6 +312,11 @@ export class AlbumService extends BaseService {
     await this.requireAccess({ auth, permission: Permission.AlbumAssetDelete, ids: [id] });
 
     const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
+
+    if (album.kind === AlbumKind.Smart) {
+      throw new BadRequestException('Cannot remove assets from a smart album');
+    }
+
     const results = await removeAssets(
       auth,
       { access: this.accessRepository, bulk: this.albumRepository },

@@ -1515,6 +1515,16 @@ describe(AlbumService.name, () => {
 
       expect(mocks.album.updateThumbnails).toHaveBeenCalled();
     });
+
+    it('should reject removing assets from a smart album', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create(owner);
+      const album = AlbumFactory.from().owner(owner).kind(AlbumKind.Smart).filter({}).build();
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+
+      await expect(sut.removeAssets(auth, album.id, { ids: [newUuid()] })).rejects.toBeInstanceOf(BadRequestException);
+    });
   });
 
   // // it('removes assets from shared album (shared with auth user)', async () => {
