@@ -1,4 +1,5 @@
 import { Selectable } from 'kysely';
+import { SmartAlbumFilter } from 'src/dtos/search.dto';
 import { AlbumKind, AlbumUserRole, AssetOrder } from 'src/enum';
 import { AlbumTable } from 'src/schema/tables/album.table';
 import { SharedLinkTable } from 'src/schema/tables/shared-link.table';
@@ -42,6 +43,16 @@ export class AlbumFactory {
   owner(dto: UserLike = {}, builder?: FactoryBuilder<UserFactory>) {
     this.#owner = build(UserFactory.from(dto), builder);
     this.albumUser({ userId: this.#owner.build().id, role: AlbumUserRole.Owner });
+    return this;
+  }
+
+  kind(kind: AlbumKind) {
+    this.value.kind = kind;
+    return this;
+  }
+
+  filter(filter: SmartAlbumFilter | null) {
+    this.value.filter = filter;
     return this;
   }
 

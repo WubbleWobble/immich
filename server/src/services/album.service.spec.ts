@@ -205,6 +205,39 @@ describe(AlbumService.name, () => {
   });
 
   describe('create', () => {
+    it('should create a smart album with a filter', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create(owner);
+      const personId = newUuid();
+      const album = AlbumFactory.from()
+        .owner(owner)
+        .kind(AlbumKind.Smart)
+        .filter({ personIds: [personId] })
+        .build();
+
+      mocks.album.create.mockResolvedValue(getForAlbum(album));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.user.getMetadata.mockResolvedValue([]);
+
+      const result = await sut.create(auth, {
+        albumName: 'Smart Album',
+        kind: AlbumKind.Smart,
+        filter: { personIds: [personId] },
+      });
+
+      expect(result.kind).toEqual(AlbumKind.Smart);
+      expect(result.filter).toBeDefined();
+      expect(mocks.album.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: AlbumKind.Smart,
+          filter: { personIds: [personId] },
+        }),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
     it('creates album', async () => {
       const assetId = newUuid();
       const albumUser = { userId: newUuid(), role: AlbumUserRole.Editor };
@@ -233,6 +266,8 @@ describe(AlbumService.name, () => {
           description: 'description',
           order: album.order,
           albumThumbnailAssetId: assetId,
+          kind: AlbumKind.Regular,
+          filter: null,
         },
         [assetId],
         [
@@ -290,6 +325,8 @@ describe(AlbumService.name, () => {
           description: album.description,
           order: 'asc',
           albumThumbnailAssetId: assetId,
+          kind: AlbumKind.Regular,
+          filter: null,
         },
         [assetId],
         [{ userId: owner.id, role: AlbumUserRole.Owner }, albumUser],
@@ -344,6 +381,8 @@ describe(AlbumService.name, () => {
           description: album.description,
           order: 'desc',
           albumThumbnailAssetId: assetId,
+          kind: AlbumKind.Regular,
+          filter: null,
         },
         [assetId],
         [{ userId: owner.id, role: AlbumUserRole.Owner }],
