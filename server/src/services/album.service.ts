@@ -113,6 +113,10 @@ export class AlbumService extends BaseService {
       throw new BadRequestException('Filter is only valid for smart albums');
     }
 
+    if (kind === AlbumKind.Smart && dto.assetIds && dto.assetIds.length > 0) {
+      throw new BadRequestException('Smart albums cannot be created with initial assetIds');
+    }
+
     for (const { userId } of albumUsers) {
       const exists = await this.userRepository.get(userId, {});
       if (!exists) {

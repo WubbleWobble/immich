@@ -238,6 +238,20 @@ describe(AlbumService.name, () => {
       );
     });
 
+    it('should reject a smart album payload that includes assetIds', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create(owner);
+
+      await expect(
+        sut.create(auth, {
+          albumName: 'Smart with assets',
+          kind: AlbumKind.Smart,
+          filter: {},
+          assetIds: [newUuid()],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
     it('should reject a regular album that includes a filter', async () => {
       const owner = UserFactory.create();
       const auth = AuthFactory.create(owner);
