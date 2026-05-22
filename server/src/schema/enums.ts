@@ -1,5 +1,6 @@
 import { registerEnum } from '@immich/sql-tools';
 import {
+  AlbumKind,
   AlbumUserRole,
   AssetStatus,
   AssetVisibility,
@@ -11,6 +12,11 @@ import {
 export const album_user_role_enum = registerEnum({
   name: 'album_user_role_enum',
   values: [AlbumUserRole.Owner, AlbumUserRole.Editor, AlbumUserRole.Viewer],
+});
+
+export const album_kind_enum = registerEnum({
+  name: 'album_kind_enum',
+  values: [AlbumKind.Regular, AlbumKind.Smart],
 });
 
 export const assets_status_enum = registerEnum({
