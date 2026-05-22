@@ -794,6 +794,38 @@ describe(AlbumService.name, () => {
         AlbumUserRole.Viewer,
       );
     });
+
+    it('returns search results for smart album when fetching by id', async () => {
+      const personId = newUuid();
+      const album = AlbumFactory.from().kind(AlbumKind.Smart).filter({ personIds: [personId] }).build();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const auth = AuthFactory.create(owner);
+      const asset = AssetFactory.create({ ownerId: owner.id });
+
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        {
+          albumId: album.id,
+          assetCount: 1,
+          startDate: new Date('1970-01-01'),
+          endDate: new Date('1970-01-01'),
+          lastModifiedAssetTimestamp: new Date('1970-01-01'),
+        },
+      ]);
+      mocks.search.searchMetadata.mockResolvedValue({
+        items: [asset],
+        hasNextPage: false,
+      } as any);
+
+      const result = await sut.get(auth, album.id);
+
+      expect(mocks.search.searchMetadata).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ userIds: [owner.id], personIds: [personId] }),
+      );
+      expect(result.assetCount).toBe(1);
+    });
   });
 
   describe('addAssets', () => {

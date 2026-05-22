@@ -80,11 +80,23 @@ export class AlbumService extends BaseService {
     const hasSharedLink = album.sharedLinks && album.sharedLinks.length > 0;
     const isShared = hasSharedUsers || hasSharedLink;
 
+    let smartAssetCount: number | undefined;
+    if (album.kind === AlbumKind.Smart && album.filter) {
+      const ownerId = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
+      if (ownerId) {
+        const { items } = await this.searchRepository.searchMetadata(
+          { page: 1, size: 1000 },
+          { ...album.filter, userIds: [ownerId] },
+        );
+        smartAssetCount = items.length;
+      }
+    }
+
     return {
       ...mapAlbum(album),
       startDate: asDateString(albumMetadataForIds?.startDate ?? undefined),
       endDate: asDateString(albumMetadataForIds?.endDate ?? undefined),
-      assetCount: albumMetadataForIds?.assetCount ?? 0,
+      assetCount: smartAssetCount ?? albumMetadataForIds?.assetCount ?? 0,
       lastModifiedAssetTimestamp: asDateString(albumMetadataForIds?.lastModifiedAssetTimestamp ?? undefined),
       contributorCounts: isShared ? await this.albumRepository.getContributorCounts(album.id) : undefined,
     };
