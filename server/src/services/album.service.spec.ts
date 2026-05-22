@@ -1,6 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { BulkIdErrorReason } from 'src/dtos/asset-ids.response.dto';
-import { AlbumUserRole, AssetOrder, UserMetadataKey } from 'src/enum';
+import { AlbumKind, AlbumUserRole, AssetOrder, UserMetadataKey } from 'src/enum';
 import { AlbumService } from 'src/services/album.service';
 import { AlbumUserFactory } from 'test/factories/album-user.factory';
 import { AlbumFactory } from 'test/factories/album.factory';
@@ -224,6 +224,7 @@ describe(AlbumService.name, () => {
         albumUsers: [albumUser],
         description: 'description',
         assetIds: [assetId],
+        kind: AlbumKind.Regular,
       });
 
       expect(mocks.album.create).toHaveBeenCalledWith(
@@ -280,6 +281,7 @@ describe(AlbumService.name, () => {
         albumUsers: [albumUser],
         description: album.description,
         assetIds: [assetId],
+        kind: AlbumKind.Regular,
       });
 
       expect(mocks.album.create).toHaveBeenCalledWith(
@@ -310,6 +312,7 @@ describe(AlbumService.name, () => {
         sut.create(AuthFactory.create(), {
           albumName: 'Empty album',
           albumUsers: [{ userId: 'unknown-user', role: AlbumUserRole.Editor }],
+          kind: AlbumKind.Regular,
         }),
       ).rejects.toBeInstanceOf(BadRequestException);
       expect(mocks.user.get).toHaveBeenCalledWith('unknown-user', {});
@@ -332,6 +335,7 @@ describe(AlbumService.name, () => {
         albumName: album.albumName,
         description: album.description,
         assetIds: [assetId, 'asset-2'],
+        kind: AlbumKind.Regular,
       });
 
       expect(mocks.album.create).toHaveBeenCalledWith(
@@ -356,6 +360,7 @@ describe(AlbumService.name, () => {
         sut.create(AuthFactory.create(owner), {
           albumName: 'Empty album',
           albumUsers: [{ userId: owner.id, role: AlbumUserRole.Editor }],
+          kind: AlbumKind.Regular,
         }),
       ).rejects.toBeInstanceOf(BadRequestException);
       expect(mocks.album.create).not.toHaveBeenCalled();

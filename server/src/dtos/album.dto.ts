@@ -3,8 +3,9 @@ import { createZodDto } from 'nestjs-zod';
 import { AlbumUser, AuthSharedLink } from 'src/database';
 import { BulkIdErrorReasonSchema } from 'src/dtos/asset-ids.response.dto';
 import { MapAsset } from 'src/dtos/asset-response.dto';
+import { SmartAlbumFilter, SmartAlbumFilterDto } from 'src/dtos/search.dto';
 import { UserResponseSchema, mapUser } from 'src/dtos/user.dto';
-import { AlbumUserRole, AlbumUserRoleSchema, AssetOrder, AssetOrderSchema } from 'src/enum';
+import { AlbumKind, AlbumKindSchema, AlbumUserRole, AlbumUserRoleSchema, AssetOrder, AssetOrderSchema } from 'src/enum';
 import { MaybeDehydrated } from 'src/types';
 import { asDateString } from 'src/utils/date';
 import { stringToBool } from 'src/validation';
@@ -36,6 +37,8 @@ const CreateAlbumSchema = z
     description: z.string().optional().describe('Album description'),
     albumUsers: z.array(AlbumUserCreateSchema).optional().describe('Album users'),
     assetIds: z.array(z.uuidv4()).optional().describe('Initial asset IDs'),
+    kind: AlbumKindSchema.optional().default(AlbumKind.Regular).describe('Album kind'),
+    filter: SmartAlbumFilterDto.schema.optional().describe('Filter for smart albums'),
   })
   .meta({ id: 'CreateAlbumDto' });
 
@@ -135,6 +138,8 @@ export const AlbumResponseSchema = z
     isActivityEnabled: z.boolean().describe('Activity feed enabled'),
     order: AssetOrderSchema.optional(),
     contributorCounts: z.array(ContributorCountResponseSchema).optional(),
+    kind: AlbumKindSchema.describe('Album kind'),
+    filter: SmartAlbumFilterDto.schema.nullable().describe('Filter for smart albums'),
   })
   .meta({ id: 'AlbumResponseDto' });
 
@@ -162,6 +167,8 @@ export type MapAlbumDto = {
   id: string;
   isActivityEnabled: boolean;
   order: AssetOrder;
+  kind: AlbumKind;
+  filter: SmartAlbumFilter | null;
 };
 
 export const mapAlbum = (entity: MaybeDehydrated<MapAlbumDto>): AlbumResponseDto => {
@@ -204,5 +211,7 @@ export const mapAlbum = (entity: MaybeDehydrated<MapAlbumDto>): AlbumResponseDto
     assetCount: entity.assets?.length || 0,
     isActivityEnabled: entity.isActivityEnabled,
     order: entity.order,
+    kind: entity.kind,
+    filter: entity.filter,
   };
 };
