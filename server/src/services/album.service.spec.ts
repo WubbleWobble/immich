@@ -498,6 +498,18 @@ describe(AlbumService.name, () => {
         owner.id,
       );
     });
+
+    it('should reject changing the album kind', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create(owner);
+      const album = AlbumFactory.from().owner(owner).kind(AlbumKind.Regular).build();
+      mocks.album.getById.mockResolvedValue(album);
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+
+      await expect(
+        sut.update(auth, album.id, { kind: AlbumKind.Smart } as any),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
   });
 
   describe('delete', () => {

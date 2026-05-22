@@ -176,6 +176,10 @@ export class AlbumService extends BaseService {
 
     const album = await this.findOrFail(id, auth.user.id, { withAssets: true });
 
+    if ('kind' in dto && dto.kind !== undefined && dto.kind !== album.kind) {
+      throw new BadRequestException('Album kind is immutable');
+    }
+
     if (dto.albumThumbnailAssetId) {
       const results = await this.albumRepository.getAssetIds(id, [dto.albumThumbnailAssetId]);
       if (results.size === 0) {
