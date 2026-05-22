@@ -10,6 +10,7 @@ import {
   UpdateDateColumn,
 } from '@immich/sql-tools';
 import { UpdatedAtTrigger, UpdateIdColumn } from 'src/decorators';
+import type { SmartAlbumFilter } from 'src/dtos/search.dto';
 import { AlbumKind, AssetOrder } from 'src/enum';
 import { album_kind_enum } from 'src/schema/enums';
 import { AssetTable } from 'src/schema/tables/asset.table';
@@ -53,7 +54,7 @@ export class AlbumTable {
   kind!: Generated<AlbumKind>;
 
   @Column({ type: 'jsonb', nullable: true })
-  filter!: object | null;
+  filter!: SmartAlbumFilter | null;
 
   @UpdateIdColumn({ index: true })
   updateId!: Generated<string>;
