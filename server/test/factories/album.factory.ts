@@ -1,5 +1,5 @@
 import { Selectable } from 'kysely';
-import { AlbumUserRole, AssetOrder } from 'src/enum';
+import { AlbumKind, AlbumUserRole, AssetOrder } from 'src/enum';
 import { AlbumTable } from 'src/schema/tables/album.table';
 import { SharedLinkTable } from 'src/schema/tables/shared-link.table';
 import { AlbumUserFactory } from 'test/factories/album-user.factory';
@@ -31,6 +31,8 @@ export class AlbumFactory {
       description: 'Album description',
       isActivityEnabled: false,
       order: AssetOrder.Desc,
+      kind: AlbumKind.Regular,
+      filter: null,
       updatedAt: newDate(),
       updateId: newUuidV7(),
       ...dto,

@@ -10,7 +10,8 @@ import {
   UpdateDateColumn,
 } from '@immich/sql-tools';
 import { UpdatedAtTrigger, UpdateIdColumn } from 'src/decorators';
-import { AssetOrder } from 'src/enum';
+import { AlbumKind, AssetOrder } from 'src/enum';
+import { album_kind_enum } from 'src/schema/enums';
 import { AssetTable } from 'src/schema/tables/asset.table';
 
 @Table({ name: 'album' })
@@ -47,6 +48,12 @@ export class AlbumTable {
 
   @Column({ default: AssetOrder.Desc })
   order!: Generated<AssetOrder>;
+
+  @Column({ enum: album_kind_enum, default: AlbumKind.Regular })
+  kind!: Generated<AlbumKind>;
+
+  @Column({ type: 'jsonb', nullable: true })
+  filter!: object | null;
 
   @UpdateIdColumn({ index: true })
   updateId!: Generated<string>;
