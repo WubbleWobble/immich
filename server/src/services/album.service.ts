@@ -14,12 +14,39 @@ import {
 import { BulkIdErrorReason, BulkIdResponseDto, BulkIdsDto } from 'src/dtos/asset-ids.response.dto';
 import { AuthDto } from 'src/dtos/auth.dto';
 import { MapMarkerResponseDto } from 'src/dtos/map.dto';
+import { SmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
 import { AlbumKind, AlbumUserRole, Permission } from 'src/enum';
 import { AlbumAssetCount, AlbumInfoOptions } from 'src/repositories/album.repository';
 import { BaseService } from 'src/services/base.service';
 import { addAssets, removeAssets } from 'src/utils/asset.util';
 import { asDateString } from 'src/utils/date';
 import { getPreferences } from 'src/utils/preferences';
+
+interface SmartAlbumCachedMetadata {
+  cachedAssetCount: number;
+  cachedThumbnailAssetId: string | null;
+  cachedStartDate: string | null;
+  cachedEndDate: string | null;
+  cacheComputedAt: Date;
+}
+
+const toDateOnly = (d: Date) => d.toISOString().slice(0, 10);
+
+const isSmartAlbumCacheStale = (album: {
+  cacheComputedAt?: Date | string | null;
+  cacheInvalidatedAt?: Date | string | null;
+}) => {
+  if (album.cacheComputedAt == null) {
+    return true;
+  }
+  if (album.cacheInvalidatedAt == null) {
+    return false;
+  }
+  // After hydration from a JSON-shallow context, timestamps may be strings.
+  const computed = album.cacheComputedAt instanceof Date ? album.cacheComputedAt.getTime() : Date.parse(album.cacheComputedAt);
+  const invalidated = album.cacheInvalidatedAt instanceof Date ? album.cacheInvalidatedAt.getTime() : Date.parse(album.cacheInvalidatedAt);
+  return invalidated > computed;
+};
 
 @Injectable()
 export class AlbumService extends BaseService {
@@ -59,43 +86,37 @@ export class AlbumService extends BaseService {
       albumMetadata[metadata.albumId] = metadata;
     }
 
-    // Smart albums' metadata isn't computable from the album_asset join (which is empty).
-    // Derive their counts, date range, and thumbnail from a search against the owner's library.
-    // TODO: batch-optimize if list responses become large; for v1 this is one search per smart album.
-    const smartMetadata: Record<string, { assetCount: number; startDate: Date | null; endDate: Date | null; thumbnailAssetId: string | null }> = {};
+    // For smart albums, serve the list-view metadata (count, thumbnail, date range) from the
+    // per-album cache stored on the album row. Recompute only when the cache is stale or missing.
+    // See `invalidateSmartAlbumsForAsset` for the invalidation side.
     for (const album of albums) {
       if (album.kind !== AlbumKind.Smart || !album.filter) {
+        continue;
+      }
+      if (!isSmartAlbumCacheStale(album)) {
         continue;
       }
       const albumOwnerId = album.albumUsers?.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
       if (!albumOwnerId) {
         continue;
       }
-      const { items } = await this.searchRepository.searchMetadata(
-        { page: 1, size: 1000 },
-        { ...album.filter, userIds: [albumOwnerId] },
-      );
-      const dates = items
-        .map((item) => (item.localDateTime ?? item.fileCreatedAt) as Date | null)
-        .filter((d): d is Date => d instanceof Date || (typeof d === 'string' && !Number.isNaN(Date.parse(d as string))))
-        .map((d) => (d instanceof Date ? d : new Date(d)));
-      smartMetadata[album.id] = {
-        assetCount: items.length,
-        startDate: dates.length > 0 ? dates.reduce((min, d) => (d < min ? d : min), dates[0]) : null,
-        endDate: dates.length > 0 ? dates.reduce((max, d) => (d > max ? d : max), dates[0]) : null,
-        thumbnailAssetId: items[0]?.id ?? null,
-      };
+      const fresh = await this.recomputeSmartAlbumCache(album.id, albumOwnerId, album.filter);
+      Object.assign(album, fresh);
     }
 
     return albums.map((album) => {
-      const smart = smartMetadata[album.id];
+      const isSmart = album.kind === AlbumKind.Smart;
       return {
         ...mapAlbum(album),
         sharedLinks: undefined,
-        albumThumbnailAssetId: smart?.thumbnailAssetId ?? album.albumThumbnailAssetId,
-        startDate: asDateString(smart?.startDate ?? albumMetadata[album.id]?.startDate ?? undefined),
-        endDate: asDateString(smart?.endDate ?? albumMetadata[album.id]?.endDate ?? undefined),
-        assetCount: smart?.assetCount ?? albumMetadata[album.id]?.assetCount ?? 0,
+        albumThumbnailAssetId: isSmart ? (album.cachedThumbnailAssetId ?? null) : album.albumThumbnailAssetId,
+        startDate: asDateString(
+          (isSmart ? album.cachedStartDate : albumMetadata[album.id]?.startDate) ?? undefined,
+        ),
+        endDate: asDateString(
+          (isSmart ? album.cachedEndDate : albumMetadata[album.id]?.endDate) ?? undefined,
+        ),
+        assetCount: (isSmart ? (album.cachedAssetCount ?? 0) : (albumMetadata[album.id]?.assetCount ?? 0)),
         // lastModifiedAssetTimestamp is only used in mobile app, please remove if not need
         lastModifiedAssetTimestamp: asDateString(albumMetadata[album.id]?.lastModifiedAssetTimestamp ?? undefined),
       };
@@ -112,26 +133,22 @@ export class AlbumService extends BaseService {
     const hasSharedLink = album.sharedLinks && album.sharedLinks.length > 0;
     const isShared = hasSharedUsers || hasSharedLink;
 
-    let smartAssetCount: number | undefined;
-    let smartThumbnailAssetId: string | undefined;
-    if (album.kind === AlbumKind.Smart && album.filter) {
+    if (album.kind === AlbumKind.Smart && album.filter && isSmartAlbumCacheStale(album)) {
       const ownerId = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
       if (ownerId) {
-        const { items } = await this.searchRepository.searchMetadata(
-          { page: 1, size: 1000 },
-          { ...album.filter, userIds: [ownerId] },
-        );
-        smartAssetCount = items.length;
-        smartThumbnailAssetId = items[0]?.id;
+        const fresh = await this.recomputeSmartAlbumCache(album.id, ownerId, album.filter);
+        Object.assign(album, fresh);
       }
     }
 
+    const isSmart = album.kind === AlbumKind.Smart;
+
     return {
       ...mapAlbum(album),
-      albumThumbnailAssetId: smartThumbnailAssetId ?? album.albumThumbnailAssetId,
-      startDate: asDateString(albumMetadataForIds?.startDate ?? undefined),
-      endDate: asDateString(albumMetadataForIds?.endDate ?? undefined),
-      assetCount: smartAssetCount ?? albumMetadataForIds?.assetCount ?? 0,
+      albumThumbnailAssetId: isSmart ? (album.cachedThumbnailAssetId ?? null) : album.albumThumbnailAssetId,
+      startDate: asDateString((isSmart ? album.cachedStartDate : albumMetadataForIds?.startDate) ?? undefined),
+      endDate: asDateString((isSmart ? album.cachedEndDate : albumMetadataForIds?.endDate) ?? undefined),
+      assetCount: isSmart ? (album.cachedAssetCount ?? 0) : (albumMetadataForIds?.assetCount ?? 0),
       lastModifiedAssetTimestamp: asDateString(albumMetadataForIds?.lastModifiedAssetTimestamp ?? undefined),
       contributorCounts: isShared ? await this.albumRepository.getContributorCounts(album.id) : undefined,
     };
@@ -432,5 +449,74 @@ export class AlbumService extends BaseService {
       throw new BadRequestException('Album not found');
     }
     return album;
+  }
+
+  /**
+   * Recompute smart-album list-view metadata against the live search index and persist
+   * the result on the album row. Returns the freshly computed values.
+   */
+  private async recomputeSmartAlbumCache(
+    albumId: string,
+    ownerId: string,
+    filter: SmartAlbumFilter,
+  ): Promise<SmartAlbumCachedMetadata> {
+    const { items } = await this.searchRepository.searchMetadata(
+      { page: 1, size: 1000 },
+      { ...filter, userIds: [ownerId] },
+    );
+    const dates = items
+      .map((item) => (item.localDateTime ?? item.fileCreatedAt) as Date | string | null | undefined)
+      .filter((d): d is Date | string => d !== null && d !== undefined)
+      .map((d) => (d instanceof Date ? d : new Date(d)))
+      .filter((d) => !Number.isNaN(d.getTime()));
+    const fresh: SmartAlbumCachedMetadata = {
+      cachedAssetCount: items.length,
+      cachedThumbnailAssetId: items[0]?.id ?? null,
+      cachedStartDate:
+        dates.length > 0 ? toDateOnly(dates.reduce((min, d) => (d < min ? d : min), dates[0])) : null,
+      cachedEndDate:
+        dates.length > 0 ? toDateOnly(dates.reduce((max, d) => (d > max ? d : max), dates[0])) : null,
+      cacheComputedAt: new Date(),
+    };
+    await this.albumRepository.updateCachedMetadata(albumId, fresh);
+    return fresh;
+  }
+
+  /**
+   * Mark smart-album caches as stale for any smart album owned by `ownerId` whose filter
+   * matches the given asset (i.e. the asset would appear in that album's results). Also
+   * invalidates any smart album whose cached thumbnail is `assetId`.
+   *
+   * Callers should wrap this in try/catch — invalidation failure must not abort the write.
+   */
+  async invalidateSmartAlbumsForAsset(ownerId: string, assetId: string): Promise<void> {
+    const smartAlbums = await this.albumRepository.getSmartAlbumsForOwner(ownerId);
+    const idsToInvalidate: string[] = [];
+
+    for (const album of smartAlbums) {
+      if (!album.filter) {
+        continue;
+      }
+      // The stored SmartAlbumFilter explicitly omits `id`, but `searchMetadata`'s options
+      // accept it — we add it here to ask "does this single asset match the filter?"
+      const { items } = await this.searchRepository.searchMetadata(
+        { page: 1, size: 1 },
+        { ...(album.filter as SmartAlbumFilter), userIds: [ownerId], id: assetId },
+      );
+      if (items.length > 0) {
+        idsToInvalidate.push(album.id);
+      }
+    }
+
+    // Albums whose current thumbnail IS this asset must also be refreshed (e.g. after a delete
+    // where the asset would otherwise still be referenced).
+    const thumbnailMatches = await this.albumRepository.getSmartAlbumsWithCachedThumbnail(assetId);
+    for (const id of thumbnailMatches) {
+      if (!idsToInvalidate.includes(id)) {
+        idsToInvalidate.push(id);
+      }
+    }
+
+    await this.albumRepository.markCacheInvalidated(idsToInvalidate, new Date());
   }
 }
