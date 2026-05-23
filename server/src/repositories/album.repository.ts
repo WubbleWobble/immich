@@ -186,12 +186,50 @@ export class AlbumRepository {
   private buildAlbumBaseQuery(ownerId: string, { isOwned, isShared }: { isOwned?: boolean; isShared?: boolean }) {
     return this.db
       .selectFrom('album')
-      .innerJoin('album_user', (join) =>
-        join.onRef('album_user.albumId', '=', 'album.id').on('album_user.userId', '=', ownerId),
-      )
       .where('album.deletedAt', 'is', null)
-      .$if(isOwned === true, (qb) => qb.where('album_user.role', '=', sql.lit(AlbumUserRole.Owner)))
-      .$if(isOwned === false, (qb) => qb.where('album_user.role', '!=', sql.lit(AlbumUserRole.Owner)))
+      .where((eb) =>
+        eb.or([
+          // Direct album_user membership (any role).
+          eb.exists(
+            eb
+              .selectFrom('album_user')
+              .whereRef('album_user.albumId', '=', 'album.id')
+              .where('album_user.userId', '=', ownerId),
+          ),
+          // Cascade share: any ancestor folder of this album's container is shared with the user.
+          eb.exists(
+            eb
+              .selectFrom('album_container_closure as c')
+              .innerJoin('album_container_user as acu', 'acu.albumContainerId', 'c.id_ancestor')
+              .whereRef('c.id_descendant', '=', 'album.containerId')
+              .where('acu.userId', '=', ownerId),
+          ),
+        ]),
+      )
+      .$if(isOwned === true, (qb) =>
+        qb.where((eb) =>
+          eb.exists(
+            eb
+              .selectFrom('album_user')
+              .whereRef('album_user.albumId', '=', 'album.id')
+              .where('album_user.userId', '=', ownerId)
+              .where('album_user.role', '=', sql.lit(AlbumUserRole.Owner)),
+          ),
+        ),
+      )
+      .$if(isOwned === false, (qb) =>
+        qb.where((eb) =>
+          eb.not(
+            eb.exists(
+              eb
+                .selectFrom('album_user')
+                .whereRef('album_user.albumId', '=', 'album.id')
+                .where('album_user.userId', '=', ownerId)
+                .where('album_user.role', '=', sql.lit(AlbumUserRole.Owner)),
+            ),
+          ),
+        ),
+      )
       .$if(isShared !== undefined, (qb) =>
         qb.where((eb) => {
           const isSharedAlbum = eb.or([
@@ -202,6 +240,13 @@ export class AlbumRepository {
                 .where('au.role', '!=', sql.lit(AlbumUserRole.Owner)),
             ),
             eb.exists(eb.selectFrom('shared_link').whereRef('shared_link.albumId', '=', 'album.id')),
+            // Cascade shares make the album "shared" from the user's perspective.
+            eb.exists(
+              eb
+                .selectFrom('album_container_closure as c')
+                .innerJoin('album_container_user as acu', 'acu.albumContainerId', 'c.id_ancestor')
+                .whereRef('c.id_descendant', '=', 'album.containerId'),
+            ),
           ]);
           return isShared ? isSharedAlbum : eb.not(isSharedAlbum);
         }),

@@ -103,7 +103,7 @@ class AlbumAccess {
     const accessRole =
       access === AlbumUserRole.Editor ? [AlbumUserRole.Editor] : [AlbumUserRole.Editor, AlbumUserRole.Viewer];
 
-    return this.db
+    const direct = await this.db
       .selectFrom('album')
       .select('album.id')
       .innerJoin('album_user', 'album_user.albumId', 'album.id')
@@ -112,8 +112,35 @@ class AlbumAccess {
       .where('album.deletedAt', 'is', null)
       .where('user.id', '=', userId)
       .where('album_user.role', 'in', [...accessRole])
-      .execute()
-      .then((albums) => new Set(albums.map((album) => album.id)));
+      .execute();
+
+    // Cascade share: a folder share with the same allowed role grants access to all descendant albums.
+    const cascade = await this.db
+      .selectFrom('album')
+      .select('album.id')
+      .where('album.id', 'in', [...albumIds])
+      .where('album.deletedAt', 'is', null)
+      .where('album.containerId', 'is not', null)
+      .where((eb) =>
+        eb.exists(
+          eb
+            .selectFrom('album_container_closure as c')
+            .innerJoin('album_container_user as acu', 'acu.albumContainerId', 'c.id_ancestor')
+            .whereRef('c.id_descendant', '=', 'album.containerId')
+            .where('acu.userId', '=', userId)
+            .where('acu.role', 'in', [...accessRole]),
+        ),
+      )
+      .execute();
+
+    const ids = new Set<string>();
+    for (const row of direct) {
+      ids.add(row.id);
+    }
+    for (const row of cascade) {
+      ids.add(row.id);
+    }
+    return ids;
   }
 
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID_SET] })

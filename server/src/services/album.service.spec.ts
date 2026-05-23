@@ -712,6 +712,33 @@ describe(AlbumService.name, () => {
         AlbumUserRole.Viewer,
       );
     });
+
+    it('grants access via cascade folder share', async () => {
+      // Cascade access is resolved inside checkSharedAlbumAccess: when the user has access via a
+      // folder share rather than a direct album_user row, the access repo still returns the album id.
+      const user = UserFactory.create();
+      const album = AlbumFactory.from().build();
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.access.album.checkSharedAlbumAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        {
+          albumId: album.id,
+          assetCount: 1,
+          startDate: new Date('1970-01-01'),
+          endDate: new Date('1970-01-01'),
+          lastModifiedAssetTimestamp: new Date('1970-01-01'),
+        },
+      ]);
+
+      const result = await sut.get(AuthFactory.create(user), album.id);
+
+      expect(result.id).toEqual(album.id);
+      expect(mocks.access.album.checkSharedAlbumAccess).toHaveBeenCalledWith(
+        user.id,
+        new Set([album.id]),
+        AlbumUserRole.Viewer,
+      );
+    });
   });
 
   describe('addAssets', () => {

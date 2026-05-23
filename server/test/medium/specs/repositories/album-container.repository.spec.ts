@@ -1,5 +1,7 @@
 import { Kysely } from 'kysely';
+import { AlbumUserRole } from 'src/enum';
 import { AlbumContainerRepository } from 'src/repositories/album-container.repository';
+import { AlbumRepository } from 'src/repositories/album.repository';
 import { LoggingRepository } from 'src/repositories/logging.repository';
 import { DB } from 'src/schema';
 import { BaseService } from 'src/services/base.service';
@@ -171,6 +173,53 @@ describe(AlbumContainerRepository.name, () => {
       await expect(sut.getDepth(a.id)).resolves.toBe(0);
       await expect(sut.getDepth(b.id)).resolves.toBe(1);
       await expect(sut.getDepth(c.id)).resolves.toBe(2);
+    });
+  });
+
+  describe('cascade album access', () => {
+    it('grants album access to a user shared on an ancestor folder', async () => {
+      const { ctx, sut } = setup();
+      const { user: owner } = await ctx.newUser();
+      const { user: viewer } = await ctx.newUser();
+
+      const folder = await sut.create({ ownerId: owner.id, name: 'Family', parentId: null });
+      const { album } = await ctx.newAlbum({ ownerId: owner.id, containerId: folder.id });
+      await sut.addUser(folder.id, viewer.id, AlbumUserRole.Editor);
+
+      const albumRepo = ctx.get(AlbumRepository);
+      const sharedAlbums = await albumRepo.getAll(viewer.id, { isShared: true });
+
+      expect(sharedAlbums.map((a) => a.id)).toContain(album.id);
+    });
+
+    it('does not grant access without a folder share', async () => {
+      const { ctx, sut } = setup();
+      const { user: owner } = await ctx.newUser();
+      const { user: viewer } = await ctx.newUser();
+
+      const folder = await sut.create({ ownerId: owner.id, name: 'Family', parentId: null });
+      const { album } = await ctx.newAlbum({ ownerId: owner.id, containerId: folder.id });
+
+      const albumRepo = ctx.get(AlbumRepository);
+      const sharedAlbums = await albumRepo.getAll(viewer.id, { isShared: true });
+
+      expect(sharedAlbums.map((a) => a.id)).not.toContain(album.id);
+    });
+
+    it('grants cascade access through a nested folder hierarchy', async () => {
+      const { ctx, sut } = setup();
+      const { user: owner } = await ctx.newUser();
+      const { user: viewer } = await ctx.newUser();
+
+      const family = await sut.create({ ownerId: owner.id, name: 'Family', parentId: null });
+      const andi = await sut.create({ ownerId: owner.id, name: 'Andi', parentId: family.id });
+      const { album } = await ctx.newAlbum({ ownerId: owner.id, containerId: andi.id });
+      await sut.addUser(family.id, viewer.id, AlbumUserRole.Viewer);
+
+      const albumRepo = ctx.get(AlbumRepository);
+      const sharedAlbums = await albumRepo.getAll(viewer.id, { isShared: true });
+
+      expect(sharedAlbums.map((a) => a.id)).toContain(album.id);
     });
   });
 });
