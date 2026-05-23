@@ -50,7 +50,14 @@
   import { handlePromiseError } from '$lib/utils';
   import { handleError } from '$lib/utils/handle-error';
   import { isAlbumsRoute, navigate, type AssetGridRouteSearchParams } from '$lib/utils/navigation';
-  import { AlbumUserRole, AssetVisibility, getAlbumInfo, updateAlbumInfo, type AlbumResponseDto } from '@immich/sdk';
+  import {
+    AlbumKind,
+    AlbumUserRole,
+    AssetVisibility,
+    getAlbumInfo,
+    updateAlbumInfo,
+    type AlbumResponseDto,
+  } from '@immich/sdk';
   import {
     ActionButton,
     CommandPaletteDefaultProvider,
@@ -63,6 +70,7 @@
     mdiAccountEye,
     mdiAccountEyeOutline,
     mdiArrowLeft,
+    mdiAutoFix,
     mdiCogOutline,
     mdiDeleteOutline,
     mdiDotsHorizontal,
@@ -71,6 +79,7 @@
     mdiImageOutline,
     mdiImagePlusOutline,
     mdiLink,
+    mdiPencilOutline,
     mdiPlus,
     mdiPresentationPlay,
   } from '@mdi/js';
@@ -242,6 +251,13 @@
   onDestroy(() => activityManager.reset());
 
   const isOwned = $derived(album.albumUsers[0].user.id === authManager.user.id);
+  const isSmart = $derived(album.kind === AlbumKind.Smart);
+  let showSmartFilter = $state(false);
+
+  // TODO(smart-albums Task 25): open the smart-filter edit modal here.
+  const handleEditFilter = () => {
+    toastManager.primary('Edit filter dialog coming soon');
+  };
 
   let showActivityStatus = $derived(
     album.albumUsers.length > 1 &&
@@ -335,7 +351,7 @@
   onAlbumUserDelete={refreshAlbum}
   {onAlbumUpdate}
 />
-<CommandPaletteDefaultProvider name={$t('album')} actions={[AddAssets, Upload, Close]} />
+<CommandPaletteDefaultProvider name={$t('album')} actions={isSmart ? [Close] : [AddAssets, Upload, Close]} />
 
 <div class="flex overflow-hidden" use:scrollMemoryClearer={{ routeStartsWith: Route.albums() }}>
   <div class="relative w-full shrink">
@@ -415,10 +431,50 @@
                 {isOwned}
                 bind:description={() => album.description, (description) => (album = { ...album, description })}
               />
+
+              {#if isSmart}
+                <!-- SMART ALBUM FILTER PANEL -->
+                <div
+                  class="my-4 rounded-2xl border border-gray-200 bg-subtle p-4 text-sm dark:border-immich-dark-gray dark:bg-immich-dark-gray/30"
+                >
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="flex items-center gap-2 text-immich-fg dark:text-immich-dark-fg">
+                      <Icon icon={mdiAutoFix} size="18" />
+                      <span class="font-medium">{$t('smart_album_filter')}</span>
+                    </div>
+                    {#if isOwned}
+                      <IconButton
+                        shape="round"
+                        size="small"
+                        color="secondary"
+                        variant="ghost"
+                        aria-label={$t('smart_album_edit_filter')}
+                        icon={mdiPencilOutline}
+                        onclick={handleEditFilter}
+                      />
+                    {/if}
+                  </div>
+                  <button
+                    type="button"
+                    class="mt-2 text-xs text-immich-fg/80 underline hover:text-immich-primary dark:text-immich-dark-fg/80 dark:hover:text-immich-dark-primary"
+                    onclick={() => (showSmartFilter = !showSmartFilter)}
+                  >
+                    {$t('smart_album_filter_show')}
+                  </button>
+                  {#if showSmartFilter}
+                    <pre
+                      class="mt-2 max-h-60 overflow-auto rounded-lg bg-white/60 p-3 text-xs text-immich-fg dark:bg-black/30 dark:text-immich-dark-fg">{JSON.stringify(
+                        album.filter ?? {},
+                        null,
+                        2,
+                      )}</pre>
+                  {/if}
+                </div>
+              {/if}
             </section>
           {/if}
 
-          {#if album.assetCount === 0}
+          {#if album.assetCount === 0 && !isSmart}
             <section id="empty-album" class="mt-50 flex place-content-center place-items-center">
               <div class="w-75">
                 <p class="text-xs uppercase dark:text-immich-dark-fg">{$t('add_photos')}</p>
@@ -489,7 +545,7 @@
             <TagAction menuItem />
           {/if}
 
-          {#if isOwned || assetMultiSelectManager.isAllUserOwned}
+          {#if (isOwned || assetMultiSelectManager.isAllUserOwned) && !isSmart}
             <RemoveFromAlbum menuItem bind:album onRemove={handleRemoveAssets} />
           {/if}
           {#if assetMultiSelectManager.isAllUserOwned}
@@ -503,7 +559,7 @@
           {#snippet trailing()}
             <ActionButton action={Cast} />
 
-            {#if isEditor}
+            {#if isEditor && !isSmart}
               <IconButton
                 variant="ghost"
                 shape="round"
