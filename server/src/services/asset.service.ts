@@ -33,6 +33,7 @@ import {
   Permission,
   QueueName,
 } from 'src/enum';
+import { AlbumService } from 'src/services/album.service';
 import { BaseService } from 'src/services/base.service';
 import { JobItem, JobOf } from 'src/types';
 import { requireElevatedPermission } from 'src/utils/access';
@@ -124,6 +125,10 @@ export class AssetService extends BaseService {
       throw new BadRequestException('Asset not found');
     }
 
+    // Smart album filters may match on favorite/visibility/description/rating/date,
+    // so any asset update can change membership. Invalidate but do not fail the update.
+    await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetsSafe(asset.ownerId, [asset.id]);
+
     return mapAsset(asset, { auth });
   }
 
@@ -178,6 +183,10 @@ export class AssetService extends BaseService {
     }
 
     await this.jobRepository.queueAll(ids.map((id) => ({ name: JobName.SidecarWrite, data: { id } })));
+
+    // Bulk updates touch fields (favorite, visibility, rating, dateTime, description) that
+    // smart album filters care about, so invalidate matching caches.
+    await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetIdsSafe(ids);
   }
 
   async copy(
@@ -336,6 +345,10 @@ export class AssetService extends BaseService {
 
     await this.eventRepository.emit('AssetDelete', { assetId: id, userId: asset.ownerId });
 
+    // Final removal: a smart album whose cached thumbnail or membership referenced this
+    // asset must drop the reference on next read.
+    await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetsSafe(asset.ownerId, [id]);
+
     // delete the motion if it is not used by another asset
     if (asset.livePhotoVideoId) {
       const count = await this.assetRepository.getLivePhotoCount(asset.livePhotoVideoId);
@@ -379,6 +392,10 @@ export class AssetService extends BaseService {
       assetIds: ids,
       userId: auth.user.id,
     });
+
+    // Trashing/deleting changes status, which smart-album filters care about
+    // (e.g. an album that filters by trash status, or where deleted assets must drop out).
+    await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetIdsSafe(ids);
   }
 
   async getMetadata(auth: AuthDto, id: string): Promise<AssetMetadataResponseDto[]> {

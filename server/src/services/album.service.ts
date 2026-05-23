@@ -483,6 +483,71 @@ export class AlbumService extends BaseService {
   }
 
   /**
+   * Mark smart-album caches as stale for several assets owned by `ownerId`.
+   * Safe wrapper: failures are logged but do not throw.
+   */
+  async invalidateSmartAlbumsForAssetsSafe(ownerId: string, assetIds: readonly string[]): Promise<void> {
+    for (const assetId of assetIds) {
+      try {
+        await this.invalidateSmartAlbumsForAsset(ownerId, assetId);
+      } catch (error: unknown) {
+        this.logger.warn(
+          `Failed to invalidate smart-album caches for asset ${assetId}: ${(error as Error)?.message ?? error}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Invalidate the cache for every smart album owned by `ownerId`. Use for coarse-grained
+   * write paths where the affected asset list isn't readily known (e.g. trash bulk restore).
+   * Safe wrapper: failures are logged but do not throw.
+   */
+  async invalidateAllSmartAlbumsForOwnerSafe(ownerId: string): Promise<void> {
+    try {
+      const smartAlbums = await this.albumRepository.getSmartAlbumsForOwner(ownerId);
+      if (smartAlbums.length === 0) {
+        return;
+      }
+      await this.albumRepository.markCacheInvalidated(
+        smartAlbums.map((a) => a.id),
+        new Date(),
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Failed to invalidate smart-album caches for owner ${ownerId}: ${(error as Error)?.message ?? error}`,
+      );
+    }
+  }
+
+  /**
+   * Look up each asset's owner and invalidate that owner's smart-album caches.
+   * Use this when callers only have an assetId (e.g. tag/untag events) and not the owner.
+   * Safe wrapper: failures are logged but do not throw.
+   */
+  async invalidateSmartAlbumsForAssetIdsSafe(assetIds: readonly string[]): Promise<void> {
+    if (assetIds.length === 0) {
+      return;
+    }
+    try {
+      const assets = await this.assetRepository.getByIds([...assetIds]);
+      for (const asset of assets) {
+        try {
+          await this.invalidateSmartAlbumsForAsset(asset.ownerId, asset.id);
+        } catch (error: unknown) {
+          this.logger.warn(
+            `Failed to invalidate smart-album caches for asset ${asset.id}: ${(error as Error)?.message ?? error}`,
+          );
+        }
+      }
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Failed to load assets for smart-album invalidation: ${(error as Error)?.message ?? error}`,
+      );
+    }
+  }
+
+  /**
    * Mark smart-album caches as stale for any smart album owned by `ownerId` whose filter
    * matches the given asset (i.e. the asset would appear in that album's results). Also
    * invalidates any smart album whose cached thumbnail is `assetId`.

@@ -5,6 +5,7 @@ import { BulkIdsDto } from 'src/dtos/asset-ids.response.dto';
 import { AuthDto } from 'src/dtos/auth.dto';
 import { TrashResponseDto } from 'src/dtos/trash.dto';
 import { JobName, JobStatus, Permission, QueueName } from 'src/enum';
+import { AlbumService } from 'src/services/album.service';
 import { BaseService } from 'src/services/base.service';
 
 @Injectable()
@@ -21,6 +22,9 @@ export class TrashService extends BaseService {
 
     this.logger.log(`Restored ${ids.length} asset(s) from trash`);
 
+    // Restoring an asset can re-introduce it into a smart album's results.
+    await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetIdsSafe(ids);
+
     return { count: ids.length };
   }
 
@@ -28,6 +32,9 @@ export class TrashService extends BaseService {
     const count = await this.trashRepository.restore(auth.user.id);
     if (count > 0) {
       this.logger.log(`Restored ${count} asset(s) from trash`);
+      // Affected asset ids aren't easily enumerated here, so invalidate all of the user's
+      // smart albums; next read recomputes exactly the ones whose membership shifted.
+      await BaseService.create(AlbumService, this).invalidateAllSmartAlbumsForOwnerSafe(auth.user.id);
     }
     return { count };
   }
@@ -36,6 +43,9 @@ export class TrashService extends BaseService {
     const count = await this.trashRepository.empty(auth.user.id);
     if (count > 0) {
       await this.jobRepository.queue({ name: JobName.AssetEmptyTrash, data: {} });
+      // The actual hard-delete is queued; invalidate now because trashed-but-still-present
+      // assets just transitioned to deleted-on-disk.
+      await BaseService.create(AlbumService, this).invalidateAllSmartAlbumsForOwnerSafe(auth.user.id);
     }
     return { count };
   }

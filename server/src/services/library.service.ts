@@ -31,6 +31,7 @@ import {
 import { ArgOf } from 'src/repositories/event.repository';
 import { AssetSyncResult } from 'src/repositories/library.repository';
 import { AssetTable } from 'src/schema/tables/asset.table';
+import { AlbumService } from 'src/services/album.service';
 import { BaseService } from 'src/services/base.service';
 import { JobOf } from 'src/types';
 import { mimeTypes } from 'src/utils/mime-types';
@@ -563,6 +564,18 @@ export class LibraryService extends BaseService {
     }
 
     await Promise.all(promises);
+
+    // Library sync transitions assets between online/offline/trashed states; smart-album
+    // filters keyed on those statuses may need to refresh on next read.
+    const changedAssetIds = [
+      ...assetIdsToOffline,
+      ...trashedAssetIdsToOffline,
+      ...assetIdsToOnline,
+      ...trashedAssetIdsToOnline,
+    ];
+    if (changedAssetIds.length > 0) {
+      await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetIdsSafe(changedAssetIds);
+    }
 
     const remainingCount = assets.length - assetIdsToOffline.length - assetIdsToUpdate.length - assetIdsToOnline.length;
     const cumulativePercentage = ((100 * job.progressCounter) / job.totalAssets).toFixed(1);

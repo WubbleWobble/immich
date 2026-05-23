@@ -38,6 +38,7 @@ import { BoundingBox } from 'src/repositories/machine-learning.repository';
 import { UpdateFacesData } from 'src/repositories/person.repository';
 import { AssetFaceTable } from 'src/schema/tables/asset-face.table';
 import { FaceSearchTable } from 'src/schema/tables/face-search.table';
+import { AlbumService } from 'src/services/album.service';
 import { BaseService } from 'src/services/base.service';
 import { JobItem, JobOf } from 'src/types';
 import { getDimensions } from 'src/utils/asset.util';
@@ -84,6 +85,7 @@ export class PersonService extends BaseService {
     const person = await this.findOrFail(personId);
     const result: PersonResponseDto[] = [];
     const changeFeaturePhoto: string[] = [];
+    const affectedAssetIds: string[] = [];
     for (const data of dto.data) {
       const faces = await this.personRepository.getFacesByIds([{ personId: data.personId, assetId: data.assetId }]);
 
@@ -97,6 +99,7 @@ export class PersonService extends BaseService {
         }
 
         await this.personRepository.reassignFace(face.id, personId);
+        affectedAssetIds.push(data.assetId);
       }
 
       result.push(mapPerson(person));
@@ -105,6 +108,10 @@ export class PersonService extends BaseService {
       // Remove duplicates
       await this.createNewFeaturePhoto([...new Set(changeFeaturePhoto)]);
     }
+
+    // Person assignment changes membership of smart albums that filter by personIds.
+    await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetIdsSafe([...new Set(affectedAssetIds)]);
+
     return result;
   }
 
@@ -120,6 +127,11 @@ export class PersonService extends BaseService {
     }
     if (face.person && face.person.faceAssetId === face.id) {
       await this.createNewFeaturePhoto([face.person.id]);
+    }
+
+    // The reassigned face is attached to a specific asset; invalidate that asset's smart-album membership.
+    if (face.assetId) {
+      await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetIdsSafe([face.assetId]);
     }
 
     return await this.findOrFail(personId).then(mapPerson);
@@ -697,11 +709,30 @@ export class PersonService extends BaseService {
     if (!person.faceAssetId) {
       await this.createNewFeaturePhoto([person.id]);
     }
+
+    // Creating a face links a person to this asset; smart albums filtered by personIds may shift.
+    await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetIdsSafe([dto.assetId]);
   }
 
   async deleteFace(auth: AuthDto, id: string, dto: AssetFaceDeleteDto): Promise<void> {
     await this.requireAccess({ auth, permission: Permission.FaceDelete, ids: [id] });
 
-    return dto.force ? this.personRepository.deleteAssetFace(id) : this.personRepository.softDeleteAssetFaces(id);
+    // Look up the face's asset BEFORE deletion so we know what to invalidate.
+    let assetId: string | undefined;
+    try {
+      const face = await this.personRepository.getFaceById(id);
+      assetId = face.assetId;
+    } catch {
+      // face not found / already gone — invalidation will be a no-op
+    }
+
+    const result = dto.force
+      ? this.personRepository.deleteAssetFace(id)
+      : this.personRepository.softDeleteAssetFaces(id);
+    await result;
+
+    if (assetId) {
+      await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetIdsSafe([assetId]);
+    }
   }
 }
