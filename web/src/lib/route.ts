@@ -58,7 +58,7 @@ export const Route = {
   pinPrompt: (params?: { continue?: string }) => '/auth/pin-prompt' + asQueryString({ continue: params?.continue }),
 
   // albums
-  albums: () => '/albums',
+  albums: (params?: { folder?: string }) => '/albums' + asQueryString(params),
   viewAlbum: ({ id }: { id: string }) => `/albums/${id}`,
   viewAlbumAsset: ({ albumId, assetId }: { albumId: string; assetId: string }) =>
     `/albums/${albumId}/photos/${assetId}`,
