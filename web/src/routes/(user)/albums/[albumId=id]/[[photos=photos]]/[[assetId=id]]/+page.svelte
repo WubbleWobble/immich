@@ -37,6 +37,7 @@
   import { TimelineManager } from '$lib/managers/timeline-manager/timeline-manager.svelte';
   import type { TimelineAsset } from '$lib/managers/timeline-manager/types';
   import AlbumOptionsModal from '$lib/modals/AlbumOptionsModal.svelte';
+  import EditSmartAlbumFilterModal from '$lib/modals/EditSmartAlbumFilterModal.svelte';
   import { Route } from '$lib/route';
   import {
     getAlbumActions,
@@ -254,9 +255,11 @@
   const isSmart = $derived(album.kind === AlbumKind.Smart);
   let showSmartFilter = $state(false);
 
-  // TODO(smart-albums Task 25): open the smart-filter edit modal here.
-  const handleEditFilter = () => {
-    toastManager.primary('Edit filter dialog coming soon');
+  const handleEditFilter = async () => {
+    const updated = await modalManager.show(EditSmartAlbumFilterModal, { album });
+    if (updated) {
+      await refreshAlbum();
+    }
   };
 
   let showActivityStatus = $derived(
