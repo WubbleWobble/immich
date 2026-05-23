@@ -244,9 +244,9 @@ describe(AlbumContainerService.name, () => {
         updateId: newUuid(),
       });
 
-      await expect(
-        sut.addUser(auth, id, { userId: sharedUserId, role: AlbumUserRole.Editor }),
-      ).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(sut.addUser(auth, id, { userId: sharedUserId, role: AlbumUserRole.Editor })).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
       expect(mocks.albumContainer.addUser).not.toHaveBeenCalled();
     });
   });

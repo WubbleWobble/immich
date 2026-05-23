@@ -459,9 +459,9 @@ describe(AlbumService.name, () => {
         updateId: newUuid(),
       });
 
-      await expect(
-        sut.update(AuthFactory.create(owner), album.id, { containerId }),
-      ).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(sut.update(AuthFactory.create(owner), album.id, { containerId })).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
       expect(mocks.album.update).not.toHaveBeenCalled();
     });
   });

@@ -22,7 +22,10 @@ export class AlbumContainerController {
   @Post()
   @Authenticated()
   @Endpoint({ summary: 'Create folder', history: new HistoryBuilder().added('v2').alpha('v2') })
-  createAlbumContainer(@Auth() auth: AuthDto, @Body() dto: CreateAlbumContainerDto): Promise<AlbumContainerResponseDto> {
+  createAlbumContainer(
+    @Auth() auth: AuthDto,
+    @Body() dto: CreateAlbumContainerDto,
+  ): Promise<AlbumContainerResponseDto> {
     return this.service.create(auth, dto);
   }
 
