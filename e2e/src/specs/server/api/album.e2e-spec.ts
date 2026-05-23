@@ -1,13 +1,19 @@
 import {
   addAssetsToAlbum,
+  addUserToAlbumContainer,
   AlbumResponseDto,
   AlbumUserRole,
   AssetMediaResponseDto,
   AssetOrder,
+  createAlbumContainer,
   deleteUserAdmin,
   getAlbumInfo,
+  getAllAlbums,
   LoginResponseDto,
+  removeUserFromAlbumContainer,
   SharedLinkType,
+  updateAlbumContainer,
+  updateAlbumInfo,
 } from '@immich/sdk';
 import { createUserDto } from 'src/fixtures';
 import { errorDto } from 'src/responses';
@@ -794,6 +800,140 @@ describe('/albums', () => {
 
       expect(status).toBe(400);
       expect(body).toEqual(errorDto.badRequest('Not found or no album.share access'));
+    });
+  });
+
+  describe('album folder lifecycle with cascade share', () => {
+    it('shares an inner album via a parent folder and revokes access cleanly', async () => {
+      // Owner creates folder Family (root) then Andi inside Family.
+      const family = await createAlbumContainer(
+        { createAlbumContainerDto: { name: 'Family' } },
+        { headers: asBearerAuth(user1.accessToken) },
+      );
+      expect(family).toMatchObject({ name: 'Family', parentId: null, ownerId: user1.userId });
+
+      const andi = await createAlbumContainer(
+        { createAlbumContainerDto: { name: 'Andi', parentId: family.id } },
+        { headers: asBearerAuth(user1.accessToken) },
+      );
+      expect(andi).toMatchObject({ name: 'Andi', parentId: family.id });
+
+      // Owner creates an album, moves it into the Andi folder, and adds an asset.
+      const album = await utils.createAlbum(user1.accessToken, { albumName: 'Andi-2025-visit' });
+      const movedAlbum = await updateAlbumInfo(
+        { id: album.id, updateAlbumDto: { containerId: andi.id } },
+        { headers: asBearerAuth(user1.accessToken) },
+      );
+      expect(movedAlbum.containerId).toEqual(andi.id);
+
+      const asset1 = await utils.createAsset(user1.accessToken);
+      await addAssetsToAlbum(
+        { id: album.id, bulkIdsDto: { ids: [asset1.id] } },
+        { headers: asBearerAuth(user1.accessToken) },
+      );
+
+      // Recipient (user2) has no access yet.
+      {
+        const { status, body } = await request(app)
+          .get(`/albums/${album.id}`)
+          .set('Authorization', `Bearer ${user2.accessToken}`);
+        expect(status).toBe(400);
+        expect(body).toEqual(errorDto.badRequest('Not found or no album.read access'));
+      }
+
+      // Owner shares the top-level folder (Family) with user2 as Editor.
+      await addUserToAlbumContainer(
+        {
+          id: family.id,
+          albumContainerUserCreateDto: { userId: user2.userId, role: AlbumUserRole.Editor },
+        },
+        { headers: asBearerAuth(user1.accessToken) },
+      );
+
+      // Cascade share: recipient now sees the inner album in getAllAlbums.
+      const recipientAlbums = await getAllAlbums({}, { headers: asBearerAuth(user2.accessToken) });
+      expect(recipientAlbums.map((a) => a.id)).toContain(album.id);
+
+      // Recipient can read the album via per-album access cascade.
+      const recipientView = await getAlbumInfo(
+        { id: album.id },
+        { headers: asBearerAuth(user2.accessToken) },
+      );
+      expect(recipientView).toMatchObject({ id: album.id });
+
+      // Editor cascade: recipient can add assets to the inner album.
+      const asset2 = await utils.createAsset(user2.accessToken);
+      const addResult = await addAssetsToAlbum(
+        { id: album.id, bulkIdsDto: { ids: [asset2.id] } },
+        { headers: asBearerAuth(user2.accessToken) },
+      );
+      expect(addResult).toEqual([expect.objectContaining({ id: asset2.id, success: true })]);
+
+      // Owner revokes the folder share.
+      await removeUserFromAlbumContainer(
+        { id: family.id, userId: user2.userId },
+        { headers: asBearerAuth(user1.accessToken) },
+      );
+
+      // Recipient can no longer access the album.
+      {
+        const { status, body } = await request(app)
+          .get(`/albums/${album.id}`)
+          .set('Authorization', `Bearer ${user2.accessToken}`);
+        expect(status).toBe(400);
+        expect(body).toEqual(errorDto.badRequest('Not found or no album.read access'));
+      }
+    });
+
+    it('rejects folder cycles', async () => {
+      const outer = await createAlbumContainer(
+        { createAlbumContainerDto: { name: 'cycle-outer' } },
+        { headers: asBearerAuth(user1.accessToken) },
+      );
+      const inner = await createAlbumContainer(
+        { createAlbumContainerDto: { name: 'cycle-inner', parentId: outer.id } },
+        { headers: asBearerAuth(user1.accessToken) },
+      );
+
+      // Reparenting outer under its own descendant inner must be rejected with HTTP 400.
+      const { status, body } = await request(app)
+        .put(`/album-containers/${outer.id}`)
+        .set('Authorization', `Bearer ${user1.accessToken}`)
+        .send({ parentId: inner.id });
+      expect(status).toBe(400);
+      expect(body).toEqual(errorDto.badRequest('Cannot move a folder into its own descendant'));
+
+      // Sanity-check via the SDK: same call surfaces as a thrown error.
+      await expect(
+        updateAlbumContainer(
+          { id: outer.id, updateAlbumContainerDto: { parentId: inner.id } },
+          { headers: asBearerAuth(user1.accessToken) },
+        ),
+      ).rejects.toBeDefined();
+    });
+
+    it('enforces the folder depth limit', async () => {
+      // MAX_DEPTH = 16, enforced as `parentDepth + 1 > 16`, so the chain can
+      // legally reach depth 16 (17 nodes from root). The next creation fails.
+      let parentId: string | null = null;
+      const chain: string[] = [];
+      for (let i = 0; i <= 16; i++) {
+        const folder = await createAlbumContainer(
+          { createAlbumContainerDto: { name: `depth-${i}`, parentId } },
+          { headers: asBearerAuth(user1.accessToken) },
+        );
+        chain.push(folder.id);
+        parentId = folder.id;
+      }
+      expect(chain).toHaveLength(17);
+
+      // One past the limit: parentDepth=16, so parentDepth + 1 = 17 > 16 — rejected.
+      const { status, body } = await request(app)
+        .post('/album-containers')
+        .set('Authorization', `Bearer ${user1.accessToken}`)
+        .send({ name: 'depth-overflow', parentId });
+      expect(status).toBe(400);
+      expect(body).toEqual(errorDto.badRequest('Folder depth exceeds limit of 16'));
     });
   });
 });

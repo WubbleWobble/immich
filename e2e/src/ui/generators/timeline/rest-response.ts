@@ -419,6 +419,7 @@ export function getAlbum(
     albumName: album.albumName,
     description: album.description,
     albumThumbnailAssetId: album.thumbnailAssetId,
+    containerId: null,
     createdAt: album.createdAt,
     updatedAt: album.updatedAt,
     albumUsers: [{ user: albumOwner, role: AlbumUserRole.Owner }],
