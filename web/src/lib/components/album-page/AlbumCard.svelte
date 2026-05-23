@@ -3,9 +3,9 @@
   import { authManager } from '$lib/managers/auth-manager.svelte';
   import { getContextMenuPositionFromEvent, type ContextMenuPosition } from '$lib/utils/context-menu';
   import { getShortDateRange } from '$lib/utils/date-time';
-  import { type AlbumResponseDto } from '@immich/sdk';
-  import { IconButton } from '@immich/ui';
-  import { mdiDotsVertical } from '@mdi/js';
+  import { AlbumKind, type AlbumResponseDto } from '@immich/sdk';
+  import { Icon, IconButton } from '@immich/ui';
+  import { mdiAutoFix, mdiDotsVertical } from '@mdi/js';
   import { t } from 'svelte-i18n';
 
   interface Props {
@@ -65,6 +65,9 @@
       title={album.albumName}
     >
       {album.albumName}
+      {#if album.kind === AlbumKind.Smart}
+        <Icon icon={mdiAutoFix} size="16" class="ms-1 inline opacity-70" title={$t('smart_album')} />
+      {/if}
     </p>
 
     {#if showDateRange && album.startDate && album.endDate}

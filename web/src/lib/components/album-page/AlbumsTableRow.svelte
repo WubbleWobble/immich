@@ -5,9 +5,9 @@
   import { Route } from '$lib/route';
   import { locale } from '$lib/stores/preferences.store';
   import type { ContextMenuPosition } from '$lib/utils/context-menu';
-  import { AlbumUserRole, type AlbumResponseDto } from '@immich/sdk';
+  import { AlbumKind, AlbumUserRole, type AlbumResponseDto } from '@immich/sdk';
   import { Icon } from '@immich/ui';
-  import { mdiShareVariantOutline } from '@mdi/js';
+  import { mdiAutoFix, mdiShareVariantOutline } from '@mdi/js';
   import { t } from 'svelte-i18n';
 
   interface Props {
@@ -38,6 +38,9 @@
 >
   <td class="text-md w-8/12 items-center text-start text-ellipsis sm:w-4/12 md:w-4/12 xl:w-[30%] 2xl:w-[40%]">
     {album.albumName}
+    {#if album.kind === AlbumKind.Smart}
+      <Icon icon={mdiAutoFix} size="16" class="ms-1 inline opacity-70" title={$t('smart_album')} />
+    {/if}
     {#if album.shared}
       <Icon
         icon={mdiShareVariantOutline}
