@@ -69,6 +69,40 @@ describe(AlbumService.name, () => {
       expect(mocks.album.getAll).toHaveBeenCalledWith(owner.id, { isOwned: undefined, isShared: undefined });
     });
 
+    it('overlays smart album metadata from search results in the list view', async () => {
+      const smartAlbum = AlbumFactory.from()
+        .albumUser()
+        .kind(AlbumKind.Smart)
+        .filter({ isFavorite: true })
+        .build();
+      const { user: owner } = smartAlbum.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const firstAssetId = newUuid();
+      const secondAssetId = newUuid();
+      mocks.album.getAll.mockResolvedValue([getForAlbum(smartAlbum)]);
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        { albumId: smartAlbum.id, assetCount: 0, startDate: null, endDate: null, lastModifiedAssetTimestamp: null },
+      ]);
+      mocks.search.searchMetadata.mockResolvedValue({
+        items: [
+          { id: firstAssetId, fileCreatedAt: new Date('2024-12-25T00:00:00Z'), localDateTime: new Date('2024-12-25T00:00:00Z') },
+          { id: secondAssetId, fileCreatedAt: new Date('2024-10-01T00:00:00Z'), localDateTime: new Date('2024-10-01T00:00:00Z') },
+        ] as any,
+        hasNextPage: false,
+      });
+
+      const result = await sut.getAll(AuthFactory.create(owner), {});
+
+      expect(result).toHaveLength(1);
+      expect(result[0].assetCount).toBe(2);
+      expect(result[0].albumThumbnailAssetId).toBe(firstAssetId);
+      expect(result[0].startDate).toBeDefined();
+      expect(result[0].endDate).toBeDefined();
+      expect(mocks.search.searchMetadata).toHaveBeenCalledWith(
+        { page: 1, size: 1000 },
+        expect.objectContaining({ isFavorite: true, userIds: [owner.id] }),
+      );
+    });
+
     it('gets list of albums that have a specific asset', async () => {
       const album = AlbumFactory.from()
         .owner({ isAdmin: true })

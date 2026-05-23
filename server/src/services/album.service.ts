@@ -59,15 +59,47 @@ export class AlbumService extends BaseService {
       albumMetadata[metadata.albumId] = metadata;
     }
 
-    return albums.map((album) => ({
-      ...mapAlbum(album),
-      sharedLinks: undefined,
-      startDate: asDateString(albumMetadata[album.id]?.startDate ?? undefined),
-      endDate: asDateString(albumMetadata[album.id]?.endDate ?? undefined),
-      assetCount: albumMetadata[album.id]?.assetCount ?? 0,
-      // lastModifiedAssetTimestamp is only used in mobile app, please remove if not need
-      lastModifiedAssetTimestamp: asDateString(albumMetadata[album.id]?.lastModifiedAssetTimestamp ?? undefined),
-    }));
+    // Smart albums' metadata isn't computable from the album_asset join (which is empty).
+    // Derive their counts, date range, and thumbnail from a search against the owner's library.
+    // TODO: batch-optimize if list responses become large; for v1 this is one search per smart album.
+    const smartMetadata: Record<string, { assetCount: number; startDate: Date | null; endDate: Date | null; thumbnailAssetId: string | null }> = {};
+    for (const album of albums) {
+      if (album.kind !== AlbumKind.Smart || !album.filter) {
+        continue;
+      }
+      const albumOwnerId = album.albumUsers?.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
+      if (!albumOwnerId) {
+        continue;
+      }
+      const { items } = await this.searchRepository.searchMetadata(
+        { page: 1, size: 1000 },
+        { ...album.filter, userIds: [albumOwnerId] },
+      );
+      const dates = items
+        .map((item) => (item.localDateTime ?? item.fileCreatedAt) as Date | null)
+        .filter((d): d is Date => d instanceof Date || (typeof d === 'string' && !Number.isNaN(Date.parse(d as string))))
+        .map((d) => (d instanceof Date ? d : new Date(d)));
+      smartMetadata[album.id] = {
+        assetCount: items.length,
+        startDate: dates.length > 0 ? dates.reduce((min, d) => (d < min ? d : min), dates[0]) : null,
+        endDate: dates.length > 0 ? dates.reduce((max, d) => (d > max ? d : max), dates[0]) : null,
+        thumbnailAssetId: items[0]?.id ?? null,
+      };
+    }
+
+    return albums.map((album) => {
+      const smart = smartMetadata[album.id];
+      return {
+        ...mapAlbum(album),
+        sharedLinks: undefined,
+        albumThumbnailAssetId: smart?.thumbnailAssetId ?? album.albumThumbnailAssetId,
+        startDate: asDateString(smart?.startDate ?? albumMetadata[album.id]?.startDate ?? undefined),
+        endDate: asDateString(smart?.endDate ?? albumMetadata[album.id]?.endDate ?? undefined),
+        assetCount: smart?.assetCount ?? albumMetadata[album.id]?.assetCount ?? 0,
+        // lastModifiedAssetTimestamp is only used in mobile app, please remove if not need
+        lastModifiedAssetTimestamp: asDateString(albumMetadata[album.id]?.lastModifiedAssetTimestamp ?? undefined),
+      };
+    });
   }
 
   async get(auth: AuthDto, id: string): Promise<AlbumResponseDto> {
