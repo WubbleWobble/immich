@@ -1,0 +1,176 @@
+import { Kysely } from 'kysely';
+import { AlbumContainerRepository } from 'src/repositories/album-container.repository';
+import { LoggingRepository } from 'src/repositories/logging.repository';
+import { DB } from 'src/schema';
+import { BaseService } from 'src/services/base.service';
+import { newMediumService } from 'test/medium.factory';
+import { getKyselyDB } from 'test/utils';
+
+let defaultDatabase: Kysely<DB>;
+
+const setup = (db?: Kysely<DB>) => {
+  const { ctx } = newMediumService(BaseService, {
+    database: db || defaultDatabase,
+    real: [],
+    mock: [LoggingRepository],
+  });
+  return { ctx, sut: ctx.get(AlbumContainerRepository) };
+};
+
+const getClosureRows = (db: Kysely<DB>, containerIds: string[]) =>
+  db
+    .selectFrom('album_container_closure')
+    .selectAll()
+    .where('id_ancestor', 'in', containerIds)
+    .where('id_descendant', 'in', containerIds)
+    .orderBy('id_ancestor')
+    .orderBy('id_descendant')
+    .orderBy('depth')
+    .execute();
+
+beforeAll(async () => {
+  defaultDatabase = await getKyselyDB();
+});
+
+describe(AlbumContainerRepository.name, () => {
+  describe('create', () => {
+    it('creates a single self-closure row when inserting at root', async () => {
+      const { ctx, sut } = setup();
+      const { user } = await ctx.newUser();
+
+      const root = await sut.create({ ownerId: user.id, name: 'Root', parentId: null });
+
+      const rows = await getClosureRows(ctx.database, [root.id]);
+      expect(rows).toEqual([{ id_ancestor: root.id, id_descendant: root.id, depth: 0 }]);
+    });
+
+    it('creates self-row plus inherited ancestor rows when inserting under a parent', async () => {
+      const { ctx, sut } = setup();
+      const { user } = await ctx.newUser();
+
+      const a = await sut.create({ ownerId: user.id, name: 'A', parentId: null });
+      const b = await sut.create({ ownerId: user.id, name: 'B', parentId: a.id });
+
+      const rows = await getClosureRows(ctx.database, [a.id, b.id]);
+      expect(rows).toEqual(
+        expect.arrayContaining([
+          { id_ancestor: a.id, id_descendant: a.id, depth: 0 },
+          { id_ancestor: a.id, id_descendant: b.id, depth: 1 },
+          { id_ancestor: b.id, id_descendant: b.id, depth: 0 },
+        ]),
+      );
+      expect(rows).toHaveLength(3);
+    });
+
+    it('records the correct depth for a deep tree (A->B->C)', async () => {
+      const { ctx, sut } = setup();
+      const { user } = await ctx.newUser();
+
+      const a = await sut.create({ ownerId: user.id, name: 'A', parentId: null });
+      const b = await sut.create({ ownerId: user.id, name: 'B', parentId: a.id });
+      const c = await sut.create({ ownerId: user.id, name: 'C', parentId: b.id });
+
+      const rows = await getClosureRows(ctx.database, [a.id, b.id, c.id]);
+      expect(rows).toEqual(
+        expect.arrayContaining([
+          { id_ancestor: a.id, id_descendant: a.id, depth: 0 },
+          { id_ancestor: a.id, id_descendant: b.id, depth: 1 },
+          { id_ancestor: a.id, id_descendant: c.id, depth: 2 },
+          { id_ancestor: b.id, id_descendant: b.id, depth: 0 },
+          { id_ancestor: b.id, id_descendant: c.id, depth: 1 },
+          { id_ancestor: c.id, id_descendant: c.id, depth: 0 },
+        ]),
+      );
+      expect(rows).toHaveLength(6);
+    });
+  });
+
+  describe('move', () => {
+    it('moves a subtree (B->C) from under A to under D and updates closure', async () => {
+      const { ctx, sut } = setup();
+      const { user } = await ctx.newUser();
+
+      const a = await sut.create({ ownerId: user.id, name: 'A', parentId: null });
+      const b = await sut.create({ ownerId: user.id, name: 'B', parentId: a.id });
+      const c = await sut.create({ ownerId: user.id, name: 'C', parentId: b.id });
+      const d = await sut.create({ ownerId: user.id, name: 'D', parentId: null });
+
+      await sut.move(b.id, d.id);
+
+      const rows = await getClosureRows(ctx.database, [a.id, b.id, c.id, d.id]);
+
+      // Old links from A into the moved subtree must be gone.
+      expect(rows).not.toContainEqual({ id_ancestor: a.id, id_descendant: b.id, depth: expect.anything() });
+      expect(rows).not.toContainEqual({ id_ancestor: a.id, id_descendant: c.id, depth: expect.anything() });
+
+      // New links from D into the moved subtree must be present.
+      expect(rows).toContainEqual({ id_ancestor: d.id, id_descendant: b.id, depth: 1 });
+      expect(rows).toContainEqual({ id_ancestor: d.id, id_descendant: c.id, depth: 2 });
+
+      // Internal subtree closure (B->C) is preserved.
+      expect(rows).toContainEqual({ id_ancestor: b.id, id_descendant: c.id, depth: 1 });
+
+      // Self rows are still present for every node.
+      expect(rows).toContainEqual({ id_ancestor: a.id, id_descendant: a.id, depth: 0 });
+      expect(rows).toContainEqual({ id_ancestor: b.id, id_descendant: b.id, depth: 0 });
+      expect(rows).toContainEqual({ id_ancestor: c.id, id_descendant: c.id, depth: 0 });
+      expect(rows).toContainEqual({ id_ancestor: d.id, id_descendant: d.id, depth: 0 });
+    });
+  });
+
+  describe('delete', () => {
+    it('cascades to closure rows when an ancestor is deleted', async () => {
+      const { ctx, sut } = setup();
+      const { user } = await ctx.newUser();
+
+      const a = await sut.create({ ownerId: user.id, name: 'A', parentId: null });
+      const b = await sut.create({ ownerId: user.id, name: 'B', parentId: a.id });
+
+      await sut.delete(a.id);
+
+      const rows = await ctx.database
+        .selectFrom('album_container_closure')
+        .selectAll()
+        .where((eb) => eb.or([eb('id_ancestor', 'in', [a.id, b.id]), eb('id_descendant', 'in', [a.id, b.id])]))
+        .execute();
+      expect(rows).toEqual([]);
+
+      const stillThere = await ctx.database
+        .selectFrom('album_container')
+        .selectAll()
+        .where('id', 'in', [a.id, b.id])
+        .execute();
+      expect(stillThere).toEqual([]);
+    });
+  });
+
+  describe('isDescendantOf', () => {
+    it('returns true when an ancestor-descendant pair exists with depth > 0', async () => {
+      const { ctx, sut } = setup();
+      const { user } = await ctx.newUser();
+
+      const a = await sut.create({ ownerId: user.id, name: 'A', parentId: null });
+      const b = await sut.create({ ownerId: user.id, name: 'B', parentId: a.id });
+
+      await expect(sut.isDescendantOf(b.id, a.id)).resolves.toBe(true);
+      await expect(sut.isDescendantOf(a.id, b.id)).resolves.toBe(false);
+      // self should not count as descendant
+      await expect(sut.isDescendantOf(a.id, a.id)).resolves.toBe(false);
+    });
+  });
+
+  describe('getDepth', () => {
+    it('returns the maximum depth from any ancestor to the container', async () => {
+      const { ctx, sut } = setup();
+      const { user } = await ctx.newUser();
+
+      const a = await sut.create({ ownerId: user.id, name: 'A', parentId: null });
+      const b = await sut.create({ ownerId: user.id, name: 'B', parentId: a.id });
+      const c = await sut.create({ ownerId: user.id, name: 'C', parentId: b.id });
+
+      await expect(sut.getDepth(a.id)).resolves.toBe(0);
+      await expect(sut.getDepth(b.id)).resolves.toBe(1);
+      await expect(sut.getDepth(c.id)).resolves.toBe(2);
+    });
+  });
+});

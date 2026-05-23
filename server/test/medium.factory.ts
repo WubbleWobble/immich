@@ -19,6 +19,7 @@ import {
 } from 'src/enum';
 import { AccessRepository } from 'src/repositories/access.repository';
 import { ActivityRepository } from 'src/repositories/activity.repository';
+import { AlbumContainerRepository } from 'src/repositories/album-container.repository';
 import { AlbumUserRepository } from 'src/repositories/album-user.repository';
 import { AlbumRepository } from 'src/repositories/album.repository';
 import { AssetEditRepository } from 'src/repositories/asset-edit.repository';
@@ -409,6 +410,7 @@ export class ExifTestContext extends MediumTestContext<MetadataService> {
 const newRealRepository = <T>(key: ClassConstructor<T>, db: Kysely<DB>): T => {
   switch (key) {
     case AccessRepository:
+    case AlbumContainerRepository:
     case AlbumRepository:
     case AlbumUserRepository:
     case ActivityRepository:
