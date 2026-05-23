@@ -31,6 +31,7 @@ export class AlbumFactory {
       description: 'Album description',
       isActivityEnabled: false,
       order: AssetOrder.Desc,
+      containerId: null,
       updatedAt: newDate(),
       updateId: newUuidV7(),
       ...dto,

@@ -11,6 +11,7 @@ import {
 } from '@immich/sql-tools';
 import { UpdatedAtTrigger, UpdateIdColumn } from 'src/decorators';
 import { AssetOrder } from 'src/enum';
+import { AlbumContainerTable } from 'src/schema/tables/album-container.table';
 import { AssetTable } from 'src/schema/tables/asset.table';
 
 @Table({ name: 'album' })
@@ -47,6 +48,9 @@ export class AlbumTable {
 
   @Column({ default: AssetOrder.Desc })
   order!: Generated<AssetOrder>;
+
+  @ForeignKeyColumn(() => AlbumContainerTable, { nullable: true, onUpdate: 'CASCADE', onDelete: 'SET NULL' })
+  containerId!: string | null;
 
   @UpdateIdColumn({ index: true })
   updateId!: Generated<string>;
