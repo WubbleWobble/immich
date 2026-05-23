@@ -80,7 +80,6 @@
     mdiImageOutline,
     mdiImagePlusOutline,
     mdiLink,
-    mdiPencilOutline,
     mdiPlus,
     mdiPresentationPlay,
   } from '@mdi/js';
@@ -253,7 +252,6 @@
 
   const isOwned = $derived(album.albumUsers[0].user.id === authManager.user.id);
   const isSmart = $derived(album.kind === AlbumKind.Smart);
-  let showSmartFilter = $state(false);
 
   const handleEditFilter = async () => {
     const updated = await modalManager.show(EditSmartAlbumFilterModal, { album });
@@ -435,45 +433,6 @@
                 bind:description={() => album.description, (description) => (album = { ...album, description })}
               />
 
-              {#if isSmart}
-                <!-- SMART ALBUM FILTER PANEL -->
-                <div
-                  class="my-4 rounded-2xl border border-gray-200 bg-subtle p-4 text-sm dark:border-immich-dark-gray dark:bg-immich-dark-gray/30"
-                >
-                  <div class="flex items-center justify-between gap-2">
-                    <div class="flex items-center gap-2 text-immich-fg dark:text-immich-dark-fg">
-                      <Icon icon={mdiAutoFix} size="18" />
-                      <span class="font-medium">{$t('smart_album_filter')}</span>
-                    </div>
-                    {#if isOwned}
-                      <IconButton
-                        shape="round"
-                        size="small"
-                        color="secondary"
-                        variant="ghost"
-                        aria-label={$t('smart_album_edit_filter')}
-                        icon={mdiPencilOutline}
-                        onclick={handleEditFilter}
-                      />
-                    {/if}
-                  </div>
-                  <button
-                    type="button"
-                    class="mt-2 text-xs text-immich-fg/80 underline hover:text-immich-primary dark:text-immich-dark-fg/80 dark:hover:text-immich-dark-primary"
-                    onclick={() => (showSmartFilter = !showSmartFilter)}
-                  >
-                    {$t('smart_album_filter_show')}
-                  </button>
-                  {#if showSmartFilter}
-                    <pre
-                      class="mt-2 max-h-60 overflow-auto rounded-lg bg-white/60 p-3 text-xs text-immich-fg dark:bg-black/30 dark:text-immich-dark-fg">{JSON.stringify(
-                        album.filter ?? {},
-                        null,
-                        2,
-                      )}</pre>
-                  {/if}
-                </div>
-              {/if}
             </section>
           {/if}
 
@@ -630,6 +589,14 @@
                     icon={mdiCogOutline}
                     text={$t('options')}
                     onClick={() => modalManager.show(AlbumOptionsModal, { album })}
+                  />
+                {/if}
+
+                {#if isOwned && isSmart}
+                  <MenuOption
+                    icon={mdiAutoFix}
+                    text={$t('smart_album_edit_filter')}
+                    onClick={handleEditFilter}
                   />
                 {/if}
 
