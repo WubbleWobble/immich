@@ -547,6 +547,70 @@ export class AlbumRepository {
   }
 
   /**
+   * Splice deleted entity ids out of `filter.<field>` for every smart album that
+   * references any of them. If the array becomes empty the key is removed entirely
+   * (an empty `personIds`/`tagIds` array would still short-circuit the search, but
+   * leaving stale empty keys around is noise). Bumps `cacheInvalidatedAt` on every
+   * affected row so the next read recomputes from the clean filter. Returns the
+   * affected album ids.
+   *
+   * `field` must be one of the JSONB array fields on `SmartAlbumFilter` that store
+   * UUID references (currently `personIds` or `tagIds`).
+   */
+  private async pruneIdsFromSmartAlbumFilters(field: 'personIds' | 'tagIds', deletedIds: string[]): Promise<string[]> {
+    if (deletedIds.length === 0) {
+      return [];
+    }
+    // Cast the deletedIds array into PostgreSQL once; reuse it for the overlap predicate,
+    // the splice subquery, and the empty-vs-non-empty branch.
+    const deletedArr = sql<string[]>`${deletedIds}::text[]`;
+    const sliced = sql<unknown>`
+      (
+        SELECT jsonb_agg(elem)
+        FROM jsonb_array_elements_text(album.filter -> ${field}) AS elem
+        WHERE NOT (elem = ANY(${deletedArr}))
+      )
+    `;
+    const result = await this.db
+      .updateTable('album')
+      .set({
+        filter: sql<any>`
+          CASE
+            WHEN ${sliced} IS NULL OR jsonb_array_length(${sliced}) = 0
+              THEN album.filter - ${field}
+            ELSE jsonb_set(album.filter, ARRAY[${field}], ${sliced})
+          END
+        `,
+        cacheInvalidatedAt: new Date(),
+      })
+      .where('album.kind', '=', sql.lit(AlbumKind.Smart))
+      .where('album.deletedAt', 'is', null)
+      .where(sql<boolean>`album.filter ? ${field}`)
+      .where(sql<boolean>`album.filter -> ${field} ?| ${deletedArr}`)
+      .returning('album.id')
+      .execute();
+    return result.map((r) => r.id);
+  }
+
+  /**
+   * Remove deleted person ids from `filter.personIds` on every referencing smart album.
+   * Returns the list of affected album ids.
+   */
+  @GenerateSql({ params: [[DummyValue.UUID]] })
+  async prunePersonIdsFromSmartAlbums(deletedPersonIds: string[]): Promise<string[]> {
+    return this.pruneIdsFromSmartAlbumFilters('personIds', deletedPersonIds);
+  }
+
+  /**
+   * Remove deleted tag ids from `filter.tagIds` on every referencing smart album.
+   * Returns the list of affected album ids.
+   */
+  @GenerateSql({ params: [[DummyValue.UUID]] })
+  async pruneTagIdsFromSmartAlbums(deletedTagIds: string[]): Promise<string[]> {
+    return this.pruneIdsFromSmartAlbumFilters('tagIds', deletedTagIds);
+  }
+
+  /**
    * Store freshly computed smart-album list-view metadata on the album row.
    */
   async updateCachedMetadata(

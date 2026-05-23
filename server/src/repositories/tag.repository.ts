@@ -162,7 +162,7 @@ export class TagRepository {
     });
   }
 
-  async deleteEmptyTags() {
+  async deleteEmptyTags(): Promise<string[]> {
     const result = await this.db
       .deleteFrom('tag')
       .where(({ not, exists, selectFrom }) =>
@@ -174,11 +174,12 @@ export class TagRepository {
           ),
         ),
       )
-      .executeTakeFirst();
+      .returning('id')
+      .execute();
 
-    const deletedRows = Number(result.numDeletedRows);
-    if (deletedRows > 0) {
-      this.logger.log(`Deleted ${deletedRows} empty tags`);
+    if (result.length > 0) {
+      this.logger.log(`Deleted ${result.length} empty tags`);
     }
+    return result.map((r) => r.id);
   }
 }
