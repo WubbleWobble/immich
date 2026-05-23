@@ -2,6 +2,7 @@
   import { scrollMemory } from '$lib/actions/scroll-memory';
   import AlbumsControls from './AlbumsControls.svelte';
   import Albums from '$lib/components/album-page/AlbumsList.svelte';
+  import FolderBreadcrumb from '$lib/components/album-page/FolderBreadcrumb.svelte';
   import FolderCard from '$lib/components/album-page/FolderCard.svelte';
   import UserPageLayout from '$lib/components/layouts/UserPageLayout.svelte';
   import EmptyPlaceholder from '$lib/components/shared-components/EmptyPlaceholder.svelte';
@@ -12,6 +13,7 @@
   import { createAlbumAndRedirect } from '$lib/utils/album-utils';
   import { normalizeSearchString } from '$lib/utils/string-utils';
   import { type AlbumContainerResponseDto } from '@immich/sdk';
+  import { goto } from '$app/navigation';
   import { t } from 'svelte-i18n';
   import type { PageData } from './$types';
 
@@ -55,6 +57,10 @@
     const subAlbums = (data.albums ?? []).filter((a) => a.containerId === folder.id).length;
     return subFolders + subAlbums;
   };
+
+  const navigateToFolder = async (id: string | null) => {
+    await goto(id ? Route.albums({ folder: id }) : Route.albums(), { invalidateAll: true });
+  };
 </script>
 
 <UserPageLayout title={data.meta.title} use={[[scrollMemory, { routeStartsWith: Route.albums() }]]}>
@@ -77,6 +83,10 @@
       <SearchBar placeholder={$t('search_albums')} bind:name={searchQuery} showLoadingSpinner={false} />
     </div>
   </div>
+
+  {#if (data.folderPath?.length ?? 0) > 0}
+    <FolderBreadcrumb path={data.folderPath ?? []} onNavigate={navigateToFolder} />
+  {/if}
 
   {#if filteredFolders.length > 0}
     <h2 class="mt-2 text-lg font-semibold dark:text-immich-dark-fg">
