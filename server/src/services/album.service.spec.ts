@@ -1027,6 +1027,35 @@ describe(AlbumService.name, () => {
       const result = await sut.get(auth, album.id);
       expect(result.albumThumbnailAssetId).toEqual(recent.id);
     });
+
+    it('recomputes smart album cache on get() even when cache is fresh by timestamp', async () => {
+      // Regression: AlbumService.get used to gate recompute on isSmartAlbumCacheStale.
+      // We removed that gate so that single-album views self-heal any stale state we missed
+      // via an unhooked write path. This test ensures the gate doesn't come back.
+      const computedAt = new Date('2030-01-01T00:00:00Z');
+      const invalidatedAt = new Date('2025-01-01T00:00:00Z'); // older than computed: "fresh" per the removed staleness check
+      const album = AlbumFactory.from().kind(AlbumKind.Smart).filter({ isFavorite: true }).build();
+      album.cachedAssetCount = 7;
+      album.cacheComputedAt = computedAt;
+      album.cacheInvalidatedAt = invalidatedAt;
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const auth = AuthFactory.create(owner);
+
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        { albumId: album.id, assetCount: 0, startDate: null, endDate: null, lastModifiedAssetTimestamp: null },
+      ]);
+      mocks.search.searchMetadata.mockResolvedValue({ items: [], hasNextPage: false } as any);
+
+      await sut.get(auth, album.id);
+
+      // Even though the cache looks fresh (computed > invalidated), we still run a fresh search.
+      expect(mocks.search.searchMetadata).toHaveBeenCalledWith(
+        { page: 1, size: 1000 },
+        expect.objectContaining({ isFavorite: true, userIds: [owner.id] }),
+      );
+    });
   });
 
   describe('addAssets', () => {
