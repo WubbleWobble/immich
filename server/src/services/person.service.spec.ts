@@ -630,6 +630,26 @@ describe(PersonService.name, () => {
       expect(mocks.storage.unlink).toHaveBeenCalledWith(person.thumbnailPath);
       expect(mocks.person.vacuum).toHaveBeenCalledWith({ reindexVectors: true });
     });
+
+    it('should invalidate smart album caches that filter on personIds when forced', async () => {
+      const asset = AssetFactory.create();
+      mocks.assetJob.streamForDetectFacesJob.mockReturnValue(makeStream([asset]));
+      mocks.person.getAllWithoutFaces.mockResolvedValue([]);
+
+      await sut.handleQueueDetectFaces({ force: true });
+
+      expect(mocks.album.markAllSmartAlbumsWithPersonFilterInvalidated).toHaveBeenCalledTimes(1);
+      expect(mocks.album.markAllSmartAlbumsWithPersonFilterInvalidated).toHaveBeenCalledWith(expect.any(Date));
+    });
+
+    it('should NOT invalidate smart album caches when not forced', async () => {
+      const asset = AssetFactory.create();
+      mocks.assetJob.streamForDetectFacesJob.mockReturnValue(makeStream([asset]));
+
+      await sut.handleQueueDetectFaces({ force: false });
+
+      expect(mocks.album.markAllSmartAlbumsWithPersonFilterInvalidated).not.toHaveBeenCalled();
+    });
   });
 
   describe('handleQueueRecognizeFaces', () => {
@@ -810,6 +830,44 @@ describe(PersonService.name, () => {
       expect(mocks.person.delete).toHaveBeenCalledWith([person.id]);
       expect(mocks.storage.unlink).toHaveBeenCalledWith(person.thumbnailPath);
       expect(mocks.person.vacuum).toHaveBeenCalledWith({ reindexVectors: false });
+    });
+
+    it('should invalidate smart album caches that filter on personIds when forced', async () => {
+      const face = AssetFaceFactory.create();
+      mocks.job.getJobCounts.mockResolvedValue({
+        active: 1,
+        waiting: 0,
+        paused: 0,
+        completed: 0,
+        failed: 0,
+        delayed: 0,
+      });
+      mocks.person.getAll.mockReturnValue(makeStream());
+      mocks.person.getAllFaces.mockReturnValue(makeStream([face]));
+      mocks.person.getAllWithoutFaces.mockResolvedValue([]);
+
+      await sut.handleQueueRecognizeFaces({ force: true });
+
+      expect(mocks.album.markAllSmartAlbumsWithPersonFilterInvalidated).toHaveBeenCalledTimes(1);
+      expect(mocks.album.markAllSmartAlbumsWithPersonFilterInvalidated).toHaveBeenCalledWith(expect.any(Date));
+    });
+
+    it('should NOT invalidate smart album caches when not forced', async () => {
+      const face = AssetFaceFactory.create();
+      mocks.job.getJobCounts.mockResolvedValue({
+        active: 1,
+        waiting: 0,
+        paused: 0,
+        completed: 0,
+        failed: 0,
+        delayed: 0,
+      });
+      mocks.person.getAllFaces.mockReturnValue(makeStream([face]));
+      mocks.person.getAllWithoutFaces.mockResolvedValue([]);
+
+      await sut.handleQueueRecognizeFaces({ force: false });
+
+      expect(mocks.album.markAllSmartAlbumsWithPersonFilterInvalidated).not.toHaveBeenCalled();
     });
   });
 

@@ -289,6 +289,7 @@ export class PersonService extends BaseService {
       await this.personRepository.deleteFaces({ sourceType: SourceType.MachineLearning });
       await this.handlePersonCleanup();
       await this.personRepository.vacuum({ reindexVectors: true });
+      await BaseService.create(AlbumService, this).invalidateAllSmartAlbumsByPersonFilterSafe();
     }
 
     let jobs: JobItem[] = [];
@@ -439,6 +440,7 @@ export class PersonService extends BaseService {
       await this.personRepository.unassignFaces({ sourceType: SourceType.MachineLearning });
       await this.handlePersonCleanup();
       await this.personRepository.vacuum({ reindexVectors: false });
+      await BaseService.create(AlbumService, this).invalidateAllSmartAlbumsByPersonFilterSafe();
     } else if (waiting) {
       this.logger.debug(
         `Skipping facial recognition queueing because ${waiting} job${waiting > 1 ? 's are' : ' is'} already queued`,

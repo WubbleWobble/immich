@@ -530,6 +530,23 @@ export class AlbumRepository {
   }
 
   /**
+   * Bump `cacheInvalidatedAt` on every active smart album whose stored `filter` JSONB
+   * contains a `personIds` key, regardless of owner. Used by system-wide face-reset
+   * jobs (force-detect / force-recognize) where every user's person-filtered smart
+   * album can be affected and the specific person ids are not known.
+   */
+  @GenerateSql({ params: [DummyValue.DATE] })
+  async markAllSmartAlbumsWithPersonFilterInvalidated(invalidatedAt: Date): Promise<void> {
+    await this.db
+      .updateTable('album')
+      .set({ cacheInvalidatedAt: invalidatedAt })
+      .where('album.kind', '=', sql.lit(AlbumKind.Smart))
+      .where('album.deletedAt', 'is', null)
+      .where(sql<boolean>`album.filter ? 'personIds'`)
+      .execute();
+  }
+
+  /**
    * Store freshly computed smart-album list-view metadata on the album row.
    */
   async updateCachedMetadata(

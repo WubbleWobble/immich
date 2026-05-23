@@ -621,4 +621,28 @@ export class AlbumService extends BaseService {
       );
     }
   }
+
+  /**
+   * Invalidate the cache for every active smart album that pins on `personIds`, across
+   * ALL owners. Used by system-wide face-reset jobs (force-detect / force-recognize)
+   * which wipe person-asset assignments globally, so any user's person-filtered smart
+   * album may have shifted membership.
+   */
+  async invalidateAllSmartAlbumsByPersonFilter(): Promise<void> {
+    await this.albumRepository.markAllSmartAlbumsWithPersonFilterInvalidated(new Date());
+  }
+
+  /**
+   * Safe wrapper around `invalidateAllSmartAlbumsByPersonFilter`: failures are logged
+   * but not propagated, so a cache-invalidation failure cannot abort the underlying job.
+   */
+  async invalidateAllSmartAlbumsByPersonFilterSafe(): Promise<void> {
+    try {
+      await this.invalidateAllSmartAlbumsByPersonFilter();
+    } catch (error: unknown) {
+      this.logger.error(
+        `Failed to invalidate smart albums for system-wide face wipe: ${(error as Error)?.message ?? error}`,
+      );
+    }
+  }
 }

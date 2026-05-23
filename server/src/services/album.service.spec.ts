@@ -1794,4 +1794,19 @@ describe(AlbumService.name, () => {
       expect(mocks.album.markCacheInvalidated).not.toHaveBeenCalled();
     });
   });
+
+  describe('invalidateAllSmartAlbumsByPersonFilter', () => {
+    it('delegates to the repository to bump cache for all person-filtered smart albums', async () => {
+      await sut.invalidateAllSmartAlbumsByPersonFilter();
+
+      expect(mocks.album.markAllSmartAlbumsWithPersonFilterInvalidated).toHaveBeenCalledTimes(1);
+      expect(mocks.album.markAllSmartAlbumsWithPersonFilterInvalidated).toHaveBeenCalledWith(expect.any(Date));
+    });
+
+    it('safe variant swallows repository errors and logs', async () => {
+      mocks.album.markAllSmartAlbumsWithPersonFilterInvalidated.mockRejectedValueOnce(new Error('boom'));
+
+      await expect(sut.invalidateAllSmartAlbumsByPersonFilterSafe()).resolves.toBeUndefined();
+    });
+  });
 });
