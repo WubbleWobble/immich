@@ -649,4 +649,67 @@ export class AlbumService extends BaseService {
       );
     }
   }
+
+  /**
+   * Splice the given deleted person ids out of `filter.personIds` on every smart album
+   * that references any of them, and bump `cacheInvalidatedAt` so the album is recomputed
+   * from the now-clean filter. With AND semantics across personIds, a dangling reference
+   * makes the album match nothing; pruning self-heals filters on person delete.
+   */
+  async prunePersonIdsFromSmartAlbums(deletedPersonIds: string[]): Promise<void> {
+    if (deletedPersonIds.length === 0) {
+      return;
+    }
+    const affected = await this.albumRepository.prunePersonIdsFromSmartAlbums(deletedPersonIds);
+    if (affected.length > 0) {
+      this.logger.debug(
+        `Pruned ${deletedPersonIds.length} deleted person id(s) from ${affected.length} smart album filter(s)`,
+      );
+    }
+  }
+
+  /**
+   * Safe wrapper around `prunePersonIdsFromSmartAlbums`: failures are logged but not
+   * propagated, so a smart-album filter cleanup failure cannot abort the person delete.
+   */
+  async prunePersonIdsFromSmartAlbumsSafe(deletedPersonIds: string[]): Promise<void> {
+    try {
+      await this.prunePersonIdsFromSmartAlbums(deletedPersonIds);
+    } catch (error: unknown) {
+      this.logger.error(
+        `Failed to prune deleted person ids from smart album filters: ${(error as Error)?.message ?? error}`,
+      );
+    }
+  }
+
+  /**
+   * Splice the given deleted tag ids out of `filter.tagIds` on every smart album that
+   * references any of them, and bump `cacheInvalidatedAt` so the album is recomputed
+   * from the now-clean filter.
+   */
+  async pruneTagIdsFromSmartAlbums(deletedTagIds: string[]): Promise<void> {
+    if (deletedTagIds.length === 0) {
+      return;
+    }
+    const affected = await this.albumRepository.pruneTagIdsFromSmartAlbums(deletedTagIds);
+    if (affected.length > 0) {
+      this.logger.debug(
+        `Pruned ${deletedTagIds.length} deleted tag id(s) from ${affected.length} smart album filter(s)`,
+      );
+    }
+  }
+
+  /**
+   * Safe wrapper around `pruneTagIdsFromSmartAlbums`: failures are logged but not
+   * propagated, so a smart-album filter cleanup failure cannot abort the tag delete.
+   */
+  async pruneTagIdsFromSmartAlbumsSafe(deletedTagIds: string[]): Promise<void> {
+    try {
+      await this.pruneTagIdsFromSmartAlbums(deletedTagIds);
+    } catch (error: unknown) {
+      this.logger.error(
+        `Failed to prune deleted tag ids from smart album filters: ${(error as Error)?.message ?? error}`,
+      );
+    }
+  }
 }
