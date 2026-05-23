@@ -299,6 +299,46 @@ describe(TimelineService.name, () => {
       );
     });
 
+    it('getTimeBucket should accept a full ISO timeBucket string and derive valid dates', async () => {
+      const smartAlbum = AlbumFactory.from({ id: 'smart-album-id' })
+        .kind(AlbumKind.Smart)
+        .filter({ isFavorite: true })
+        .build();
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['smart-album-id']));
+      mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
+      const json = `{"id":[]}`;
+      mocks.asset.getTimeBucket.mockResolvedValue({ assets: json });
+      mocks.search.searchMetadata.mockResolvedValue({ items: [{ id: 'a' }] as any, hasNextPage: false });
+
+      await sut.getTimeBucket(authStub.admin, {
+        albumId: 'smart-album-id',
+        timeBucket: '2024-10-01T00:00:00.000Z',
+      });
+
+      const call = mocks.search.searchMetadata.mock.calls.at(-1)!;
+      const options = call[1] as { takenAfter: Date; takenBefore: Date };
+      expect(Number.isNaN(options.takenAfter.getTime())).toBe(false);
+      expect(Number.isNaN(options.takenBefore.getTime())).toBe(false);
+      expect(options.takenAfter.toISOString()).toBe('2024-10-01T00:00:00.000Z');
+      expect(options.takenBefore.toISOString()).toBe('2024-11-01T00:00:00.000Z');
+    });
+
+    it('getTimeBucket should reject an unparseable timeBucket value', async () => {
+      const smartAlbum = AlbumFactory.from({ id: 'smart-album-id' })
+        .kind(AlbumKind.Smart)
+        .filter({ isFavorite: true })
+        .build();
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['smart-album-id']));
+      mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
+
+      await expect(
+        sut.getTimeBucket(authStub.admin, {
+          albumId: 'smart-album-id',
+          timeBucket: 'not-a-date',
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
     it('getTimeBucket should return an empty payload when a smart-album bucket has no matching assets', async () => {
       const smartAlbum = AlbumFactory.from({ id: 'smart-album-id' })
         .kind(AlbumKind.Smart)

@@ -145,12 +145,16 @@ export class TimelineService extends BaseService {
   }
 }
 
-// Time buckets are month-truncated (YYYY-MM-01). Parse into a half-open [start, nextMonth) range
-// for the search query's takenAfter/takenBefore constraints.
+// Time buckets are month-truncated. The client may send either the bare date form
+// `YYYY-MM-01` or the full ISO form `YYYY-MM-01T00:00:00.000Z`. Parse into a
+// half-open [start, nextMonth) range for the search query.
 function parseBucketDateRange(timeBucket: string): { takenAfter: Date; takenBefore: Date } {
   // Strip any +/- prefix used elsewhere in the asset repo.
   const normalized = timeBucket.replace(/^[+-]/, '');
-  const start = new Date(`${normalized}T00:00:00.000Z`);
+  const start = new Date(normalized);
+  if (Number.isNaN(start.getTime())) {
+    throw new BadRequestException(`Invalid timeBucket value: ${timeBucket}`);
+  }
   const end = new Date(start);
   end.setUTCMonth(end.getUTCMonth() + 1);
   return { takenAfter: start, takenBefore: end };
