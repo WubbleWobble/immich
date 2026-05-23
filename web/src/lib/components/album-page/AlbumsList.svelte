@@ -7,6 +7,8 @@
   import { authManager } from '$lib/managers/auth-manager.svelte';
   import AlbumEditModal from '$lib/modals/AlbumEditModal.svelte';
   import AlbumOptionsModal from '$lib/modals/AlbumOptionsModal.svelte';
+  import MoveToFolderModal from '$lib/modals/MoveToFolderModal.svelte';
+  import { invalidateAll } from '$app/navigation';
   import { handleDeleteAlbum, handleDownloadAlbum } from '$lib/services/album.service';
   import {
     AlbumFilter,
@@ -22,7 +24,13 @@
   import { normalizeSearchString } from '$lib/utils/string-utils';
   import { AlbumUserRole, type AlbumResponseDto, type SharedLinkResponseDto } from '@immich/sdk';
   import { modalManager } from '@immich/ui';
-  import { mdiDeleteOutline, mdiDownload, mdiRenameOutline, mdiShareVariantOutline } from '@mdi/js';
+  import {
+    mdiDeleteOutline,
+    mdiDownload,
+    mdiFolderMoveOutline,
+    mdiRenameOutline,
+    mdiShareVariantOutline,
+  } from '@mdi/js';
   import { groupBy } from 'lodash-es';
   import { onMount, type Snippet } from 'svelte';
   import { t } from 'svelte-i18n';
@@ -195,7 +203,7 @@
     isOpen = false;
   };
 
-  const handleSelect = async (action: 'edit' | 'share' | 'download' | 'delete') => {
+  const handleSelect = async (action: 'edit' | 'share' | 'download' | 'delete' | 'move') => {
     closeAlbumContextMenu();
 
     if (!selectedAlbum) {
@@ -210,6 +218,18 @@
 
       case 'share': {
         await modalManager.show(AlbumOptionsModal, { album: selectedAlbum });
+        break;
+      }
+
+      case 'move': {
+        const moved = await modalManager.show(MoveToFolderModal, {
+          kind: 'album',
+          sourceId: selectedAlbum.id,
+          currentParentId: selectedAlbum.containerId ?? null,
+        });
+        if (moved) {
+          await invalidateAll();
+        }
         break;
       }
 
@@ -295,6 +315,7 @@
   {#if showFullContextMenu}
     <MenuOption icon={mdiRenameOutline} text={$t('edit_album')} onClick={() => handleSelect('edit')} />
     <MenuOption icon={mdiShareVariantOutline} text={$t('share')} onClick={() => handleSelect('share')} />
+    <MenuOption icon={mdiFolderMoveOutline} text={$t('move_to_folder')} onClick={() => handleSelect('move')} />
   {/if}
   <MenuOption icon={mdiDownload} text={$t('download')} onClick={() => handleSelect('download')} />
   {#if showFullContextMenu}
