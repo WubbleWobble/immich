@@ -498,11 +498,7 @@ export class AlbumRepository {
     if (albumIds.length === 0) {
       return;
     }
-    await this.db
-      .updateTable('album')
-      .set({ cacheInvalidatedAt: at })
-      .where('album.id', 'in', albumIds)
-      .execute();
+    await this.db.updateTable('album').set({ cacheInvalidatedAt: at }).where('album.id', 'in', albumIds).execute();
   }
 
   /**

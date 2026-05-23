@@ -43,8 +43,12 @@ const isSmartAlbumCacheStale = (album: {
     return false;
   }
   // After hydration from a JSON-shallow context, timestamps may be strings.
-  const computed = album.cacheComputedAt instanceof Date ? album.cacheComputedAt.getTime() : Date.parse(album.cacheComputedAt);
-  const invalidated = album.cacheInvalidatedAt instanceof Date ? album.cacheInvalidatedAt.getTime() : Date.parse(album.cacheInvalidatedAt);
+  const computed =
+    album.cacheComputedAt instanceof Date ? album.cacheComputedAt.getTime() : Date.parse(album.cacheComputedAt);
+  const invalidated =
+    album.cacheInvalidatedAt instanceof Date
+      ? album.cacheInvalidatedAt.getTime()
+      : Date.parse(album.cacheInvalidatedAt);
   return invalidated > computed;
 };
 
@@ -110,13 +114,9 @@ export class AlbumService extends BaseService {
         ...mapAlbum(album),
         sharedLinks: undefined,
         albumThumbnailAssetId: isSmart ? (album.cachedThumbnailAssetId ?? null) : album.albumThumbnailAssetId,
-        startDate: asDateString(
-          (isSmart ? album.cachedStartDate : albumMetadata[album.id]?.startDate) ?? undefined,
-        ),
-        endDate: asDateString(
-          (isSmart ? album.cachedEndDate : albumMetadata[album.id]?.endDate) ?? undefined,
-        ),
-        assetCount: (isSmart ? (album.cachedAssetCount ?? 0) : (albumMetadata[album.id]?.assetCount ?? 0)),
+        startDate: asDateString((isSmart ? album.cachedStartDate : albumMetadata[album.id]?.startDate) ?? undefined),
+        endDate: asDateString((isSmart ? album.cachedEndDate : albumMetadata[album.id]?.endDate) ?? undefined),
+        assetCount: isSmart ? (album.cachedAssetCount ?? 0) : (albumMetadata[album.id]?.assetCount ?? 0),
         // lastModifiedAssetTimestamp is only used in mobile app, please remove if not need
         lastModifiedAssetTimestamp: asDateString(albumMetadata[album.id]?.lastModifiedAssetTimestamp ?? undefined),
       };
@@ -464,18 +464,22 @@ export class AlbumService extends BaseService {
       { page: 1, size: 1000 },
       { ...filter, userIds: [ownerId] },
     );
-    const dates = items
-      .map((item) => (item.localDateTime ?? item.fileCreatedAt) as Date | string | null | undefined)
-      .filter((d): d is Date | string => d !== null && d !== undefined)
-      .map((d) => (d instanceof Date ? d : new Date(d)))
-      .filter((d) => !Number.isNaN(d.getTime()));
+    const dateMillis: number[] = [];
+    for (const item of items) {
+      const raw = item.localDateTime ?? item.fileCreatedAt;
+      if (raw == null) {
+        continue;
+      }
+      const ms = raw instanceof Date ? raw.getTime() : new Date(raw).getTime();
+      if (!Number.isNaN(ms)) {
+        dateMillis.push(ms);
+      }
+    }
     const fresh: SmartAlbumCachedMetadata = {
       cachedAssetCount: items.length,
       cachedThumbnailAssetId: items[0]?.id ?? null,
-      cachedStartDate:
-        dates.length > 0 ? toDateOnly(dates.reduce((min, d) => (d < min ? d : min), dates[0])) : null,
-      cachedEndDate:
-        dates.length > 0 ? toDateOnly(dates.reduce((max, d) => (d > max ? d : max), dates[0])) : null,
+      cachedStartDate: dateMillis.length > 0 ? toDateOnly(new Date(Math.min(...dateMillis))) : null,
+      cachedEndDate: dateMillis.length > 0 ? toDateOnly(new Date(Math.max(...dateMillis))) : null,
       cacheComputedAt: new Date(),
     };
     await this.albumRepository.updateCachedMetadata(albumId, fresh);
@@ -541,9 +545,7 @@ export class AlbumService extends BaseService {
         }
       }
     } catch (error: unknown) {
-      this.logger.warn(
-        `Failed to load assets for smart-album invalidation: ${(error as Error)?.message ?? error}`,
-      );
+      this.logger.warn(`Failed to load assets for smart-album invalidation: ${(error as Error)?.message ?? error}`);
     }
   }
 
