@@ -13,6 +13,19 @@ const MAX_DEPTH = 16;
 
 @Injectable()
 export class AlbumContainerService extends BaseService {
+  async get(auth: AuthDto, id: string): Promise<AlbumContainerResponseDto> {
+    const container = await this.albumContainerRepository.getById(id);
+    if (!container) {
+      throw new NotFoundException('Folder not found');
+    }
+    if (container.ownerId !== auth.user.id) {
+      // v1: only the owner can read folder metadata. Cascade share viewers see folders via
+      // getForUser/list endpoints once exposed; this single-get is a follow-up.
+      throw new ForbiddenException('Not allowed');
+    }
+    return this.mapToResponse(container);
+  }
+
   async create(auth: AuthDto, dto: CreateAlbumContainerDto): Promise<AlbumContainerResponseDto> {
     if (dto.parentId) {
       const parent = await this.albumContainerRepository.getById(dto.parentId);

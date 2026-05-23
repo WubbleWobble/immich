@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { AlbumUserRole } from 'src/enum';
 import { AlbumContainerService } from 'src/services/album-container.service';
 import { AuthFactory } from 'test/factories/auth.factory';
@@ -13,6 +13,56 @@ describe(AlbumContainerService.name, () => {
 
   beforeEach(() => {
     ({ sut, mocks } = newTestService(AlbumContainerService));
+  });
+
+  describe('get', () => {
+    it('returns the folder for its owner', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const id = newUuid();
+      mocks.albumContainer.getById.mockResolvedValue({
+        id,
+        ownerId: owner.id,
+        name: 'Family',
+        parentId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+        updateId: newUuid(),
+      });
+
+      const result = await sut.get(auth, id);
+
+      expect(result.id).toEqual(id);
+      expect(result.name).toEqual('Family');
+    });
+
+    it('throws NotFoundException when folder does not exist', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      mocks.albumContainer.getById.mockResolvedValue(void 0);
+
+      await expect(sut.get(auth, newUuid())).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('throws ForbiddenException when called by non-owner', async () => {
+      const owner = UserFactory.create();
+      const intruder = UserFactory.create();
+      const auth = AuthFactory.create({ id: intruder.id });
+      const id = newUuid();
+      mocks.albumContainer.getById.mockResolvedValue({
+        id,
+        ownerId: owner.id,
+        name: 'Family',
+        parentId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+        updateId: newUuid(),
+      });
+
+      await expect(sut.get(auth, id)).rejects.toBeInstanceOf(ForbiddenException);
+    });
   });
 
   describe('create', () => {
