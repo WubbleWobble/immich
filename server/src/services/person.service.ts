@@ -267,8 +267,17 @@ export class PersonService extends BaseService {
   @Chunked()
   private async removeAllPeople(people: { id: string; thumbnailPath: string }[]) {
     await Promise.all(people.map((person) => this.storageRepository.unlink(person.thumbnailPath)));
-    await this.personRepository.delete(people.map((person) => person.id));
+    const deletedIds = people.map((person) => person.id);
+    await this.personRepository.delete(deletedIds);
     this.logger.debug(`Deleted ${people.length} people`);
+
+    // Self-heal smart album filters that still reference the deleted person ids. Any
+    // smart album with a stale id in `filter.personIds` would otherwise stop matching
+    // (AND semantics treat the dangling id as a hard miss). Safe wrapper: a prune
+    // failure must not roll back the person delete.
+    if (deletedIds.length > 0) {
+      await BaseService.create(AlbumService, this).prunePersonIdsFromSmartAlbumsSafe(deletedIds);
+    }
   }
 
   @OnJob({ name: JobName.PersonCleanup, queue: QueueName.BackgroundTask })

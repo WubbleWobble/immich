@@ -75,6 +75,11 @@ export class TagService extends BaseService {
     // TODO sync tag changes for affected assets
 
     await this.tagRepository.delete(id);
+
+    // Self-heal smart album filters that still reference the deleted tag id. With AND
+    // semantics across tagIds, a dangling reference would otherwise make the album match
+    // nothing. Safe wrapper: failure here must not abort the tag delete from the user's POV.
+    await BaseService.create(AlbumService, this).pruneTagIdsFromSmartAlbumsSafe([id]);
   }
 
   async bulkTagAssets(auth: AuthDto, dto: TagBulkAssetsDto): Promise<TagBulkAssetsResponseDto> {
@@ -151,7 +156,11 @@ export class TagService extends BaseService {
 
   @OnJob({ name: JobName.TagCleanup, queue: QueueName.BackgroundTask })
   async handleTagCleanup() {
-    await this.tagRepository.deleteEmptyTags();
+    const deletedIds = await this.tagRepository.deleteEmptyTags();
+    if (deletedIds.length > 0) {
+      // Self-heal any smart album filters that still reference the cleaned-up tag ids.
+      await BaseService.create(AlbumService, this).pruneTagIdsFromSmartAlbumsSafe(deletedIds);
+    }
     return JobStatus.Success;
   }
 
