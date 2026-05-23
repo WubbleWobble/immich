@@ -80,4 +80,77 @@ describe(AlbumContainerService.name, () => {
       await expect(sut.create(auth, { name: 'TooDeep', parentId })).rejects.toBeInstanceOf(BadRequestException);
     });
   });
+
+  describe('update', () => {
+    it('rejects moving a container into its own descendant (cycle)', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const id = newUuid();
+      const descendantId = newUuid();
+      mocks.albumContainer.getById.mockResolvedValue({
+        id,
+        ownerId: owner.id,
+        name: 'Folder',
+        parentId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+        updateId: newUuid(),
+      });
+      mocks.albumContainer.isDescendantOf.mockResolvedValue(true);
+
+      await expect(sut.update(auth, id, { parentId: descendantId })).rejects.toBeInstanceOf(BadRequestException);
+      expect(mocks.albumContainer.move).not.toHaveBeenCalled();
+    });
+
+    it('rejects move that exceeds depth limit', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const id = newUuid();
+      const newParentId = newUuid();
+      mocks.albumContainer.getById.mockResolvedValue({
+        id,
+        ownerId: owner.id,
+        name: 'Folder',
+        parentId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+        updateId: newUuid(),
+      });
+      mocks.albumContainer.isDescendantOf.mockResolvedValue(false);
+      mocks.albumContainer.getDepth.mockResolvedValue(16);
+
+      await expect(sut.update(auth, id, { parentId: newParentId })).rejects.toBeInstanceOf(BadRequestException);
+      expect(mocks.albumContainer.move).not.toHaveBeenCalled();
+    });
+
+    it('moves successfully when valid', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const id = newUuid();
+      const newParentId = newUuid();
+      const container = {
+        id,
+        ownerId: owner.id,
+        name: 'Folder',
+        parentId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+        updateId: newUuid(),
+      };
+      mocks.albumContainer.getById
+        .mockResolvedValueOnce(container)
+        .mockResolvedValueOnce({ ...container, parentId: newParentId });
+      mocks.albumContainer.isDescendantOf.mockResolvedValue(false);
+      mocks.albumContainer.getDepth.mockResolvedValue(2);
+      mocks.albumContainer.move.mockResolvedValue({ ...container, parentId: newParentId });
+
+      const result = await sut.update(auth, id, { parentId: newParentId });
+
+      expect(mocks.albumContainer.move).toHaveBeenCalledWith(id, newParentId);
+      expect(result.parentId).toEqual(newParentId);
+    });
+  });
 });
