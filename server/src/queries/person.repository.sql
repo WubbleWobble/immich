@@ -61,14 +61,17 @@ select
   "person".*
 from
   "person"
-  left join "asset_face" on "asset_face"."personId" = "person"."id"
 where
-  "asset_face"."deletedAt" is null
-  and "asset_face"."isVisible" is true
-group by
-  "person"."id"
-having
-  count("asset_face"."assetId") = $1
+  not exists (
+    select
+      "asset_face"."id"
+    from
+      "asset_face"
+    where
+      "asset_face"."personId" = "person"."id"
+      and "asset_face"."deletedAt" is null
+      and "asset_face"."isVisible" = $1
+  )
 
 -- PersonRepository.getFaces
 select

@@ -65,4 +65,70 @@ describe(PersonRepository.name, () => {
       );
     });
   });
+
+  describe('getAllWithoutFaces', () => {
+    it('should return a person with no asset_face rows', async () => {
+      const { ctx, sut } = setup();
+      const { user } = await ctx.newUser();
+      const { person } = await ctx.newPerson({ ownerId: user.id });
+
+      const result = await sut.getAllWithoutFaces();
+
+      expect(result.map((p) => p.id)).toContain(person.id);
+    });
+
+    it('should not return a person with a live (visible, not deleted) asset_face row', async () => {
+      const { ctx, sut } = setup();
+      const { user } = await ctx.newUser();
+      const { asset } = await ctx.newAsset({ ownerId: user.id });
+      const { person } = await ctx.newPerson({ ownerId: user.id });
+
+      await ctx.newAssetFace({
+        assetId: asset.id,
+        personId: person.id,
+        deletedAt: null,
+        isVisible: true,
+      });
+
+      const result = await sut.getAllWithoutFaces();
+
+      expect(result.map((p) => p.id)).not.toContain(person.id);
+    });
+
+    it('should return a person whose only asset_face rows are soft-deleted', async () => {
+      const { ctx, sut } = setup();
+      const { user } = await ctx.newUser();
+      const { asset } = await ctx.newAsset({ ownerId: user.id });
+      const { person } = await ctx.newPerson({ ownerId: user.id });
+
+      await ctx.newAssetFace({
+        assetId: asset.id,
+        personId: person.id,
+        deletedAt: new Date(),
+        isVisible: true,
+      });
+
+      const result = await sut.getAllWithoutFaces();
+
+      expect(result.map((p) => p.id)).toContain(person.id);
+    });
+
+    it('should return a person whose only asset_face rows are not visible', async () => {
+      const { ctx, sut } = setup();
+      const { user } = await ctx.newUser();
+      const { asset } = await ctx.newAsset({ ownerId: user.id });
+      const { person } = await ctx.newPerson({ ownerId: user.id });
+
+      await ctx.newAssetFace({
+        assetId: asset.id,
+        personId: person.id,
+        deletedAt: null,
+        isVisible: false,
+      });
+
+      const result = await sut.getAllWithoutFaces();
+
+      expect(result.map((p) => p.id)).toContain(person.id);
+    });
+  });
 });

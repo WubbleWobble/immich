@@ -209,11 +209,18 @@ export class PersonRepository {
     return this.db
       .selectFrom('person')
       .selectAll('person')
-      .leftJoin('asset_face', 'asset_face.personId', 'person.id')
-      .where('asset_face.deletedAt', 'is', null)
-      .where('asset_face.isVisible', 'is', true)
-      .having((eb) => eb.fn.count('asset_face.assetId'), '=', 0)
-      .groupBy('person.id')
+      .where((eb) =>
+        eb.not(
+          eb.exists((eb) =>
+            eb
+              .selectFrom('asset_face')
+              .whereRef('asset_face.personId', '=', 'person.id')
+              .where('asset_face.deletedAt', 'is', null)
+              .where('asset_face.isVisible', '=', true)
+              .select('asset_face.id'),
+          ),
+        ),
+      )
       .execute();
   }
 
