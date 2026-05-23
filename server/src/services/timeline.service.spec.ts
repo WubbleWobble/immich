@@ -1,7 +1,9 @@
 import { BadRequestException } from '@nestjs/common';
-import { AssetVisibility } from 'src/enum';
+import { AlbumKind, AlbumUserRole, AssetVisibility } from 'src/enum';
 import { TimelineService } from 'src/services/timeline.service';
+import { AlbumFactory } from 'test/factories/album.factory';
 import { authStub } from 'test/fixtures/auth.stub';
+import { getForAlbum } from 'test/mappers';
 import { newTestService, ServiceMocks } from 'test/utils';
 
 describe(TimelineService.name, () => {
@@ -203,6 +205,131 @@ describe(TimelineService.name, () => {
           userId: authStub.admin.user.id,
         }),
       ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('smart album routing', () => {
+    it('getTimeBuckets should query search and bucket results by month for a smart album', async () => {
+      const smartAlbum = AlbumFactory.from({ id: 'smart-album-id' })
+        .kind(AlbumKind.Smart)
+        .filter({ isFavorite: true })
+        .build();
+      const owner = smartAlbum.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!.user;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['smart-album-id']));
+      mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
+      mocks.asset.getTimeBuckets.mockResolvedValue([
+        { timeBucket: '2024-12-01', count: 2 },
+        { timeBucket: '2024-11-01', count: 1 },
+      ]);
+      mocks.search.searchMetadata.mockResolvedValue({
+        items: [{ id: 'asset-1' }, { id: 'asset-2' }, { id: 'asset-3' }] as any,
+        hasNextPage: false,
+      });
+
+      const result = await sut.getTimeBuckets(authStub.admin, { albumId: 'smart-album-id' });
+
+      expect(result).toEqual([
+        { timeBucket: '2024-12-01', count: 2 },
+        { timeBucket: '2024-11-01', count: 1 },
+      ]);
+      expect(mocks.search.searchMetadata).toHaveBeenCalledWith(
+        { page: 1, size: 1000 },
+        expect.objectContaining({ isFavorite: true, userIds: [owner.id] }),
+      );
+      expect(mocks.asset.getTimeBuckets).toHaveBeenCalledWith(
+        expect.objectContaining({
+          albumId: undefined,
+          assetIds: ['asset-1', 'asset-2', 'asset-3'],
+        }),
+      );
+    });
+
+    it('getTimeBuckets should short-circuit when the smart album has no matching assets', async () => {
+      const smartAlbum = AlbumFactory.from({ id: 'empty-smart-album' })
+        .kind(AlbumKind.Smart)
+        .filter({ isFavorite: true })
+        .build();
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['empty-smart-album']));
+      mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
+      mocks.search.searchMetadata.mockResolvedValue({ items: [], hasNextPage: false });
+
+      const result = await sut.getTimeBuckets(authStub.admin, { albumId: 'empty-smart-album' });
+
+      expect(result).toEqual([]);
+      expect(mocks.asset.getTimeBuckets).not.toHaveBeenCalled();
+    });
+
+    it('getTimeBucket should query search with date range and return assets for a smart album', async () => {
+      const smartAlbum = AlbumFactory.from({ id: 'smart-album-id' })
+        .kind(AlbumKind.Smart)
+        .filter({ isFavorite: true })
+        .build();
+      const owner = smartAlbum.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!.user;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['smart-album-id']));
+      mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
+      const json = `{"id":["asset-1","asset-2"]}`;
+      mocks.asset.getTimeBucket.mockResolvedValue({ assets: json });
+      mocks.search.searchMetadata.mockResolvedValue({
+        items: [{ id: 'asset-1' }, { id: 'asset-2' }] as any,
+        hasNextPage: false,
+      });
+
+      const result = await sut.getTimeBucket(authStub.admin, {
+        albumId: 'smart-album-id',
+        timeBucket: '2024-12-01',
+      });
+
+      expect(result).toEqual(json);
+      expect(mocks.search.searchMetadata).toHaveBeenCalledWith(
+        { page: 1, size: 1000 },
+        expect.objectContaining({
+          isFavorite: true,
+          userIds: [owner.id],
+          takenAfter: expect.any(Date),
+          takenBefore: expect.any(Date),
+        }),
+      );
+      expect(mocks.asset.getTimeBucket).toHaveBeenCalledWith(
+        '2024-12-01',
+        expect.objectContaining({
+          albumId: undefined,
+          assetIds: ['asset-1', 'asset-2'],
+        }),
+        authStub.admin,
+      );
+    });
+
+    it('getTimeBucket should return an empty payload when a smart-album bucket has no matching assets', async () => {
+      const smartAlbum = AlbumFactory.from({ id: 'smart-album-id' })
+        .kind(AlbumKind.Smart)
+        .filter({ isFavorite: true })
+        .build();
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['smart-album-id']));
+      mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
+      mocks.search.searchMetadata.mockResolvedValue({ items: [], hasNextPage: false });
+
+      const result = await sut.getTimeBucket(authStub.admin, {
+        albumId: 'smart-album-id',
+        timeBucket: '2024-12-01',
+      });
+
+      expect(JSON.parse(result)).toEqual(expect.objectContaining({ id: [] }));
+      expect(mocks.asset.getTimeBucket).not.toHaveBeenCalled();
+    });
+
+    it('getTimeBuckets should use the asset repository path for a regular album', async () => {
+      const regularAlbum = AlbumFactory.from({ id: 'regular-album-id' }).build();
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['regular-album-id']));
+      mocks.album.getById.mockResolvedValue(getForAlbum(regularAlbum));
+      mocks.asset.getTimeBuckets.mockResolvedValue([{ timeBucket: '2024-01-01', count: 5 }]);
+
+      const result = await sut.getTimeBuckets(authStub.admin, { albumId: 'regular-album-id' });
+
+      expect(result).toEqual([{ timeBucket: '2024-01-01', count: 5 }]);
+      expect(mocks.search.searchMetadata).not.toHaveBeenCalled();
+      expect(mocks.asset.getTimeBuckets).toHaveBeenCalledWith(
+        expect.objectContaining({ albumId: 'regular-album-id' }),
+      );
     });
   });
 });
