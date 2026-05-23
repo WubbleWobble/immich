@@ -37,7 +37,10 @@
 
   // For folder moves: compute disabled set (the source itself and all descendants).
   const disabledIds = $derived.by(() => {
-    if (kind !== 'folder') return new Set<string>();
+    if (kind !== 'folder') {
+      return new Set<string>();
+    }
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity
     const blocked = new Set<string>([sourceId]);
     let changed = true;
     while (changed) {
@@ -55,6 +58,7 @@
   // Build a flat ordered list with depth for display (sorted by name within each level).
   type Row = { folder: AlbumContainerResponseDto; depth: number };
   const rows = $derived.by(() => {
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity
     const byParent = new Map<string | null, AlbumContainerResponseDto[]>();
     for (const c of containers) {
       const list = byParent.get(c.parentId) ?? [];
@@ -76,21 +80,21 @@
   });
 
   const moveTo = async (targetId: string | null) => {
-    if (saving) return;
+    if (saving) {
+      return;
+    }
     if (targetId === currentParentId) {
       onClose(false);
       return;
     }
     saving = true;
     try {
-      if (kind === 'album') {
-        await updateAlbumInfo({ id: sourceId, updateAlbumDto: { containerId: targetId } });
-      } else {
-        await updateAlbumContainer({
-          id: sourceId,
-          updateAlbumContainerDto: { parentId: targetId },
-        });
-      }
+      await (kind === 'album'
+        ? updateAlbumInfo({ id: sourceId, updateAlbumDto: { containerId: targetId } })
+        : updateAlbumContainer({
+            id: sourceId,
+            updateAlbumContainerDto: { parentId: targetId },
+          }));
       toastManager.primary();
       onClose(true);
     } catch (error) {
@@ -112,7 +116,7 @@
         <Text size="tiny" color="muted">{$t('folders')}</Text>
       </div>
 
-      <div class="immich-scrollbar flex max-h-100 flex-col gap-1 overflow-y-auto">
+      <div class="flex max-h-100 immich-scrollbar flex-col gap-1 overflow-y-auto">
         <ListButton
           selected={currentParentId === null}
           disabled={currentParentId === null || saving}
@@ -127,11 +131,7 @@
         {#each rows as row (row.folder.id)}
           {@const isDisabled = disabledIds.has(row.folder.id) || saving}
           {@const isCurrent = currentParentId === row.folder.id}
-          <ListButton
-            selected={isCurrent}
-            disabled={isDisabled || isCurrent}
-            onclick={() => moveTo(row.folder.id)}
-          >
+          <ListButton selected={isCurrent} disabled={isDisabled || isCurrent} onclick={() => moveTo(row.folder.id)}>
             <span style:padding-inline-start={`${row.depth * 16}px`} class="flex items-center gap-2">
               <Icon icon={mdiFolderOutline} size="20" />
               <Text fontWeight="medium">{row.folder.name}</Text>

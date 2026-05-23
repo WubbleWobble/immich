@@ -150,13 +150,7 @@
 </Button>
 
 <!-- Create Folder -->
-<Button
-  leadingIcon={mdiFolderPlusOutline}
-  onclick={handleCreateFolder}
-  size="small"
-  variant="ghost"
-  color="secondary"
->
+<Button leadingIcon={mdiFolderPlusOutline} onclick={handleCreateFolder} size="small" variant="ghost" color="secondary">
   <p class="hidden md:block">{$t('new_folder')}</p>
 </Button>
 

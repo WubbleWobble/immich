@@ -27,11 +27,7 @@
   </button>
   {#each path as item (item.id)}
     <Icon icon={mdiChevronRight} size="14" aria-hidden="true" />
-    <button
-      type="button"
-      class="rounded-md px-1 py-0.5 hover:text-primary"
-      onclick={() => onNavigate(item.id)}
-    >
+    <button type="button" class="rounded-md px-1 py-0.5 hover:text-primary" onclick={() => onNavigate(item.id)}>
       {item.name}
     </button>
   {/each}

@@ -16,7 +16,9 @@
 
   const onSubmit = async () => {
     const trimmed = name.trim();
-    if (!trimmed) return;
+    if (!trimmed) {
+      return;
+    }
     try {
       const folder = await createAlbumContainer({ createAlbumContainerDto: { name: trimmed, parentId } });
       onClose(folder);

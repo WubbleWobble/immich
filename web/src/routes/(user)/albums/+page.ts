@@ -27,8 +27,7 @@ export const load = (async ({ url }) => {
     let safety = MAX_FOLDER_DEPTH + 1;
     while (cursorId && safety-- > 0) {
       const node: AlbumContainerResponseDto | undefined =
-        containersById.get(cursorId) ??
-        (await getAlbumContainer({ id: cursorId }).catch(() => undefined));
+        containersById.get(cursorId) ?? (await getAlbumContainer({ id: cursorId }).catch(() => undefined));
       if (!node) {
         break;
       }

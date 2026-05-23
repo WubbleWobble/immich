@@ -11,6 +11,7 @@
   import GroupTab from '$lib/elements/GroupTab.svelte';
   import SearchBar from '$lib/elements/SearchBar.svelte';
   import MoveToFolderModal from '$lib/modals/MoveToFolderModal.svelte';
+  import ShareFolderModal from '$lib/modals/ShareFolderModal.svelte';
   import { Route } from '$lib/route';
   import { AlbumFilter, albumViewSettings } from '$lib/stores/preferences.store';
   import { createAlbumAndRedirect } from '$lib/utils/album-utils';
@@ -20,7 +21,7 @@
   import { deleteAlbumContainer, type AlbumContainerResponseDto } from '@immich/sdk';
   import { goto, invalidateAll } from '$app/navigation';
   import { modalManager, toastManager } from '@immich/ui';
-  import { mdiDeleteOutline, mdiFolderMoveOutline } from '@mdi/js';
+  import { mdiDeleteOutline, mdiFolderMoveOutline, mdiShareVariantOutline } from '@mdi/js';
   import { t } from 'svelte-i18n';
   import type { PageData } from './$types';
 
@@ -38,9 +39,7 @@
 
   // Folders that live directly under the current folder (or root if none).
   let visibleFolders = $derived(
-    containers
-      .filter((c) => c.parentId === folderId)
-      .sort((a, b) => a.name.localeCompare(b.name)),
+    containers.filter((c) => c.parentId === folderId).sort((a, b) => a.name.localeCompare(b.name)),
   );
 
   let normalizedQuery = $derived(normalizeSearchString(searchQuery));
@@ -51,12 +50,8 @@
   );
 
   // Filter albums by current folder context (containerId).
-  let scopedOwnedAlbums = $derived(
-    (data.albums ?? []).filter((a) => (a.containerId ?? null) === folderId),
-  );
-  let scopedSharedAlbums = $derived(
-    (data.sharedAlbums ?? []).filter((a) => (a.containerId ?? null) === folderId),
-  );
+  let scopedOwnedAlbums = $derived((data.albums ?? []).filter((a) => (a.containerId ?? null) === folderId));
+  let scopedSharedAlbums = $derived((data.sharedAlbums ?? []).filter((a) => (a.containerId ?? null) === folderId));
 
   // Direct child count for a folder (sub-folders + albums in that folder).
   const childCountFor = (folder: AlbumContainerResponseDto) => {
@@ -87,7 +82,9 @@
   const handleMoveFolder = async () => {
     const folder = selectedFolder;
     closeFolderMenu();
-    if (!folder) return;
+    if (!folder) {
+      return;
+    }
     const moved = await modalManager.show(MoveToFolderModal, {
       kind: 'folder',
       sourceId: folder.id,
@@ -98,14 +95,27 @@
     }
   };
 
+  const handleShareFolder = async () => {
+    const folder = selectedFolder;
+    closeFolderMenu();
+    if (!folder) {
+      return;
+    }
+    await modalManager.show(ShareFolderModal, { folder });
+  };
+
   const handleDeleteFolder = async () => {
     const folder = selectedFolder;
     closeFolderMenu();
-    if (!folder) return;
+    if (!folder) {
+      return;
+    }
     const confirmed = await modalManager.showDialog({
       prompt: $t('confirm_delete_folder', { values: { name: folder.name } }),
     });
-    if (!confirmed) return;
+    if (!confirmed) {
+      return;
+    }
     try {
       await deleteAlbumContainer({ id: folder.id });
       toastManager.primary();
@@ -192,5 +202,6 @@
   onClose={closeFolderMenu}
 >
   <MenuOption icon={mdiFolderMoveOutline} text={$t('move_to_folder')} onClick={handleMoveFolder} />
+  <MenuOption icon={mdiShareVariantOutline} text={$t('share')} onClick={handleShareFolder} />
   <MenuOption icon={mdiDeleteOutline} text={$t('delete')} onClick={handleDeleteFolder} />
 </RightClickContextMenu>
