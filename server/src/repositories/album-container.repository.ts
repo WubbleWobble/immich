@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Kysely, sql } from 'kysely';
 import { InjectKysely } from 'nestjs-kysely';
 import { DummyValue, GenerateSql } from 'src/decorators';
+import { AlbumUserRole } from 'src/enum';
 import { DB } from 'src/schema';
 
 @Injectable()
@@ -150,5 +151,44 @@ export class AlbumContainerRepository {
       .where('id_descendant', '=', containerId)
       .executeTakeFirst();
     return Number(row?.maxDepth ?? 0);
+  }
+
+  @GenerateSql({ params: [DummyValue.UUID, DummyValue.STRING] })
+  async rename(id: string, name: string) {
+    return this.db
+      .updateTable('album_container')
+      .set({ name })
+      .where('id', '=', id)
+      .returningAll()
+      .executeTakeFirstOrThrow();
+  }
+
+  @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID, AlbumUserRole.Editor] })
+  async addUser(albumContainerId: string, userId: string, role: AlbumUserRole) {
+    return this.db
+      .insertInto('album_container_user')
+      .values({ albumContainerId, userId, role })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+  }
+
+  @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID] })
+  async removeUser(albumContainerId: string, userId: string) {
+    await this.db
+      .deleteFrom('album_container_user')
+      .where('albumContainerId', '=', albumContainerId)
+      .where('userId', '=', userId)
+      .execute();
+  }
+
+  @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID, AlbumUserRole.Editor] })
+  async updateUserRole(albumContainerId: string, userId: string, role: AlbumUserRole) {
+    return this.db
+      .updateTable('album_container_user')
+      .set({ role })
+      .where('albumContainerId', '=', albumContainerId)
+      .where('userId', '=', userId)
+      .returningAll()
+      .executeTakeFirstOrThrow();
   }
 }

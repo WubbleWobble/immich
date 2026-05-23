@@ -7,6 +7,7 @@ import { StorageCore } from 'src/cores/storage.core';
 import { UserAdmin } from 'src/database';
 import { AccessRepository } from 'src/repositories/access.repository';
 import { ActivityRepository } from 'src/repositories/activity.repository';
+import { AlbumContainerRepository } from 'src/repositories/album-container.repository';
 import { AlbumUserRepository } from 'src/repositories/album-user.repository';
 import { AlbumRepository } from 'src/repositories/album.repository';
 import { ApiKeyRepository } from 'src/repositories/api-key.repository';
@@ -67,6 +68,7 @@ export const BASE_SERVICE_DEPENDENCIES = [
   AccessRepository,
   ActivityRepository,
   AlbumRepository,
+  AlbumContainerRepository,
   AlbumUserRepository,
   ApiKeyRepository,
   AppRepository,
@@ -126,6 +128,7 @@ export class BaseService {
     protected accessRepository: AccessRepository,
     protected activityRepository: ActivityRepository,
     protected albumRepository: AlbumRepository,
+    protected albumContainerRepository: AlbumContainerRepository,
     protected albumUserRepository: AlbumUserRepository,
     protected apiKeyRepository: ApiKeyRepository,
     protected appRepository: AppRepository,
@@ -194,6 +197,7 @@ export class BaseService {
       ctx.accessRepository,
       ctx.activityRepository,
       ctx.albumRepository,
+      ctx.albumContainerRepository,
       ctx.albumUserRepository,
       ctx.apiKeyRepository,
       ctx.appRepository,
