@@ -133,7 +133,11 @@ export class AlbumService extends BaseService {
     const hasSharedLink = album.sharedLinks && album.sharedLinks.length > 0;
     const isShared = hasSharedUsers || hasSharedLink;
 
-    if (album.kind === AlbumKind.Smart && album.filter && isSmartAlbumCacheStale(album)) {
+    // Single-album views always recompute. The cache exists primarily to keep the Albums *list*
+    // page fast (no N searches per page); for a single-album view, the cost of one search query
+    // is negligible and the freshness guarantee is worth more than the saving. Side-effect: this
+    // self-heals any stale-cache state we missed via an unhooked write path.
+    if (album.kind === AlbumKind.Smart && album.filter) {
       const ownerId = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
       if (ownerId) {
         const fresh = await this.recomputeSmartAlbumCache(album.id, ownerId, album.filter);
