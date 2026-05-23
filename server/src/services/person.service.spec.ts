@@ -536,6 +536,23 @@ describe(PersonService.name, () => {
       expect(mocks.person.delete).toHaveBeenCalledWith([person.id]);
       expect(mocks.storage.unlink).toHaveBeenCalledWith(person.thumbnailPath);
     });
+
+    it('prunes the deleted person ids from referencing smart album filters', async () => {
+      const person = PersonFactory.create();
+      mocks.person.getAllWithoutFaces.mockResolvedValue([person]);
+
+      await sut.handlePersonCleanup();
+
+      expect(mocks.album.prunePersonIdsFromSmartAlbums).toHaveBeenCalledWith([person.id]);
+    });
+
+    it('does not propagate prune failures', async () => {
+      const person = PersonFactory.create();
+      mocks.person.getAllWithoutFaces.mockResolvedValue([person]);
+      mocks.album.prunePersonIdsFromSmartAlbums.mockRejectedValueOnce(new Error('boom'));
+
+      await expect(sut.handlePersonCleanup()).resolves.toBe(JobStatus.Success);
+    });
   });
 
   describe('handleQueueDetectFaces', () => {

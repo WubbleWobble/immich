@@ -1809,4 +1809,61 @@ describe(AlbumService.name, () => {
       await expect(sut.invalidateAllSmartAlbumsByPersonFilterSafe()).resolves.toBeUndefined();
     });
   });
+
+  describe('prunePersonIdsFromSmartAlbums', () => {
+    it('delegates to the repository and is a no-op when no ids are supplied', async () => {
+      await sut.prunePersonIdsFromSmartAlbums([]);
+      expect(mocks.album.prunePersonIdsFromSmartAlbums).not.toHaveBeenCalled();
+    });
+
+    it('calls the repository with the deleted person ids', async () => {
+      const ids = [newUuid(), newUuid()];
+      mocks.album.prunePersonIdsFromSmartAlbums.mockResolvedValue([newUuid()]);
+
+      await sut.prunePersonIdsFromSmartAlbums(ids);
+
+      expect(mocks.album.prunePersonIdsFromSmartAlbums).toHaveBeenCalledWith(ids);
+    });
+
+    it('returns silently when no albums were affected', async () => {
+      mocks.album.prunePersonIdsFromSmartAlbums.mockResolvedValue([]);
+      await expect(sut.prunePersonIdsFromSmartAlbums([newUuid()])).resolves.toBeUndefined();
+    });
+
+    it('safe variant swallows repository errors', async () => {
+      mocks.album.prunePersonIdsFromSmartAlbums.mockRejectedValueOnce(new Error('boom'));
+      await expect(sut.prunePersonIdsFromSmartAlbumsSafe([newUuid()])).resolves.toBeUndefined();
+    });
+
+    it('safe variant is a no-op when no ids are supplied', async () => {
+      await sut.prunePersonIdsFromSmartAlbumsSafe([]);
+      expect(mocks.album.prunePersonIdsFromSmartAlbums).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('pruneTagIdsFromSmartAlbums', () => {
+    it('delegates to the repository and is a no-op when no ids are supplied', async () => {
+      await sut.pruneTagIdsFromSmartAlbums([]);
+      expect(mocks.album.pruneTagIdsFromSmartAlbums).not.toHaveBeenCalled();
+    });
+
+    it('calls the repository with the deleted tag ids', async () => {
+      const ids = [newUuid()];
+      mocks.album.pruneTagIdsFromSmartAlbums.mockResolvedValue([newUuid()]);
+
+      await sut.pruneTagIdsFromSmartAlbums(ids);
+
+      expect(mocks.album.pruneTagIdsFromSmartAlbums).toHaveBeenCalledWith(ids);
+    });
+
+    it('safe variant swallows repository errors', async () => {
+      mocks.album.pruneTagIdsFromSmartAlbums.mockRejectedValueOnce(new Error('boom'));
+      await expect(sut.pruneTagIdsFromSmartAlbumsSafe([newUuid()])).resolves.toBeUndefined();
+    });
+
+    it('safe variant is a no-op when no ids are supplied', async () => {
+      await sut.pruneTagIdsFromSmartAlbumsSafe([]);
+      expect(mocks.album.pruneTagIdsFromSmartAlbums).not.toHaveBeenCalled();
+    });
+  });
 });
