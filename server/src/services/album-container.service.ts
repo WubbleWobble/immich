@@ -13,6 +13,11 @@ const MAX_DEPTH = 16;
 
 @Injectable()
 export class AlbumContainerService extends BaseService {
+  async list(auth: AuthDto): Promise<AlbumContainerResponseDto[]> {
+    const containers = await this.albumContainerRepository.getForUser(auth.user.id);
+    return containers.map((container) => this.mapToResponse(container));
+  }
+
   async get(auth: AuthDto, id: string): Promise<AlbumContainerResponseDto> {
     const container = await this.albumContainerRepository.getById(id);
     if (!container) {

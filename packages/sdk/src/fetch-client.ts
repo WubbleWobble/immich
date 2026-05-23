@@ -442,12 +442,6 @@ export type AssetStatsResponseDto = {
     /** Number of videos */
     videos: number;
 };
-export type CreateAlbumContainerDto = {
-    /** Folder name */
-    name: string;
-    /** Parent folder ID (null for root) */
-    parentId?: string | null;
-};
 export type AlbumContainerResponseDto = {
     /** Direct child album IDs */
     childAlbumIds?: string[];
@@ -465,6 +459,12 @@ export type AlbumContainerResponseDto = {
     parentId: string | null;
     /** Last update date */
     updatedAt: string;
+};
+export type CreateAlbumContainerDto = {
+    /** Folder name */
+    name: string;
+    /** Parent folder ID (null for root) */
+    parentId?: string | null;
 };
 export type UpdateAlbumContainerDto = {
     /** Folder name */
@@ -3611,6 +3611,17 @@ export function getUserStatisticsAdmin({ id, isFavorite, isTrashed, visibility }
         isTrashed,
         visibility
     }))}`, {
+        ...opts
+    }));
+}
+/**
+ * List folders
+ */
+export function getAllAlbumContainers(opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchJson<{
+        status: 200;
+        data: AlbumContainerResponseDto[];
+    }>("/album-containers", {
         ...opts
     }));
 }

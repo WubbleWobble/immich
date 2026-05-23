@@ -19,6 +19,13 @@ import { UUIDParamDto } from 'src/validation';
 export class AlbumContainerController {
   constructor(private service: AlbumContainerService) {}
 
+  @Get()
+  @Authenticated()
+  @Endpoint({ summary: 'List folders', history: new HistoryBuilder().added('v2').alpha('v2') })
+  getAllAlbumContainers(@Auth() auth: AuthDto): Promise<AlbumContainerResponseDto[]> {
+    return this.service.list(auth);
+  }
+
   @Post()
   @Authenticated()
   @Endpoint({ summary: 'Create folder', history: new HistoryBuilder().added('v2').alpha('v2') })

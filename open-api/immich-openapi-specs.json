@@ -1612,6 +1612,51 @@
       }
     },
     "/album-containers": {
+      "get": {
+        "operationId": "getAllAlbumContainers",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AlbumContainerResponseDto"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "List folders",
+        "tags": [
+          "Album Containers"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2",
+            "state": "Added"
+          },
+          {
+            "version": "v2",
+            "state": "Alpha"
+          }
+        ],
+        "x-immich-state": "Alpha"
+      },
       "post": {
         "operationId": "createAlbumContainer",
         "parameters": [],
