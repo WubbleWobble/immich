@@ -586,4 +586,39 @@ export class AlbumService extends BaseService {
 
     await this.albumRepository.markCacheInvalidated(idsToInvalidate, new Date());
   }
+
+  /**
+   * Mark smart-album caches as stale for any smart album owned by `ownerId` whose stored
+   * `filter.personIds` references ANY of the given person ids. Use this on a person-merge
+   * write path with `[sourceId, targetId]` — the narrow JSONB overlap check is cheaper than
+   * a full per-asset filter recheck and is sufficient because merging only shifts membership
+   * for albums that already pin on one of those two persons.
+   */
+  async invalidateSmartAlbumsForPersonMerge(ownerId: string, personIds: string[]): Promise<void> {
+    if (personIds.length === 0) {
+      return;
+    }
+    const albums = (await this.albumRepository.getSmartAlbumsForOwnerByPersonIds(ownerId, personIds)) ?? [];
+    if (albums.length === 0) {
+      return;
+    }
+    await this.albumRepository.markCacheInvalidated(
+      albums.map((a) => a.id),
+      new Date(),
+    );
+  }
+
+  /**
+   * Safe wrapper around `invalidateSmartAlbumsForPersonMerge`: failures are logged but not
+   * propagated, so a cache-invalidation failure cannot abort the merge.
+   */
+  async invalidateSmartAlbumsForPersonMergeSafe(ownerId: string, personIds: string[]): Promise<void> {
+    try {
+      await this.invalidateSmartAlbumsForPersonMerge(ownerId, personIds);
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Failed to invalidate smart-album caches for person merge (owner ${ownerId}): ${(error as Error)?.message ?? error}`,
+      );
+    }
+  }
 }

@@ -1764,4 +1764,34 @@ describe(AlbumService.name, () => {
       expect(mocks.album.markCacheInvalidated).toHaveBeenCalledWith([], expect.any(Date));
     });
   });
+
+  describe('invalidateSmartAlbumsForPersonMerge', () => {
+    it('bumps cacheInvalidatedAt on smart albums that filter on either merged person id', async () => {
+      const ownerId = newUuid();
+      const sourceId = newUuid();
+      const targetId = newUuid();
+      const matchingAlbumId = newUuid();
+      mocks.album.getSmartAlbumsForOwnerByPersonIds.mockResolvedValue([{ id: matchingAlbumId }]);
+
+      await sut.invalidateSmartAlbumsForPersonMerge(ownerId, [sourceId, targetId]);
+
+      expect(mocks.album.getSmartAlbumsForOwnerByPersonIds).toHaveBeenCalledWith(ownerId, [sourceId, targetId]);
+      expect(mocks.album.markCacheInvalidated).toHaveBeenCalledWith([matchingAlbumId], expect.any(Date));
+    });
+
+    it('is a no-op when no smart albums reference the merged persons', async () => {
+      mocks.album.getSmartAlbumsForOwnerByPersonIds.mockResolvedValue([]);
+
+      await sut.invalidateSmartAlbumsForPersonMerge(newUuid(), [newUuid(), newUuid()]);
+
+      expect(mocks.album.markCacheInvalidated).not.toHaveBeenCalled();
+    });
+
+    it('is a no-op when no person ids are supplied', async () => {
+      await sut.invalidateSmartAlbumsForPersonMerge(newUuid(), []);
+
+      expect(mocks.album.getSmartAlbumsForOwnerByPersonIds).not.toHaveBeenCalled();
+      expect(mocks.album.markCacheInvalidated).not.toHaveBeenCalled();
+    });
+  });
 });

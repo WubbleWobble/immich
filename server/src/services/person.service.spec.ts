@@ -1249,6 +1249,28 @@ describe(PersonService.name, () => {
       expect(mocks.access.person.checkOwnerAccess).toHaveBeenCalledWith(auth.user.id, new Set([person.id]));
     });
 
+    it('should invalidate smart-album caches that reference either merged person', async () => {
+      const auth = AuthFactory.create();
+      const [person, mergePerson] = [PersonFactory.create(), PersonFactory.create()];
+      const matchingAlbumId = newUuid();
+
+      mocks.person.getById.mockResolvedValueOnce(person);
+      mocks.person.getById.mockResolvedValueOnce(mergePerson);
+      mocks.access.person.checkOwnerAccess.mockResolvedValueOnce(new Set([person.id]));
+      mocks.access.person.checkOwnerAccess.mockResolvedValueOnce(new Set([mergePerson.id]));
+      mocks.album.getSmartAlbumsForOwnerByPersonIds.mockResolvedValue([{ id: matchingAlbumId }]);
+
+      await expect(sut.mergePerson(auth, person.id, { ids: [mergePerson.id] })).resolves.toEqual([
+        { id: mergePerson.id, success: true },
+      ]);
+
+      expect(mocks.album.getSmartAlbumsForOwnerByPersonIds).toHaveBeenCalledWith(person.ownerId, [
+        mergePerson.id,
+        person.id,
+      ]);
+      expect(mocks.album.markCacheInvalidated).toHaveBeenCalledWith([matchingAlbumId], expect.any(Date));
+    });
+
     it('should throw an error when the primary person is not found', async () => {
       mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set(['person-1']));
 

@@ -490,6 +490,34 @@ export class AlbumRepository {
   }
 
   /**
+   * Returns the ids of smart albums owned by `ownerId` whose `filter.personIds` JSONB
+   * array overlaps any of the given `personIds`. Used to narrowly invalidate caches when
+   * persons are merged, without re-running a full per-asset filter check.
+   */
+  @GenerateSql({ params: [DummyValue.UUID, [DummyValue.UUID]] })
+  async getSmartAlbumsForOwnerByPersonIds(ownerId: string, personIds: string[]): Promise<{ id: string }[]> {
+    if (personIds.length === 0) {
+      return [];
+    }
+    return this.db
+      .selectFrom('album')
+      .select('album.id')
+      .where('album.kind', '=', sql.lit(AlbumKind.Smart))
+      .where('album.deletedAt', 'is', null)
+      .where((eb) =>
+        eb.exists(
+          eb
+            .selectFrom('album_user')
+            .whereRef('album_user.albumId', '=', 'album.id')
+            .where('album_user.role', '=', sql.lit(AlbumUserRole.Owner))
+            .where('album_user.userId', '=', ownerId),
+        ),
+      )
+      .where(sql<boolean>`album.filter -> 'personIds' ?| ${personIds}::text[]`)
+      .execute();
+  }
+
+  /**
    * Bump `cacheInvalidatedAt` on the given album ids so the next read recomputes the cache.
    * No-op when `albumIds` is empty.
    */

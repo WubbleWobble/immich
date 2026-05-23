@@ -618,6 +618,14 @@ export class PersonService extends BaseService {
         await this.personRepository.reassignFaces(mergeData);
         await this.removeAllPeople([mergePerson]);
 
+        // Merging shifts smart-album membership only for albums that filter on either the
+        // source or target person id; the JSONB overlap check below is narrower than a
+        // per-asset filter recheck and sufficient for this write path.
+        await BaseService.create(AlbumService, this).invalidateSmartAlbumsForPersonMergeSafe(primaryPerson.ownerId, [
+          mergeId,
+          id,
+        ]);
+
         this.logger.log(`Merged ${mergeName} into ${primaryName}`);
         results.push({ id: mergeId, success: true });
       } catch (error: Error | any) {
