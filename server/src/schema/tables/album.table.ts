@@ -56,6 +56,31 @@ export class AlbumTable {
   @Column({ type: 'jsonb', nullable: true })
   filter!: SmartAlbumFilter | null;
 
+  // Smart-album list-view metadata cache. Populated by AlbumService on read when stale.
+  // See ../immich-specs/2026-05-22-smart-albums-design.md (cache section).
+  @Column({ type: 'integer', nullable: true })
+  cachedAssetCount!: number | null;
+
+  @ForeignKeyColumn(() => AssetTable, {
+    nullable: true,
+    onDelete: 'SET NULL',
+    onUpdate: 'CASCADE',
+    comment: 'Cached thumbnail asset id for smart albums',
+  })
+  cachedThumbnailAssetId!: string | null;
+
+  @Column({ type: 'date', nullable: true })
+  cachedStartDate!: string | null;
+
+  @Column({ type: 'date', nullable: true })
+  cachedEndDate!: string | null;
+
+  @Column({ type: 'timestamp with time zone', nullable: true })
+  cacheComputedAt!: Date | null;
+
+  @Column({ type: 'timestamp with time zone', nullable: true })
+  cacheInvalidatedAt!: Date | null;
+
   @UpdateIdColumn({ index: true })
   updateId!: Generated<string>;
 }
