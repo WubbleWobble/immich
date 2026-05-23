@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { BulkIdErrorReason } from 'src/dtos/asset-ids.response.dto';
 import { AlbumUserRole, AssetOrder, UserMetadataKey } from 'src/enum';
 import { AlbumService } from 'src/services/album.service';
@@ -415,6 +415,54 @@ describe(AlbumService.name, () => {
         { id: album.id, albumName: 'new album name' },
         owner.id,
       );
+    });
+
+    it('moves album to a folder', async () => {
+      const album = AlbumFactory.create();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const containerId = newUuid();
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.albumContainer.getById.mockResolvedValue({
+        id: containerId,
+        ownerId: owner.id,
+        name: 'Family',
+        parentId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+        updateId: newUuid(),
+      });
+      mocks.album.update.mockResolvedValue(getForAlbum({ ...album, containerId }));
+
+      const result = await sut.update(AuthFactory.create(owner), album.id, { containerId });
+
+      expect(mocks.album.update).toHaveBeenCalledWith(album.id, expect.objectContaining({ containerId }), owner.id);
+      expect(result.containerId).toEqual(containerId);
+    });
+
+    it('rejects moving album to folder owned by another user', async () => {
+      const album = AlbumFactory.create();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const otherOwner = UserFactory.create();
+      const containerId = newUuid();
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.albumContainer.getById.mockResolvedValue({
+        id: containerId,
+        ownerId: otherOwner.id,
+        name: 'Other',
+        parentId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+        updateId: newUuid(),
+      });
+
+      await expect(
+        sut.update(AuthFactory.create(owner), album.id, { containerId }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(mocks.album.update).not.toHaveBeenCalled();
     });
   });
 

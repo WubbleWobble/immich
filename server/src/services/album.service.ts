@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 import {
   AddUsersDto,
   AlbumResponseDto,
@@ -154,6 +154,19 @@ export class AlbumService extends BaseService {
         throw new BadRequestException('Invalid album thumbnail');
       }
     }
+
+    if (dto.containerId !== undefined && dto.containerId !== album.containerId) {
+      if (dto.containerId !== null) {
+        const container = await this.albumContainerRepository.getById(dto.containerId);
+        if (!container) {
+          throw new BadRequestException('Folder not found');
+        }
+        if (container.ownerId !== auth.user.id) {
+          throw new ForbiddenException("Cannot move album to another user's folder");
+        }
+      }
+    }
+
     const updatedAlbum = await this.albumRepository.update(
       album.id,
       {
@@ -163,6 +176,7 @@ export class AlbumService extends BaseService {
         albumThumbnailAssetId: dto.albumThumbnailAssetId,
         isActivityEnabled: dto.isActivityEnabled,
         order: dto.order,
+        containerId: dto.containerId,
       },
       auth.user.id,
     );

@@ -60,6 +60,7 @@ const UpdateAlbumSchema = z
     albumThumbnailAssetId: z.uuidv4().optional().describe('Album thumbnail asset ID'),
     isActivityEnabled: z.boolean().optional().describe('Enable activity feed'),
     order: AssetOrderSchema.optional(),
+    containerId: z.uuidv4().nullable().optional().describe('Move album to this folder (null for root)'),
   })
   .meta({ id: 'UpdateAlbumDto' });
 
@@ -135,6 +136,7 @@ export const AlbumResponseSchema = z
     isActivityEnabled: z.boolean().describe('Activity feed enabled'),
     order: AssetOrderSchema.optional(),
     contributorCounts: z.array(ContributorCountResponseSchema).optional(),
+    containerId: z.string().nullable().describe('Containing folder ID, or null if at root'),
   })
   .meta({ id: 'AlbumResponseDto' });
 
@@ -162,6 +164,7 @@ export type MapAlbumDto = {
   id: string;
   isActivityEnabled: boolean;
   order: AssetOrder;
+  containerId: string | null;
 };
 
 export const mapAlbum = (entity: MaybeDehydrated<MapAlbumDto>): AlbumResponseDto => {
@@ -204,5 +207,6 @@ export const mapAlbum = (entity: MaybeDehydrated<MapAlbumDto>): AlbumResponseDto
     assetCount: entity.assets?.length || 0,
     isActivityEnabled: entity.isActivityEnabled,
     order: entity.order,
+    containerId: entity.containerId ?? null,
   };
 };
