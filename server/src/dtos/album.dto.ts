@@ -170,6 +170,12 @@ export type MapAlbumDto = {
   order: AssetOrder;
   kind: AlbumKind;
   filter: SmartAlbumFilter | null;
+  cachedAssetCount?: number | null;
+  cachedThumbnailAssetId?: string | null;
+  cachedStartDate?: string | null;
+  cachedEndDate?: string | null;
+  cacheComputedAt?: Date | string | null;
+  cacheInvalidatedAt?: Date | string | null;
 };
 
 export const mapAlbum = (entity: MaybeDehydrated<MapAlbumDto>): AlbumResponseDto => {

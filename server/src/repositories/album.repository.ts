@@ -14,7 +14,7 @@ import { InjectKysely } from 'nestjs-kysely';
 import { columns } from 'src/database';
 import { Chunked, ChunkedArray, ChunkedSet, DummyValue, GenerateSql } from 'src/decorators';
 import { AlbumUserCreateDto, MapAlbumDto } from 'src/dtos/album.dto';
-import { AlbumUserRole } from 'src/enum';
+import { AlbumKind, AlbumUserRole } from 'src/enum';
 import { DB } from 'src/schema';
 import { AlbumTable } from 'src/schema/tables/album.table';
 import { AssetExifTable } from 'src/schema/tables/asset-exif.table';
@@ -448,6 +448,74 @@ export class AlbumRepository {
       .groupBy('asset.ownerId')
       .orderBy('assetCount', 'desc')
       .execute();
+  }
+
+  /**
+   * Returns smart albums owned by `ownerId` (with their stored filter).
+   * Used by smart-album cache invalidation.
+   */
+  @GenerateSql({ params: [DummyValue.UUID] })
+  async getSmartAlbumsForOwner(ownerId: string) {
+    return this.db
+      .selectFrom('album')
+      .select(['album.id', 'album.filter', 'album.cachedThumbnailAssetId'])
+      .where('album.kind', '=', sql.lit(AlbumKind.Smart))
+      .where('album.deletedAt', 'is', null)
+      .where((eb) =>
+        eb.exists(
+          eb
+            .selectFrom('album_user')
+            .whereRef('album_user.albumId', '=', 'album.id')
+            .where('album_user.role', '=', sql.lit(AlbumUserRole.Owner))
+            .where('album_user.userId', '=', ownerId),
+        ),
+      )
+      .execute();
+  }
+
+  /**
+   * Returns the ids of smart albums whose cached thumbnail asset matches `assetId`.
+   * Used by smart-album cache invalidation so deleted thumbnail assets are refreshed.
+   */
+  @GenerateSql({ params: [DummyValue.UUID] })
+  async getSmartAlbumsWithCachedThumbnail(assetId: string): Promise<string[]> {
+    const rows = await this.db
+      .selectFrom('album')
+      .select('album.id')
+      .where('album.kind', '=', sql.lit(AlbumKind.Smart))
+      .where('album.deletedAt', 'is', null)
+      .where('album.cachedThumbnailAssetId', '=', assetId)
+      .execute();
+    return rows.map((r) => r.id);
+  }
+
+  /**
+   * Bump `cacheInvalidatedAt` on the given album ids so the next read recomputes the cache.
+   * No-op when `albumIds` is empty.
+   */
+  @GenerateSql({ params: [[DummyValue.UUID], DummyValue.DATE] })
+  async markCacheInvalidated(albumIds: string[], at: Date): Promise<void> {
+    if (albumIds.length === 0) {
+      return;
+    }
+    await this.db
+      .updateTable('album')
+      .set({ cacheInvalidatedAt: at })
+      .where('album.id', 'in', albumIds)
+      .execute();
+  }
+
+  /**
+   * Store freshly computed smart-album list-view metadata on the album row.
+   */
+  async updateCachedMetadata(
+    id: string,
+    values: Pick<
+      Updateable<AlbumTable>,
+      'cachedAssetCount' | 'cachedThumbnailAssetId' | 'cachedStartDate' | 'cachedEndDate' | 'cacheComputedAt'
+    >,
+  ): Promise<void> {
+    await this.db.updateTable('album').set(values).where('album.id', '=', id).execute();
   }
 
   @GenerateSql({ params: [{ sourceAssetId: DummyValue.UUID, targetAssetId: DummyValue.UUID }] })
