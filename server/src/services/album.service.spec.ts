@@ -70,11 +70,7 @@ describe(AlbumService.name, () => {
     });
 
     it('overlays smart album metadata from search results in the list view', async () => {
-      const smartAlbum = AlbumFactory.from()
-        .albumUser()
-        .kind(AlbumKind.Smart)
-        .filter({ isFavorite: true })
-        .build();
+      const smartAlbum = AlbumFactory.from().albumUser().kind(AlbumKind.Smart).filter({ isFavorite: true }).build();
       const { user: owner } = smartAlbum.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
       const firstAssetId = newUuid();
       const secondAssetId = newUuid();
@@ -84,8 +80,16 @@ describe(AlbumService.name, () => {
       ]);
       mocks.search.searchMetadata.mockResolvedValue({
         items: [
-          { id: firstAssetId, fileCreatedAt: new Date('2024-12-25T00:00:00Z'), localDateTime: new Date('2024-12-25T00:00:00Z') },
-          { id: secondAssetId, fileCreatedAt: new Date('2024-10-01T00:00:00Z'), localDateTime: new Date('2024-10-01T00:00:00Z') },
+          {
+            id: firstAssetId,
+            fileCreatedAt: new Date('2024-12-25T00:00:00Z'),
+            localDateTime: new Date('2024-12-25T00:00:00Z'),
+          },
+          {
+            id: secondAssetId,
+            fileCreatedAt: new Date('2024-10-01T00:00:00Z'),
+            localDateTime: new Date('2024-10-01T00:00:00Z'),
+          },
         ] as any,
         hasNextPage: false,
       });
@@ -101,6 +105,93 @@ describe(AlbumService.name, () => {
         { page: 1, size: 1000 },
         expect.objectContaining({ isFavorite: true, userIds: [owner.id] }),
       );
+      // The freshly computed values are persisted to the album row.
+      expect(mocks.album.updateCachedMetadata).toHaveBeenCalledWith(
+        smartAlbum.id,
+        expect.objectContaining({ cachedAssetCount: 2, cachedThumbnailAssetId: firstAssetId }),
+      );
+    });
+
+    it('serves smart album metadata from the cache when fresh', async () => {
+      const cachedThumbnailAssetId = newUuid();
+      const computedAt = new Date('2026-05-22T10:00:00Z');
+      const smartAlbum = AlbumFactory.from().albumUser().kind(AlbumKind.Smart).filter({ isFavorite: true }).build();
+      smartAlbum.cachedAssetCount = 7;
+      smartAlbum.cachedThumbnailAssetId = cachedThumbnailAssetId;
+      smartAlbum.cachedStartDate = '2024-01-15';
+      smartAlbum.cachedEndDate = '2024-12-25';
+      smartAlbum.cacheComputedAt = computedAt;
+      smartAlbum.cacheInvalidatedAt = null;
+      const { user: owner } = smartAlbum.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.album.getAll.mockResolvedValue([getForAlbum(smartAlbum)]);
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        { albumId: smartAlbum.id, assetCount: 0, startDate: null, endDate: null, lastModifiedAssetTimestamp: null },
+      ]);
+
+      const result = await sut.getAll(AuthFactory.create(owner), {});
+
+      expect(result).toHaveLength(1);
+      expect(result[0].assetCount).toBe(7);
+      expect(result[0].albumThumbnailAssetId).toBe(cachedThumbnailAssetId);
+      // Fresh cache means no search query and no rewrite.
+      expect(mocks.search.searchMetadata).not.toHaveBeenCalled();
+      expect(mocks.album.updateCachedMetadata).not.toHaveBeenCalled();
+    });
+
+    it('recomputes smart album metadata when cache is stale', async () => {
+      const smartAlbum = AlbumFactory.from().albumUser().kind(AlbumKind.Smart).filter({ isFavorite: true }).build();
+      // Older computed timestamp, newer invalidation timestamp -> stale.
+      smartAlbum.cachedAssetCount = 1;
+      smartAlbum.cachedThumbnailAssetId = newUuid();
+      smartAlbum.cacheComputedAt = new Date('2026-05-22T10:00:00Z');
+      smartAlbum.cacheInvalidatedAt = new Date('2026-05-22T11:00:00Z');
+      const { user: owner } = smartAlbum.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const freshAssetId = newUuid();
+      mocks.album.getAll.mockResolvedValue([getForAlbum(smartAlbum)]);
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        { albumId: smartAlbum.id, assetCount: 0, startDate: null, endDate: null, lastModifiedAssetTimestamp: null },
+      ]);
+      mocks.search.searchMetadata.mockResolvedValue({
+        items: [
+          {
+            id: freshAssetId,
+            fileCreatedAt: new Date('2024-12-25T00:00:00Z'),
+            localDateTime: new Date('2024-12-25T00:00:00Z'),
+          },
+        ] as any,
+        hasNextPage: false,
+      });
+
+      const result = await sut.getAll(AuthFactory.create(owner), {});
+
+      expect(result[0].assetCount).toBe(1);
+      expect(result[0].albumThumbnailAssetId).toBe(freshAssetId);
+      expect(mocks.search.searchMetadata).toHaveBeenCalledTimes(1);
+      expect(mocks.album.updateCachedMetadata).toHaveBeenCalledWith(
+        smartAlbum.id,
+        expect.objectContaining({ cachedAssetCount: 1, cachedThumbnailAssetId: freshAssetId }),
+      );
+    });
+
+    it('recomputes smart album metadata on first read (no computedAt)', async () => {
+      const smartAlbum = AlbumFactory.from().albumUser().kind(AlbumKind.Smart).filter({ isFavorite: true }).build();
+      // cacheComputedAt remains null on a never-read album.
+      expect(smartAlbum.cacheComputedAt).toBeNull();
+      const { user: owner } = smartAlbum.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const assetId = newUuid();
+      mocks.album.getAll.mockResolvedValue([getForAlbum(smartAlbum)]);
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        { albumId: smartAlbum.id, assetCount: 0, startDate: null, endDate: null, lastModifiedAssetTimestamp: null },
+      ]);
+      mocks.search.searchMetadata.mockResolvedValue({
+        items: [{ id: assetId, fileCreatedAt: new Date('2024-05-01T00:00:00Z'), localDateTime: null }] as any,
+        hasNextPage: false,
+      });
+
+      await sut.getAll(AuthFactory.create(owner), {});
+
+      expect(mocks.search.searchMetadata).toHaveBeenCalledTimes(1);
+      expect(mocks.album.updateCachedMetadata).toHaveBeenCalledTimes(1);
     });
 
     it('gets list of albums that have a specific asset', async () => {
@@ -1625,4 +1716,52 @@ describe(AlbumService.name, () => {
 
   //   await expect(sut.removeAssets(auth, albumId, { ids: ['1'] })).rejects.toBeInstanceOf(ForbiddenException);
   // });
+
+  describe('invalidateSmartAlbumsForAsset', () => {
+    it('marks matching smart albums as invalidated', async () => {
+      const ownerId = newUuid();
+      const assetId = newUuid();
+      const matchingAlbumId = newUuid();
+      const nonMatchingAlbumId = newUuid();
+      mocks.album.getSmartAlbumsForOwner.mockResolvedValue([
+        { id: matchingAlbumId, filter: { isFavorite: true }, cachedThumbnailAssetId: null },
+        { id: nonMatchingAlbumId, filter: { rating: 5 }, cachedThumbnailAssetId: null },
+      ] as any);
+      mocks.album.getSmartAlbumsWithCachedThumbnail.mockResolvedValue([]);
+      // First album matches (returns 1 item), second doesn't (returns 0).
+      mocks.search.searchMetadata
+        .mockResolvedValueOnce({ items: [{ id: assetId }] as any, hasNextPage: false })
+        .mockResolvedValueOnce({ items: [] as any, hasNextPage: false });
+
+      await sut.invalidateSmartAlbumsForAsset(ownerId, assetId);
+
+      expect(mocks.album.markCacheInvalidated).toHaveBeenCalledTimes(1);
+      const [ids] = mocks.album.markCacheInvalidated.mock.calls[0];
+      expect(ids).toEqual([matchingAlbumId]);
+    });
+
+    it('also invalidates smart albums whose cached thumbnail is the asset', async () => {
+      const ownerId = newUuid();
+      const assetId = newUuid();
+      const thumbAlbumId = newUuid();
+      mocks.album.getSmartAlbumsForOwner.mockResolvedValue([]);
+      mocks.album.getSmartAlbumsWithCachedThumbnail.mockResolvedValue([thumbAlbumId]);
+
+      await sut.invalidateSmartAlbumsForAsset(ownerId, assetId);
+
+      expect(mocks.album.markCacheInvalidated).toHaveBeenCalledTimes(1);
+      const [ids] = mocks.album.markCacheInvalidated.mock.calls[0];
+      expect(ids).toEqual([thumbAlbumId]);
+    });
+
+    it('does nothing when no smart albums match', async () => {
+      mocks.album.getSmartAlbumsForOwner.mockResolvedValue([]);
+      mocks.album.getSmartAlbumsWithCachedThumbnail.mockResolvedValue([]);
+
+      await sut.invalidateSmartAlbumsForAsset(newUuid(), newUuid());
+
+      // mark gets called with an empty array; the repository method is a no-op in that case.
+      expect(mocks.album.markCacheInvalidated).toHaveBeenCalledWith([], expect.any(Date));
+    });
+  });
 });

@@ -367,9 +367,7 @@ describe(TimelineService.name, () => {
 
       expect(result).toEqual([{ timeBucket: '2024-01-01', count: 5 }]);
       expect(mocks.search.searchMetadata).not.toHaveBeenCalled();
-      expect(mocks.asset.getTimeBuckets).toHaveBeenCalledWith(
-        expect.objectContaining({ albumId: 'regular-album-id' }),
-      );
+      expect(mocks.asset.getTimeBuckets).toHaveBeenCalledWith(expect.objectContaining({ albumId: 'regular-album-id' }));
     });
   });
 });
