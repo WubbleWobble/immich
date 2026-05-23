@@ -1,4 +1,5 @@
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { AlbumUserRole } from 'src/enum';
 import { AlbumContainerService } from 'src/services/album-container.service';
 import { AuthFactory } from 'test/factories/auth.factory';
 import { UserFactory } from 'test/factories/user.factory';
@@ -151,6 +152,52 @@ describe(AlbumContainerService.name, () => {
 
       expect(mocks.albumContainer.move).toHaveBeenCalledWith(id, newParentId);
       expect(result.parentId).toEqual(newParentId);
+    });
+  });
+
+  describe('share', () => {
+    it('adds a user share when called by owner', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const id = newUuid();
+      const sharedUserId = newUuid();
+      mocks.albumContainer.getById.mockResolvedValue({
+        id,
+        ownerId: owner.id,
+        name: 'Folder',
+        parentId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+        updateId: newUuid(),
+      });
+
+      await sut.addUser(auth, id, { userId: sharedUserId, role: AlbumUserRole.Editor });
+
+      expect(mocks.albumContainer.addUser).toHaveBeenCalledWith(id, sharedUserId, AlbumUserRole.Editor);
+    });
+
+    it('rejects share by non-owner', async () => {
+      const owner = UserFactory.create();
+      const otherUser = UserFactory.create();
+      const auth = AuthFactory.create({ id: otherUser.id });
+      const id = newUuid();
+      const sharedUserId = newUuid();
+      mocks.albumContainer.getById.mockResolvedValue({
+        id,
+        ownerId: owner.id,
+        name: 'Folder',
+        parentId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+        updateId: newUuid(),
+      });
+
+      await expect(
+        sut.addUser(auth, id, { userId: sharedUserId, role: AlbumUserRole.Editor }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(mocks.albumContainer.addUser).not.toHaveBeenCalled();
     });
   });
 });
