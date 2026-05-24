@@ -72,8 +72,17 @@
       title={entry.data.name}
       class="flex w-full place-items-center justify-between gap-4 rounded-e-full py-3 ps-10 transition-[padding] delay-100 duration-100 hover:cursor-pointer hover:bg-subtle hover:text-immich-primary group-hover:sm:px-10 md:px-10 dark:text-immich-dark-fg dark:hover:bg-immich-dark-gray dark:hover:text-immich-dark-primary"
     >
-      <div class="flex size-6 items-center justify-center rounded-sm bg-gray-200 dark:bg-gray-600">
-        <Icon icon={mdiFolderOutline} size="14" />
+      <div>
+        {#if entry.data.thumbnailAssetIds?.[0]}
+          <div
+            class="size-6 rounded-sm bg-gray-200 bg-cover dark:bg-gray-600"
+            style="background-image:url('{getAssetMediaUrl({ id: entry.data.thumbnailAssetIds[0] })}')"
+          ></div>
+        {:else}
+          <div class="flex size-6 items-center justify-center rounded-sm bg-gray-200 dark:bg-gray-600">
+            <Icon icon={mdiFolderOutline} size="14" />
+          </div>
+        {/if}
       </div>
       <div class="grow truncate text-sm font-medium">
         {entry.data.name}
