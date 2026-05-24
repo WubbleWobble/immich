@@ -1,8 +1,9 @@
 <script lang="ts">
+  import { authManager } from '$lib/managers/auth-manager.svelte';
   import { getContextMenuPositionFromEvent, type ContextMenuPosition } from '$lib/utils/context-menu';
   import { type AlbumContainerResponseDto } from '@immich/sdk';
   import { Icon, IconButton } from '@immich/ui';
-  import { mdiDotsVertical, mdiFolderOutline } from '@mdi/js';
+  import { mdiDotsVertical, mdiFolderOutline, mdiShareVariantOutline } from '@mdi/js';
   import { t } from 'svelte-i18n';
 
   interface Props {
@@ -12,6 +13,10 @@
   }
 
   let { folder, childCount = 0, onShowContextMenu }: Props = $props();
+
+  const isShared = $derived(
+    (folder.albumContainerUsers && folder.albumContainerUsers.length > 0) || folder.ownerId !== authManager.user.id,
+  );
 
   const showFolderContextMenu = (e: MouseEvent) => {
     e.stopPropagation();
@@ -56,6 +61,9 @@
       title={folder.name}
     >
       {folder.name}
+      {#if isShared}
+        <Icon icon={mdiShareVariantOutline} size="16" class="ms-1 inline opacity-70" title={$t('shared')} />
+      {/if}
     </p>
 
     <span class="flex gap-2 text-sm dark:text-immich-dark-fg" data-testid="folder-details">
