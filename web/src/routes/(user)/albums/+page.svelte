@@ -101,7 +101,10 @@
     if (!folder) {
       return;
     }
-    await modalManager.show(ShareFolderModal, { folder });
+    const changed = await modalManager.show(ShareFolderModal, { folder });
+    if (changed) {
+      await invalidateAll();
+    }
   };
 
   const handleDeleteFolder = async () => {

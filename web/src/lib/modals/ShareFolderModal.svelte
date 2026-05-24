@@ -5,16 +5,21 @@
   import {
     addUserToAlbumContainer,
     AlbumUserRole,
+    getAlbumContainer,
     getAllAlbumContainers,
     getAllAlbums,
+    removeUserFromAlbumContainer,
     searchUsers,
+    updateAlbumContainerUser,
     type AlbumContainerResponseDto,
+    type AlbumContainerUserResponseDto,
     type UserResponseDto,
   } from '@immich/sdk';
   import {
     Alert,
     Field,
     FormModal,
+    HStack,
     ListButton,
     LoadingSpinner,
     Select,
@@ -29,29 +34,39 @@
 
   type Props = {
     folder: AlbumContainerResponseDto;
-    onClose: (added?: boolean) => void;
+    onClose: (changed?: boolean) => void;
   };
 
   let { folder, onClose }: Props = $props();
 
   let users: UserResponseDto[] = $state([]);
   let containers: AlbumContainerResponseDto[] = $state([]);
+  let existingShares: AlbumContainerUserResponseDto[] = $state([]);
   let albumCount = $state(0);
   let folderCount = $state(0);
   let loading = $state(true);
+  let mutating = $state(false);
   let search = $state('');
   let selectedUser: UserResponseDto | undefined = $state();
   let role: AlbumUserRole = $state(AlbumUserRole.Editor);
+  let madeChanges = $state(false);
+
+  const refreshShares = async () => {
+    const fresh = await getAlbumContainer({ id: folder.id });
+    existingShares = fresh.albumContainerUsers ?? [];
+  };
 
   onMount(async () => {
     try {
-      const [allUsers, allContainers, ownedAlbums] = await Promise.all([
+      const [allUsers, allContainers, ownedAlbums, fresh] = await Promise.all([
         searchUsers(),
         getAllAlbumContainers(),
         getAllAlbums({ isOwned: true }),
+        getAlbumContainer({ id: folder.id }),
       ]);
       users = allUsers;
       containers = allContainers;
+      existingShares = fresh.albumContainerUsers ?? [];
 
       // Compute descendant folder set (excluding the root folder itself).
       // eslint-disable-next-line svelte/prefer-svelte-reactivity
@@ -66,9 +81,7 @@
           }
         }
       }
-      // Count subfolders (everything in descendants minus the root itself).
       folderCount = descendants.size - 1;
-      // Count albums whose containerId is in the descendant set.
       albumCount = ownedAlbums.filter((a) => a.containerId && descendants.has(a.containerId)).length;
     } catch (error) {
       handleError(error, $t('errors.unable_to_update_album_info'));
@@ -77,9 +90,13 @@
     }
   });
 
+  const sharedUserIds = $derived(new Set(existingShares.map((s) => s.userId)));
+
   const filteredUsers = $derived(
     sortBy(
-      users.filter((u) => normalizeSearchString(u.name).includes(normalizeSearchString(search))),
+      users.filter(
+        (u) => !sharedUserIds.has(u.id) && normalizeSearchString(u.name).includes(normalizeSearchString(search)),
+      ),
       ['name'],
     ),
   );
@@ -89,20 +106,50 @@
     { label: $t('role_viewer'), value: AlbumUserRole.Viewer },
   ];
 
+  const handleRoleSelect = async (share: AlbumContainerUserResponseDto, value: AlbumUserRole | 'none') => {
+    if (value !== 'none' && value === share.role) {
+      return;
+    }
+    mutating = true;
+    try {
+      await (value === 'none'
+        ? removeUserFromAlbumContainer({ id: folder.id, userId: share.userId })
+        : updateAlbumContainerUser({
+            id: folder.id,
+            userId: share.userId,
+            albumContainerUserUpdateDto: { role: value },
+          }));
+      madeChanges = true;
+      await refreshShares();
+    } catch (error) {
+      handleError(error, $t('errors.unable_to_update_album_info'));
+    } finally {
+      mutating = false;
+    }
+  };
+
   const onSubmit = async () => {
     if (!selectedUser) {
       return;
     }
+    mutating = true;
     try {
       await addUserToAlbumContainer({
         id: folder.id,
         albumContainerUserCreateDto: { userId: selectedUser.id, role },
       });
-      onClose(true);
+      madeChanges = true;
+      selectedUser = undefined;
+      search = '';
+      await refreshShares();
     } catch (error) {
       handleError(error, $t('errors.unable_to_update_album_info'));
+    } finally {
+      mutating = false;
     }
   };
+
+  const onCloseModal = () => onClose(madeChanges);
 </script>
 
 <FormModal
@@ -110,9 +157,9 @@
   title={$t('share_folder')}
   submitText={$t('share')}
   cancelText={$t('cancel')}
-  disabled={!selectedUser}
+  disabled={!selectedUser || mutating}
   size="small"
-  {onClose}
+  onClose={onCloseModal}
   {onSubmit}
 >
   {#if loading}
@@ -121,6 +168,36 @@
     </div>
   {:else}
     <Stack gap={4}>
+      {#if existingShares.length > 0}
+        <div>
+          <Text size="medium" fontWeight="semi-bold" class="mb-2">{$t('people')}</Text>
+          <Stack gap={2}>
+            {#each existingShares as share (share.userId)}
+              <HStack fullWidth class="items-center justify-between gap-3">
+                <HStack class="min-w-0 items-center gap-2">
+                  <UserAvatar user={share.user} size="md" />
+                  <div class="min-w-0 grow text-start">
+                    <Text fontWeight="medium" class="truncate">{share.user.name}</Text>
+                    <Text size="tiny" color="muted" class="truncate">{share.user.email}</Text>
+                  </div>
+                </HStack>
+                <Field class="w-36" disabled={mutating}>
+                  <Select
+                    value={share.role}
+                    options={[
+                      { label: $t('role_editor'), value: AlbumUserRole.Editor },
+                      { label: $t('role_viewer'), value: AlbumUserRole.Viewer },
+                      { label: $t('remove_user'), value: 'none' },
+                    ] as SelectOption<AlbumUserRole | 'none'>[]}
+                    onChange={(value) => handleRoleSelect(share, value)}
+                  />
+                </Field>
+              </HStack>
+            {/each}
+          </Stack>
+        </div>
+      {/if}
+
       <Field label={$t('role')}>
         <Select value={role} options={roleOptions} onChange={(value) => (role = value)} />
       </Field>
