@@ -2,11 +2,14 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import {
   AlbumContainerResponseDto,
   AlbumContainerUserCreateDto,
+  AlbumContainerUserResponseDto,
   AlbumContainerUserUpdateDto,
   CreateAlbumContainerDto,
   UpdateAlbumContainerDto,
 } from 'src/dtos/album-container.dto';
 import { AuthDto } from 'src/dtos/auth.dto';
+import { mapUser } from 'src/dtos/user.dto';
+import { AlbumUserRole } from 'src/enum';
 import { BaseService } from 'src/services/base.service';
 
 const MAX_DEPTH = 16;
@@ -15,7 +18,8 @@ const MAX_DEPTH = 16;
 export class AlbumContainerService extends BaseService {
   async list(auth: AuthDto): Promise<AlbumContainerResponseDto[]> {
     const containers = await this.albumContainerRepository.getForUser(auth.user.id);
-    return containers.map((container) => this.mapToResponse(container));
+    const usersByContainer = await this.fetchUsersByContainer(containers.map((c) => c.id));
+    return containers.map((container) => this.mapToResponse(container, usersByContainer.get(container.id) ?? []));
   }
 
   async get(auth: AuthDto, id: string): Promise<AlbumContainerResponseDto> {
@@ -28,7 +32,33 @@ export class AlbumContainerService extends BaseService {
       // getForUser/list endpoints once exposed; this single-get is a follow-up.
       throw new ForbiddenException('Not allowed');
     }
-    return this.mapToResponse(container);
+    const usersByContainer = await this.fetchUsersByContainer([id]);
+    return this.mapToResponse(container, usersByContainer.get(id) ?? []);
+  }
+
+  private async fetchUsersByContainer(ids: string[]): Promise<Map<string, AlbumContainerUserResponseDto[]>> {
+    const map = new Map<string, AlbumContainerUserResponseDto[]>();
+    if (ids.length === 0) {
+      return map;
+    }
+    const rows = await this.albumContainerRepository.getUsersForContainers(ids);
+    for (const row of rows) {
+      const list = map.get(row.albumContainerId) ?? [];
+      list.push({
+        userId: row.userId,
+        role: row.role as AlbumUserRole,
+        user: mapUser({
+          id: row.user_id,
+          name: row.user_name,
+          email: row.user_email,
+          avatarColor: row.user_avatarColor,
+          profileImagePath: row.user_profileImagePath,
+          profileChangedAt: row.user_profileChangedAt,
+        }),
+      });
+      map.set(row.albumContainerId, list);
+    }
+    return map;
   }
 
   async create(auth: AuthDto, dto: CreateAlbumContainerDto): Promise<AlbumContainerResponseDto> {
@@ -84,7 +114,8 @@ export class AlbumContainerService extends BaseService {
     }
 
     const updated = await this.albumContainerRepository.getById(id);
-    return this.mapToResponse(updated!);
+    const usersByContainer = await this.fetchUsersByContainer([id]);
+    return this.mapToResponse(updated!, usersByContainer.get(id) ?? []);
   }
 
   async delete(auth: AuthDto, id: string): Promise<void> {
@@ -131,19 +162,23 @@ export class AlbumContainerService extends BaseService {
     await this.albumContainerRepository.removeUser(id, userId);
   }
 
-  private mapToResponse(container: {
-    id: string;
-    name: string;
-    ownerId: string;
-    parentId: string | null;
-    createdAt: Date | string;
-    updatedAt: Date | string;
-  }): AlbumContainerResponseDto {
+  private mapToResponse(
+    container: {
+      id: string;
+      name: string;
+      ownerId: string;
+      parentId: string | null;
+      createdAt: Date | string;
+      updatedAt: Date | string;
+    },
+    albumContainerUsers: AlbumContainerUserResponseDto[] = [],
+  ): AlbumContainerResponseDto {
     return {
       id: container.id,
       name: container.name,
       ownerId: container.ownerId,
       parentId: container.parentId,
+      albumContainerUsers,
       createdAt: container.createdAt instanceof Date ? container.createdAt.toISOString() : container.createdAt,
       updatedAt: container.updatedAt instanceof Date ? container.updatedAt.toISOString() : container.updatedAt,
     };

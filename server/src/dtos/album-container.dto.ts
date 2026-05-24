@@ -1,4 +1,5 @@
 import { createZodDto } from 'nestjs-zod';
+import { UserResponseSchema } from 'src/dtos/user.dto';
 import { AlbumUserRoleSchema } from 'src/enum';
 import z from 'zod';
 
@@ -29,6 +30,14 @@ const AlbumContainerUserUpdateSchema = z
   })
   .meta({ id: 'AlbumContainerUserUpdateDto' });
 
+const AlbumContainerUserResponseSchema = z
+  .object({
+    userId: z.uuidv4().describe('User ID'),
+    role: AlbumUserRoleSchema,
+    user: UserResponseSchema,
+  })
+  .meta({ id: 'AlbumContainerUserResponseDto' });
+
 const AlbumContainerResponseSchema = z
   .object({
     id: z.uuidv4().describe('Container ID'),
@@ -37,6 +46,9 @@ const AlbumContainerResponseSchema = z
     parentId: z.uuidv4().nullable().describe('Parent folder ID (null for root)'),
     childContainerIds: z.array(z.uuidv4()).optional().describe('Direct child container IDs'),
     childAlbumIds: z.array(z.uuidv4()).optional().describe('Direct child album IDs'),
+    albumContainerUsers: z
+      .array(AlbumContainerUserResponseSchema)
+      .describe('Users this folder is shared with (owner not included)'),
     createdAt: z.string().meta({ format: 'date-time' }).describe('Creation date'),
     updatedAt: z.string().meta({ format: 'date-time' }).describe('Last update date'),
   })
@@ -46,4 +58,5 @@ export class CreateAlbumContainerDto extends createZodDto(CreateAlbumContainerSc
 export class UpdateAlbumContainerDto extends createZodDto(UpdateAlbumContainerSchema) {}
 export class AlbumContainerUserCreateDto extends createZodDto(AlbumContainerUserCreateSchema) {}
 export class AlbumContainerUserUpdateDto extends createZodDto(AlbumContainerUserUpdateSchema) {}
+export class AlbumContainerUserResponseDto extends createZodDto(AlbumContainerUserResponseSchema) {}
 export class AlbumContainerResponseDto extends createZodDto(AlbumContainerResponseSchema) {}

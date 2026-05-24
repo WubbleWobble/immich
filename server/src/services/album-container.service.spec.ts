@@ -30,11 +30,50 @@ describe(AlbumContainerService.name, () => {
         deletedAt: null,
         updateId: newUuid(),
       });
+      mocks.albumContainer.getUsersForContainers.mockResolvedValue([]);
 
       const result = await sut.get(auth, id);
 
       expect(result.id).toEqual(id);
       expect(result.name).toEqual('Family');
+      expect(result.albumContainerUsers).toEqual([]);
+    });
+
+    it('populates albumContainerUsers from the repository', async () => {
+      const owner = UserFactory.create();
+      const sharedUser = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const id = newUuid();
+      mocks.albumContainer.getById.mockResolvedValue({
+        id,
+        ownerId: owner.id,
+        name: 'Family',
+        parentId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+        updateId: newUuid(),
+      });
+      mocks.albumContainer.getUsersForContainers.mockResolvedValue([
+        {
+          albumContainerId: id,
+          userId: sharedUser.id,
+          role: AlbumUserRole.Viewer,
+          user_id: sharedUser.id,
+          user_name: sharedUser.name,
+          user_email: sharedUser.email,
+          user_avatarColor: sharedUser.avatarColor ?? null,
+          user_profileImagePath: sharedUser.profileImagePath,
+          user_profileChangedAt: sharedUser.profileChangedAt,
+        },
+      ]);
+
+      const result = await sut.get(auth, id);
+
+      expect(result.albumContainerUsers).toHaveLength(1);
+      expect(result.albumContainerUsers[0].userId).toEqual(sharedUser.id);
+      expect(result.albumContainerUsers[0].role).toEqual(AlbumUserRole.Viewer);
+      expect(result.albumContainerUsers[0].user.id).toEqual(sharedUser.id);
     });
 
     it('throws NotFoundException when folder does not exist', async () => {
@@ -197,6 +236,7 @@ describe(AlbumContainerService.name, () => {
       mocks.albumContainer.isDescendantOf.mockResolvedValue(false);
       mocks.albumContainer.getDepth.mockResolvedValue(2);
       mocks.albumContainer.move.mockResolvedValue({ ...container, parentId: newParentId });
+      mocks.albumContainer.getUsersForContainers.mockResolvedValue([]);
 
       const result = await sut.update(auth, id, { parentId: newParentId });
 

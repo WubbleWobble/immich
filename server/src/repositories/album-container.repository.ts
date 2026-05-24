@@ -191,4 +191,29 @@ export class AlbumContainerRepository {
       .returningAll()
       .executeTakeFirstOrThrow();
   }
+
+  @GenerateSql({ params: [[DummyValue.UUID]] })
+  async getUsersForContainers(albumContainerIds: string[]) {
+    if (albumContainerIds.length === 0) {
+      return [];
+    }
+    return this.db
+      .selectFrom('album_container_user')
+      .innerJoin('user', 'user.id', 'album_container_user.userId')
+      .select([
+        'album_container_user.albumContainerId as albumContainerId',
+        'album_container_user.userId as userId',
+        'album_container_user.role as role',
+        'user.id as user_id',
+        'user.name as user_name',
+        'user.email as user_email',
+        'user.avatarColor as user_avatarColor',
+        'user.profileImagePath as user_profileImagePath',
+        'user.profileChangedAt as user_profileChangedAt',
+      ])
+      .where('album_container_user.albumContainerId', 'in', albumContainerIds)
+      .where('user.deletedAt', 'is', null)
+      .orderBy('user.name', 'asc')
+      .execute();
+  }
 }
