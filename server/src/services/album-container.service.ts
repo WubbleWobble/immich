@@ -18,8 +18,16 @@ const MAX_DEPTH = 16;
 export class AlbumContainerService extends BaseService {
   async list(auth: AuthDto): Promise<AlbumContainerResponseDto[]> {
     const containers = await this.albumContainerRepository.getForUser(auth.user.id);
-    const usersByContainer = await this.fetchUsersByContainer(containers.map((c) => c.id));
-    return containers.map((container) => this.mapToResponse(container, usersByContainer.get(container.id) ?? []));
+    const ids = containers.map((c) => c.id);
+    const usersByContainer = await this.fetchUsersByContainer(ids);
+    const thumbnailsByContainer = await this.albumContainerRepository.getThumbnailAssetIdsForContainers(ids);
+    return containers.map((container) =>
+      this.mapToResponse(
+        container,
+        usersByContainer.get(container.id) ?? [],
+        thumbnailsByContainer.get(container.id) ?? [],
+      ),
+    );
   }
 
   async get(auth: AuthDto, id: string): Promise<AlbumContainerResponseDto> {
@@ -33,7 +41,8 @@ export class AlbumContainerService extends BaseService {
       throw new ForbiddenException('Not allowed');
     }
     const usersByContainer = await this.fetchUsersByContainer([id]);
-    return this.mapToResponse(container, usersByContainer.get(id) ?? []);
+    const thumbnailsByContainer = await this.albumContainerRepository.getThumbnailAssetIdsForContainers([id]);
+    return this.mapToResponse(container, usersByContainer.get(id) ?? [], thumbnailsByContainer.get(id) ?? []);
   }
 
   private async fetchUsersByContainer(ids: string[]): Promise<Map<string, AlbumContainerUserResponseDto[]>> {
@@ -82,7 +91,7 @@ export class AlbumContainerService extends BaseService {
       parentId: dto.parentId ?? null,
     });
 
-    return this.mapToResponse(container);
+    return this.mapToResponse(container, [], []);
   }
 
   async update(auth: AuthDto, id: string, dto: UpdateAlbumContainerDto): Promise<AlbumContainerResponseDto> {
@@ -115,7 +124,8 @@ export class AlbumContainerService extends BaseService {
 
     const updated = await this.albumContainerRepository.getById(id);
     const usersByContainer = await this.fetchUsersByContainer([id]);
-    return this.mapToResponse(updated!, usersByContainer.get(id) ?? []);
+    const thumbnailsByContainer = await this.albumContainerRepository.getThumbnailAssetIdsForContainers([id]);
+    return this.mapToResponse(updated!, usersByContainer.get(id) ?? [], thumbnailsByContainer.get(id) ?? []);
   }
 
   async delete(auth: AuthDto, id: string): Promise<void> {
@@ -172,12 +182,14 @@ export class AlbumContainerService extends BaseService {
       updatedAt: Date | string;
     },
     albumContainerUsers: AlbumContainerUserResponseDto[] = [],
+    thumbnailAssetIds: string[] = [],
   ): AlbumContainerResponseDto {
     return {
       id: container.id,
       name: container.name,
       ownerId: container.ownerId,
       parentId: container.parentId,
+      thumbnailAssetIds,
       albumContainerUsers,
       createdAt: container.createdAt instanceof Date ? container.createdAt.toISOString() : container.createdAt,
       updatedAt: container.updatedAt instanceof Date ? container.updatedAt.toISOString() : container.updatedAt,

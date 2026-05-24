@@ -46,6 +46,10 @@ const AlbumContainerResponseSchema = z
     parentId: z.uuidv4().nullable().describe('Parent folder ID (null for root)'),
     childContainerIds: z.array(z.uuidv4()).optional().describe('Direct child container IDs'),
     childAlbumIds: z.array(z.uuidv4()).optional().describe('Direct child album IDs'),
+    thumbnailAssetIds: z
+      .array(z.uuidv4())
+      .max(4)
+      .describe('Up to 4 recent descendant asset IDs for a folder mosaic thumbnail'),
     albumContainerUsers: z
       .array(AlbumContainerUserResponseSchema)
       .describe('Users this folder is shared with (owner not included)'),

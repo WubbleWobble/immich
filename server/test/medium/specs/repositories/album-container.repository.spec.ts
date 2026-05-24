@@ -176,6 +176,87 @@ describe(AlbumContainerRepository.name, () => {
     });
   });
 
+  describe('getThumbnailAssetIdsForContainers', () => {
+    it('returns an empty map when no container ids are given', async () => {
+      const { sut } = setup();
+      const result = await sut.getThumbnailAssetIdsForContainers([]);
+      expect(result.size).toBe(0);
+    });
+
+    it('returns recent asset ids from albums under the container subtree', async () => {
+      const { ctx, sut } = setup();
+      const { user } = await ctx.newUser();
+
+      const parent = await sut.create({ ownerId: user.id, name: 'Parent', parentId: null });
+      const child = await sut.create({ ownerId: user.id, name: 'Child', parentId: parent.id });
+
+      const olderAsset = await ctx.newAsset({
+        ownerId: user.id,
+        fileCreatedAt: new Date('2020-01-01T00:00:00Z'),
+      });
+      const newerAsset = await ctx.newAsset({
+        ownerId: user.id,
+        fileCreatedAt: new Date('2024-01-01T00:00:00Z'),
+      });
+
+      const { album: parentAlbum } = await ctx.newAlbum({ ownerId: user.id, containerId: parent.id });
+      const { album: childAlbum } = await ctx.newAlbum({ ownerId: user.id, containerId: child.id });
+
+      await ctx.newAlbumAsset({ albumId: parentAlbum.id, assetId: olderAsset.result.id });
+      await ctx.newAlbumAsset({ albumId: childAlbum.id, assetId: newerAsset.result.id });
+
+      const result = await sut.getThumbnailAssetIdsForContainers([parent.id, child.id]);
+
+      // Parent surfaces both (newest first).
+      expect(result.get(parent.id)).toEqual([newerAsset.result.id, olderAsset.result.id]);
+      // Child only surfaces its own.
+      expect(result.get(child.id)).toEqual([newerAsset.result.id]);
+    });
+
+    it('dedupes the same asset across multiple albums under the same folder', async () => {
+      const { ctx, sut } = setup();
+      const { user } = await ctx.newUser();
+
+      const folder = await sut.create({ ownerId: user.id, name: 'Folder', parentId: null });
+
+      const asset = await ctx.newAsset({
+        ownerId: user.id,
+        fileCreatedAt: new Date('2024-01-01T00:00:00Z'),
+      });
+
+      const { album: a } = await ctx.newAlbum({ ownerId: user.id, containerId: folder.id });
+      const { album: b } = await ctx.newAlbum({ ownerId: user.id, containerId: folder.id });
+      await ctx.newAlbumAsset({ albumId: a.id, assetId: asset.result.id });
+      await ctx.newAlbumAsset({ albumId: b.id, assetId: asset.result.id });
+
+      const result = await sut.getThumbnailAssetIdsForContainers([folder.id]);
+      expect(result.get(folder.id)).toEqual([asset.result.id]);
+    });
+
+    it('caps at 4 asset ids per container', async () => {
+      const { ctx, sut } = setup();
+      const { user } = await ctx.newUser();
+
+      const folder = await sut.create({ ownerId: user.id, name: 'Folder', parentId: null });
+      const { album } = await ctx.newAlbum({ ownerId: user.id, containerId: folder.id });
+
+      const assets = await Promise.all(
+        [1, 2, 3, 4, 5, 6].map((i) =>
+          ctx.newAsset({
+            ownerId: user.id,
+            fileCreatedAt: new Date(`2024-01-0${i}T00:00:00Z`),
+          }),
+        ),
+      );
+      for (const asset of assets) {
+        await ctx.newAlbumAsset({ albumId: album.id, assetId: asset.result.id });
+      }
+
+      const result = await sut.getThumbnailAssetIdsForContainers([folder.id]);
+      expect(result.get(folder.id)).toHaveLength(4);
+    });
+  });
+
   describe('cascade album access', () => {
     it('grants album access to a user shared on an ancestor folder', async () => {
       const { ctx, sut } = setup();

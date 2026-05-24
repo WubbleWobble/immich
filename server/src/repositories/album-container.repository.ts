@@ -193,6 +193,56 @@ export class AlbumContainerRepository {
   }
 
   @GenerateSql({ params: [[DummyValue.UUID]] })
+  async getThumbnailAssetIdsForContainers(containerIds: string[]): Promise<Map<string, string[]>> {
+    const result = new Map<string, string[]>();
+    if (containerIds.length === 0) {
+      return result;
+    }
+
+    // Two unioned sources of "(container, asset, sortKey)" rows:
+    //   1. Regular albums under the container subtree -> their album_asset rows.
+    //   2. Smart albums under the container subtree -> their single cachedThumbnailAssetId
+    //      (if any). We avoid running a search per smart album just to populate folder thumbnails.
+    // We sort by asset.fileCreatedAt DESC to match what AlbumCover uses for recency,
+    // dedupe asset IDs per container (an asset can live in multiple albums under a folder),
+    // and keep the top 4 per container in app code.
+    const regular = this.db
+      .selectFrom('album_container_closure as closure')
+      .innerJoin('album', 'album.containerId', 'closure.id_descendant')
+      .innerJoin('album_asset', 'album_asset.albumId', 'album.id')
+      .innerJoin('asset', 'asset.id', 'album_asset.assetId')
+      .where('closure.id_ancestor', 'in', containerIds)
+      .where('album.deletedAt', 'is', null)
+      .where('asset.deletedAt', 'is', null)
+      .select(['closure.id_ancestor as containerId', 'asset.id as assetId', 'asset.fileCreatedAt as fileCreatedAt']);
+
+    const smart = this.db
+      .selectFrom('album_container_closure as closure')
+      .innerJoin('album', 'album.containerId', 'closure.id_descendant')
+      .innerJoin('asset', 'asset.id', 'album.cachedThumbnailAssetId')
+      .where('closure.id_ancestor', 'in', containerIds)
+      .where('album.deletedAt', 'is', null)
+      .where('asset.deletedAt', 'is', null)
+      .select(['closure.id_ancestor as containerId', 'asset.id as assetId', 'asset.fileCreatedAt as fileCreatedAt']);
+
+    const rows = await regular.union(smart).orderBy('fileCreatedAt', 'desc').execute();
+
+    for (const row of rows) {
+      const list = result.get(row.containerId) ?? [];
+      if (list.length >= 4) {
+        continue;
+      }
+      if (list.includes(row.assetId)) {
+        continue;
+      }
+      list.push(row.assetId);
+      result.set(row.containerId, list);
+    }
+
+    return result;
+  }
+
+  @GenerateSql({ params: [[DummyValue.UUID]] })
   async getUsersForContainers(albumContainerIds: string[]) {
     if (albumContainerIds.length === 0) {
       return [];

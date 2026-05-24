@@ -15,6 +15,61 @@ describe(AlbumContainerService.name, () => {
     ({ sut, mocks } = newTestService(AlbumContainerService));
   });
 
+  describe('list', () => {
+    it('populates thumbnailAssetIds from the repository', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const containerId = newUuid();
+      const asset1 = newUuid();
+      const asset2 = newUuid();
+      mocks.albumContainer.getForUser.mockResolvedValue([
+        {
+          id: containerId,
+          ownerId: owner.id,
+          name: 'Trip',
+          parentId: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          deletedAt: null,
+          updateId: newUuid(),
+        },
+      ]);
+      mocks.albumContainer.getUsersForContainers.mockResolvedValue([]);
+      mocks.albumContainer.getThumbnailAssetIdsForContainers.mockResolvedValue(
+        new Map([[containerId, [asset1, asset2]]]),
+      );
+
+      const result = await sut.list(auth);
+
+      expect(result).toHaveLength(1);
+      expect(result[0].thumbnailAssetIds).toEqual([asset1, asset2]);
+    });
+
+    it('defaults to empty thumbnailAssetIds when no descendant assets', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const containerId = newUuid();
+      mocks.albumContainer.getForUser.mockResolvedValue([
+        {
+          id: containerId,
+          ownerId: owner.id,
+          name: 'Empty',
+          parentId: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          deletedAt: null,
+          updateId: newUuid(),
+        },
+      ]);
+      mocks.albumContainer.getUsersForContainers.mockResolvedValue([]);
+      mocks.albumContainer.getThumbnailAssetIdsForContainers.mockResolvedValue(new Map());
+
+      const result = await sut.list(auth);
+
+      expect(result[0].thumbnailAssetIds).toEqual([]);
+    });
+  });
+
   describe('get', () => {
     it('returns the folder for its owner', async () => {
       const owner = UserFactory.create();
@@ -31,12 +86,14 @@ describe(AlbumContainerService.name, () => {
         updateId: newUuid(),
       });
       mocks.albumContainer.getUsersForContainers.mockResolvedValue([]);
+      mocks.albumContainer.getThumbnailAssetIdsForContainers.mockResolvedValue(new Map());
 
       const result = await sut.get(auth, id);
 
       expect(result.id).toEqual(id);
       expect(result.name).toEqual('Family');
       expect(result.albumContainerUsers).toEqual([]);
+      expect(result.thumbnailAssetIds).toEqual([]);
     });
 
     it('populates albumContainerUsers from the repository', async () => {
@@ -54,6 +111,7 @@ describe(AlbumContainerService.name, () => {
         deletedAt: null,
         updateId: newUuid(),
       });
+      mocks.albumContainer.getThumbnailAssetIdsForContainers.mockResolvedValue(new Map());
       mocks.albumContainer.getUsersForContainers.mockResolvedValue([
         {
           albumContainerId: id,
@@ -237,6 +295,7 @@ describe(AlbumContainerService.name, () => {
       mocks.albumContainer.getDepth.mockResolvedValue(2);
       mocks.albumContainer.move.mockResolvedValue({ ...container, parentId: newParentId });
       mocks.albumContainer.getUsersForContainers.mockResolvedValue([]);
+      mocks.albumContainer.getThumbnailAssetIdsForContainers.mockResolvedValue(new Map());
 
       const result = await sut.update(auth, id, { parentId: newParentId });
 
