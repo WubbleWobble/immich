@@ -442,7 +442,15 @@ export type AssetStatsResponseDto = {
     /** Number of videos */
     videos: number;
 };
+export type AlbumContainerUserResponseDto = {
+    role: AlbumUserRole;
+    user: UserResponseDto;
+    /** User ID */
+    userId: string;
+};
 export type AlbumContainerResponseDto = {
+    /** Users this folder is shared with (owner not included) */
+    albumContainerUsers: AlbumContainerUserResponseDto[];
     /** Direct child album IDs */
     childAlbumIds?: string[];
     /** Direct child container IDs */
@@ -457,6 +465,8 @@ export type AlbumContainerResponseDto = {
     ownerId: string;
     /** Parent folder ID (null for root) */
     parentId: string | null;
+    /** Up to 4 recent descendant asset IDs for a folder mosaic thumbnail */
+    thumbnailAssetIds: string[];
     /** Last update date */
     updatedAt: string;
 };

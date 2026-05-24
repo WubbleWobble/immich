@@ -15954,6 +15954,13 @@
       },
       "AlbumContainerResponseDto": {
         "properties": {
+          "albumContainerUsers": {
+            "description": "Users this folder is shared with (owner not included)",
+            "items": {
+              "$ref": "#/components/schemas/AlbumContainerUserResponseDto"
+            },
+            "type": "array"
+          },
           "childAlbumIds": {
             "description": "Direct child album IDs",
             "items": {
@@ -16000,6 +16007,16 @@
             "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
             "type": "string"
           },
+          "thumbnailAssetIds": {
+            "description": "Up to 4 recent descendant asset IDs for a folder mosaic thumbnail",
+            "items": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            },
+            "maxItems": 4,
+            "type": "array"
+          },
           "updatedAt": {
             "description": "Last update date",
             "format": "date-time",
@@ -16007,11 +16024,13 @@
           }
         },
         "required": [
+          "albumContainerUsers",
           "createdAt",
           "id",
           "name",
           "ownerId",
           "parentId",
+          "thumbnailAssetIds",
           "updatedAt"
         ],
         "type": "object"
@@ -16030,6 +16049,28 @@
         },
         "required": [
           "role",
+          "userId"
+        ],
+        "type": "object"
+      },
+      "AlbumContainerUserResponseDto": {
+        "properties": {
+          "role": {
+            "$ref": "#/components/schemas/AlbumUserRole"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserResponseDto"
+          },
+          "userId": {
+            "description": "User ID",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "user",
           "userId"
         ],
         "type": "object"

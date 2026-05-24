@@ -199,14 +199,14 @@ export class AlbumContainerRepository {
       return result;
     }
 
-    // Two unioned sources of "(container, asset, sortKey)" rows:
-    //   1. Regular albums under the container subtree -> their album_asset rows.
-    //   2. Smart albums under the container subtree -> their single cachedThumbnailAssetId
-    //      (if any). We avoid running a search per smart album just to populate folder thumbnails.
-    // We sort by asset.fileCreatedAt DESC to match what AlbumCover uses for recency,
-    // dedupe asset IDs per container (an asset can live in multiple albums under a folder),
-    // and keep the top 4 per container in app code.
-    const regular = this.db
+    // Source: regular albums under the container subtree -> their album_asset rows.
+    // Sorted by asset.fileCreatedAt DESC to match what AlbumCover uses for recency.
+    // Asset IDs are deduped per container (an asset can live in multiple albums under a folder)
+    // and the top 4 per container are kept in app code.
+    //
+    // Note: when smart-albums also land on this branch, this method will need a UNION with
+    // smart-album cached-thumbnail rows so folders containing smart albums also surface a mosaic.
+    const rows = await this.db
       .selectFrom('album_container_closure as closure')
       .innerJoin('album', 'album.containerId', 'closure.id_descendant')
       .innerJoin('album_asset', 'album_asset.albumId', 'album.id')
@@ -214,18 +214,9 @@ export class AlbumContainerRepository {
       .where('closure.id_ancestor', 'in', containerIds)
       .where('album.deletedAt', 'is', null)
       .where('asset.deletedAt', 'is', null)
-      .select(['closure.id_ancestor as containerId', 'asset.id as assetId', 'asset.fileCreatedAt as fileCreatedAt']);
-
-    const smart = this.db
-      .selectFrom('album_container_closure as closure')
-      .innerJoin('album', 'album.containerId', 'closure.id_descendant')
-      .innerJoin('asset', 'asset.id', 'album.cachedThumbnailAssetId')
-      .where('closure.id_ancestor', 'in', containerIds)
-      .where('album.deletedAt', 'is', null)
-      .where('asset.deletedAt', 'is', null)
-      .select(['closure.id_ancestor as containerId', 'asset.id as assetId', 'asset.fileCreatedAt as fileCreatedAt']);
-
-    const rows = await regular.union(smart).orderBy('fileCreatedAt', 'desc').execute();
+      .select(['closure.id_ancestor as containerId', 'asset.id as assetId', 'asset.fileCreatedAt as fileCreatedAt'])
+      .orderBy('fileCreatedAt', 'desc')
+      .execute();
 
     for (const row of rows) {
       const list = result.get(row.containerId) ?? [];
