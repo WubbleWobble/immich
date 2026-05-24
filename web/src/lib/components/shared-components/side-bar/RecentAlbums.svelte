@@ -3,7 +3,12 @@
   import { userInteraction } from '$lib/stores/user.svelte';
   import { getAssetMediaUrl } from '$lib/utils';
   import { handleError } from '$lib/utils/handle-error';
-  import { getAllAlbumContainers, getAllAlbums, type AlbumContainerResponseDto, type AlbumResponseDto } from '@immich/sdk';
+  import {
+    getAllAlbumContainers,
+    getAllAlbums,
+    type AlbumContainerResponseDto,
+    type AlbumResponseDto,
+  } from '@immich/sdk';
   import { Icon } from '@immich/ui';
   import { mdiFolderOutline } from '@mdi/js';
   import { t } from 'svelte-i18n';
@@ -22,9 +27,7 @@
         ...allContainers.map((c): FolderEntry => ({ kind: 'folder', data: c })),
       ];
       entries = mixed.sort((a, b) => (a.data.updatedAt > b.data.updatedAt ? -1 : 1)).slice(0, 3);
-      userInteraction.recentAlbums = entries
-        .filter((e): e is AlbumEntry => e.kind === 'album')
-        .map((e) => e.data);
+      userInteraction.recentAlbums = entries.filter((e): e is AlbumEntry => e.kind === 'album').map((e) => e.data);
     } catch (error) {
       handleError(error, $t('failed_to_load_assets'));
     }
