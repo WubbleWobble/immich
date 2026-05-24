@@ -22,9 +22,13 @@
   const refresh = async () => {
     try {
       const [allAlbums, allContainers] = await Promise.all([getAllAlbums({}), getAllAlbumContainers()]);
+      // Sidebar only surfaces root-level items. Albums/folders nested inside a folder are reachable
+      // via that folder; bubbling them up would be redundant and confusing in a 3-item list.
+      const rootAlbums = allAlbums.filter((a) => !a.containerId);
+      const rootContainers = allContainers.filter((c) => !c.parentId);
       const mixed: Entry[] = [
-        ...allAlbums.map((a): AlbumEntry => ({ kind: 'album', data: a })),
-        ...allContainers.map((c): FolderEntry => ({ kind: 'folder', data: c })),
+        ...rootAlbums.map((a): AlbumEntry => ({ kind: 'album', data: a })),
+        ...rootContainers.map((c): FolderEntry => ({ kind: 'folder', data: c })),
       ];
       entries = mixed.sort((a, b) => (a.data.updatedAt > b.data.updatedAt ? -1 : 1)).slice(0, 3);
       userInteraction.recentAlbums = entries.filter((e): e is AlbumEntry => e.kind === 'album').map((e) => e.data);
