@@ -53,11 +53,13 @@
   let scopedOwnedAlbums = $derived((data.albums ?? []).filter((a) => (a.containerId ?? null) === folderId));
   let scopedSharedAlbums = $derived((data.sharedAlbums ?? []).filter((a) => (a.containerId ?? null) === folderId));
 
-  // Direct child count for a folder (sub-folders + albums in that folder).
+  // Direct child count for a folder (sub-folders + albums in that folder). Includes albums
+  // reached via cascade share so recipients of a shared folder see correct counts.
   const childCountFor = (folder: AlbumContainerResponseDto) => {
     const subFolders = containers.filter((c) => c.parentId === folder.id).length;
-    const subAlbums = (data.albums ?? []).filter((a) => a.containerId === folder.id).length;
-    return subFolders + subAlbums;
+    const subOwned = (data.albums ?? []).filter((a) => a.containerId === folder.id).length;
+    const subShared = (data.sharedAlbums ?? []).filter((a) => a.containerId === folder.id).length;
+    return subFolders + subOwned + subShared;
   };
 
   const navigateToFolder = async (id: string | null) => {
