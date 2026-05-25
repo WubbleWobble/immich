@@ -464,6 +464,23 @@ describe(AlbumService.name, () => {
       );
       expect(mocks.album.update).not.toHaveBeenCalled();
     });
+
+    it('rejects non-owner Editor moving the album to their own folder', async () => {
+      const editor = UserFactory.create();
+      const album = AlbumFactory.from().albumUser({ userId: editor.id, role: AlbumUserRole.Editor }).build();
+      const containerId = newUuid();
+      // Editor passes AlbumUpdate (via shared-album access) but is not the owner.
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set());
+      mocks.access.album.checkSharedAlbumAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+
+      await expect(
+        sut.update(AuthFactory.create(editor), album.id, { containerId }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+
+      expect(mocks.albumContainer.getById).not.toHaveBeenCalled();
+      expect(mocks.album.update).not.toHaveBeenCalled();
+    });
   });
 
   describe('delete', () => {

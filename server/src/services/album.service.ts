@@ -155,13 +155,20 @@ export class AlbumService extends BaseService {
       }
     }
 
-    if (dto.containerId !== undefined && dto.containerId !== album.containerId && dto.containerId !== null) {
-      const container = await this.albumContainerRepository.getById(dto.containerId);
-      if (!container) {
-        throw new BadRequestException('Folder not found');
+    if (dto.containerId !== undefined && dto.containerId !== album.containerId) {
+      const albumOwnerId = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
+      if (auth.user.id !== albumOwnerId) {
+        throw new ForbiddenException('Only the album owner can move it to a folder');
       }
-      if (container.ownerId !== auth.user.id) {
-        throw new ForbiddenException("Cannot move album to another user's folder");
+
+      if (dto.containerId !== null) {
+        const container = await this.albumContainerRepository.getById(dto.containerId);
+        if (!container) {
+          throw new BadRequestException('Folder not found');
+        }
+        if (container.ownerId !== auth.user.id) {
+          throw new ForbiddenException("Cannot move album to another user's folder");
+        }
       }
     }
 
