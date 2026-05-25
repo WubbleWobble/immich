@@ -119,7 +119,8 @@ export class AlbumContainerService extends BaseService {
         }
 
         const parentDepth = await this.albumContainerRepository.getDepth(dto.parentId);
-        if (parentDepth + 1 > MAX_DEPTH) {
+        const subtreeHeight = await this.albumContainerRepository.getHeight(id);
+        if (parentDepth + 1 + subtreeHeight > MAX_DEPTH) {
           throw new BadRequestException(`Folder depth exceeds limit of ${MAX_DEPTH}`);
         }
       }

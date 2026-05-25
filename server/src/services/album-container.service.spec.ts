@@ -274,6 +274,34 @@ describe(AlbumContainerService.name, () => {
         .mockResolvedValueOnce({ ...source, id: newParentId });
       mocks.albumContainer.isDescendantOf.mockResolvedValue(false);
       mocks.albumContainer.getDepth.mockResolvedValue(16);
+      mocks.albumContainer.getHeight.mockResolvedValue(0);
+
+      await expect(sut.update(auth, id, { parentId: newParentId })).rejects.toBeInstanceOf(BadRequestException);
+      expect(mocks.albumContainer.move).not.toHaveBeenCalled();
+    });
+
+    it('rejects move that would push subtree past depth limit', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const id = newUuid();
+      const newParentId = newUuid();
+      const source = {
+        id,
+        ownerId: owner.id,
+        name: 'Folder',
+        parentId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+        updateId: newUuid(),
+      };
+      mocks.albumContainer.getById
+        .mockResolvedValueOnce(source)
+        .mockResolvedValueOnce({ ...source, id: newParentId });
+      mocks.albumContainer.isDescendantOf.mockResolvedValue(false);
+      // 8 + 1 + 9 = 18 > 16
+      mocks.albumContainer.getDepth.mockResolvedValue(8);
+      mocks.albumContainer.getHeight.mockResolvedValue(9);
 
       await expect(sut.update(auth, id, { parentId: newParentId })).rejects.toBeInstanceOf(BadRequestException);
       expect(mocks.albumContainer.move).not.toHaveBeenCalled();
@@ -353,6 +381,7 @@ describe(AlbumContainerService.name, () => {
         .mockResolvedValueOnce({ ...container, parentId: newParentId });
       mocks.albumContainer.isDescendantOf.mockResolvedValue(false);
       mocks.albumContainer.getDepth.mockResolvedValue(2);
+      mocks.albumContainer.getHeight.mockResolvedValue(0);
       mocks.albumContainer.move.mockResolvedValue({ ...container, parentId: newParentId });
       mocks.albumContainer.getUsersForContainers.mockResolvedValue([]);
       mocks.albumContainer.getThumbnailAssetIdsForContainers.mockResolvedValue(new Map());

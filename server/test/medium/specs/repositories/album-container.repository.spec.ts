@@ -176,6 +176,24 @@ describe(AlbumContainerRepository.name, () => {
     });
   });
 
+  describe('getHeight', () => {
+    it('returns the maximum depth from the container to any descendant', async () => {
+      const { ctx, sut } = setup();
+      const { user } = await ctx.newUser();
+
+      const a = await sut.create({ ownerId: user.id, name: 'A', parentId: null });
+      const b = await sut.create({ ownerId: user.id, name: 'B', parentId: a.id });
+      const c = await sut.create({ ownerId: user.id, name: 'C', parentId: b.id });
+
+      // A is the root: deepest descendant is C, distance 2.
+      await expect(sut.getHeight(a.id)).resolves.toBe(2);
+      // B has one descendant C, distance 1.
+      await expect(sut.getHeight(b.id)).resolves.toBe(1);
+      // C is a leaf.
+      await expect(sut.getHeight(c.id)).resolves.toBe(0);
+    });
+  });
+
   describe('getThumbnailAssetIdsForContainers', () => {
     it('returns an empty map when no container ids are given', async () => {
       const { sut } = setup();

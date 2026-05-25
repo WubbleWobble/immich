@@ -153,6 +153,16 @@ export class AlbumContainerRepository {
     return Number(row?.maxDepth ?? 0);
   }
 
+  @GenerateSql({ params: [DummyValue.UUID] })
+  async getHeight(containerId: string): Promise<number> {
+    const row = await this.db
+      .selectFrom('album_container_closure')
+      .select((eb) => eb.fn.max('depth').as('maxDepth'))
+      .where('id_ancestor', '=', containerId)
+      .executeTakeFirst();
+    return Number(row?.maxDepth ?? 0);
+  }
+
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.STRING] })
   async rename(id: string, name: string) {
     return this.db
