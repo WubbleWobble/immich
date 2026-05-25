@@ -190,7 +190,7 @@
       {#if filteredFolders.length === 0}
         <EmptyPlaceholder
           text={$t('no_albums_message')}
-          onClick={() => createAlbumAndRedirect()}
+          onClick={() => createAlbumAndRedirect(undefined, undefined, folderId)}
           class="mx-auto mt-10"
         />
       {/if}

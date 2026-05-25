@@ -546,6 +546,8 @@ export type CreateAlbumDto = {
     albumUsers?: AlbumUserCreateDto[];
     /** Initial asset IDs */
     assetIds?: string[];
+    /** Target folder (null/omit for root) */
+    containerId?: string | null;
     /** Album description */
     description?: string;
 };

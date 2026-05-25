@@ -36,6 +36,7 @@ const CreateAlbumSchema = z
     description: z.string().optional().describe('Album description'),
     albumUsers: z.array(AlbumUserCreateSchema).optional().describe('Album users'),
     assetIds: z.array(z.uuidv4()).optional().describe('Initial asset IDs'),
+    containerId: z.uuidv4().nullable().optional().describe('Target folder (null/omit for root)'),
   })
   .meta({ id: 'CreateAlbumDto' });
 

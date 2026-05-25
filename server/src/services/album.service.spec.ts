@@ -232,6 +232,7 @@ describe(AlbumService.name, () => {
           description: 'description',
           order: album.order,
           albumThumbnailAssetId: assetId,
+          containerId: null,
         },
         [assetId],
         [
@@ -288,6 +289,7 @@ describe(AlbumService.name, () => {
           description: album.description,
           order: 'asc',
           albumThumbnailAssetId: assetId,
+          containerId: null,
         },
         [assetId],
         [{ userId: owner.id, role: AlbumUserRole.Owner }, albumUser],
@@ -340,6 +342,7 @@ describe(AlbumService.name, () => {
           description: album.description,
           order: 'desc',
           albumThumbnailAssetId: assetId,
+          containerId: null,
         },
         [assetId],
         [{ userId: owner.id, role: AlbumUserRole.Owner }],
@@ -358,6 +361,55 @@ describe(AlbumService.name, () => {
           albumUsers: [{ userId: owner.id, role: AlbumUserRole.Editor }],
         }),
       ).rejects.toBeInstanceOf(BadRequestException);
+      expect(mocks.album.create).not.toHaveBeenCalled();
+    });
+
+    it('creates album with containerId pointing to owned folder', async () => {
+      const album = AlbumFactory.create();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const containerId = newUuid();
+      mocks.album.create.mockResolvedValue(getForAlbum({ ...album, containerId }));
+      mocks.user.getMetadata.mockResolvedValue([]);
+      mocks.albumContainer.getById.mockResolvedValue({
+        id: containerId,
+        ownerId: owner.id,
+        name: 'Family',
+        parentId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+        updateId: newUuid(),
+      });
+
+      await sut.create(AuthFactory.create(owner), { albumName: 'In Folder', containerId });
+
+      expect(mocks.album.create).toHaveBeenCalledWith(
+        expect.objectContaining({ albumName: 'In Folder', containerId }),
+        [],
+        [{ userId: owner.id, role: AlbumUserRole.Owner }],
+        owner.id,
+      );
+    });
+
+    it("rejects create with containerId pointing to another user's folder", async () => {
+      const album = AlbumFactory.create();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const otherOwner = UserFactory.create();
+      const containerId = newUuid();
+      mocks.albumContainer.getById.mockResolvedValue({
+        id: containerId,
+        ownerId: otherOwner.id,
+        name: 'Other',
+        parentId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+        updateId: newUuid(),
+      });
+
+      await expect(
+        sut.create(AuthFactory.create(owner), { albumName: 'In Folder', containerId }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
       expect(mocks.album.create).not.toHaveBeenCalled();
     });
   });
@@ -474,9 +526,9 @@ describe(AlbumService.name, () => {
       mocks.access.album.checkSharedAlbumAccess.mockResolvedValue(new Set([album.id]));
       mocks.album.getById.mockResolvedValue(getForAlbum(album));
 
-      await expect(
-        sut.update(AuthFactory.create(editor), album.id, { containerId }),
-      ).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(sut.update(AuthFactory.create(editor), album.id, { containerId })).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
 
       expect(mocks.albumContainer.getById).not.toHaveBeenCalled();
       expect(mocks.album.update).not.toHaveBeenCalled();

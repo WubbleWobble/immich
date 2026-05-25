@@ -141,7 +141,7 @@
 <!-- Create Album -->
 <Button
   leadingIcon={mdiPlusBoxOutline}
-  onclick={() => createAlbumAndRedirect()}
+  onclick={() => createAlbumAndRedirect(undefined, undefined, currentFolderId)}
   size="small"
   variant="ghost"
   color="secondary"

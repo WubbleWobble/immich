@@ -115,6 +115,16 @@ export class AlbumService extends BaseService {
       }
     }
 
+    if (dto.containerId) {
+      const container = await this.albumContainerRepository.getById(dto.containerId);
+      if (!container) {
+        throw new BadRequestException('Folder not found');
+      }
+      if (container.ownerId !== auth.user.id) {
+        throw new ForbiddenException("Cannot create album in another user's folder");
+      }
+    }
+
     const allowedAssetIdsSet = await this.checkAccess({
       auth,
       permission: Permission.AssetShare,
@@ -130,6 +140,7 @@ export class AlbumService extends BaseService {
         description: dto.description,
         albumThumbnailAssetId: assetIds[0] || null,
         order: getPreferences(userMetadata).albums.defaultAssetOrder,
+        containerId: dto.containerId ?? null,
       },
       assetIds,
       [{ userId: auth.user.id, role: AlbumUserRole.Owner }, ...albumUsers],

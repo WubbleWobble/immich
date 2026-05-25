@@ -7,6 +7,17 @@ import { newUuid } from 'test/small.factory';
 import { newTestService, ServiceMocks } from 'test/utils';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+const folderForOwner = (ownerId: string, id = newUuid()) => ({
+  id,
+  ownerId,
+  name: 'Folder',
+  parentId: null,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+  deletedAt: null,
+  updateId: newUuid(),
+});
+
 describe(AlbumContainerService.name, () => {
   let sut: AlbumContainerService;
   let mocks: ServiceMocks;
@@ -245,9 +256,7 @@ describe(AlbumContainerService.name, () => {
         deletedAt: null,
         updateId: newUuid(),
       };
-      mocks.albumContainer.getById
-        .mockResolvedValueOnce(source)
-        .mockResolvedValueOnce({ ...source, id: descendantId });
+      mocks.albumContainer.getById.mockResolvedValueOnce(source).mockResolvedValueOnce({ ...source, id: descendantId });
       mocks.albumContainer.isDescendantOf.mockResolvedValue(true);
 
       await expect(sut.update(auth, id, { parentId: descendantId })).rejects.toBeInstanceOf(BadRequestException);
@@ -269,9 +278,7 @@ describe(AlbumContainerService.name, () => {
         deletedAt: null,
         updateId: newUuid(),
       };
-      mocks.albumContainer.getById
-        .mockResolvedValueOnce(source)
-        .mockResolvedValueOnce({ ...source, id: newParentId });
+      mocks.albumContainer.getById.mockResolvedValueOnce(source).mockResolvedValueOnce({ ...source, id: newParentId });
       mocks.albumContainer.isDescendantOf.mockResolvedValue(false);
       mocks.albumContainer.getDepth.mockResolvedValue(16);
       mocks.albumContainer.getHeight.mockResolvedValue(0);
@@ -295,9 +302,7 @@ describe(AlbumContainerService.name, () => {
         deletedAt: null,
         updateId: newUuid(),
       };
-      mocks.albumContainer.getById
-        .mockResolvedValueOnce(source)
-        .mockResolvedValueOnce({ ...source, id: newParentId });
+      mocks.albumContainer.getById.mockResolvedValueOnce(source).mockResolvedValueOnce({ ...source, id: newParentId });
       mocks.albumContainer.isDescendantOf.mockResolvedValue(false);
       // 8 + 1 + 9 = 18 > 16
       mocks.albumContainer.getDepth.mockResolvedValue(8);
@@ -394,17 +399,6 @@ describe(AlbumContainerService.name, () => {
   });
 
   describe('share', () => {
-    const folderForOwner = (ownerId: string, id = newUuid()) => ({
-      id,
-      ownerId,
-      name: 'Folder',
-      parentId: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      deletedAt: null,
-      updateId: newUuid(),
-    });
-
     it('adds a user share when called by owner', async () => {
       const owner = UserFactory.create();
       const sharedUser = UserFactory.create();
@@ -425,9 +419,9 @@ describe(AlbumContainerService.name, () => {
       const id = newUuid();
       mocks.albumContainer.getById.mockResolvedValue(folderForOwner(owner.id, id));
 
-      await expect(
-        sut.addUser(auth, id, { userId: newUuid(), role: AlbumUserRole.Owner }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      await expect(sut.addUser(auth, id, { userId: newUuid(), role: AlbumUserRole.Owner })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
       expect(mocks.albumContainer.addUser).not.toHaveBeenCalled();
     });
 
@@ -437,9 +431,9 @@ describe(AlbumContainerService.name, () => {
       const id = newUuid();
       mocks.albumContainer.getById.mockResolvedValue(folderForOwner(owner.id, id));
 
-      await expect(
-        sut.addUser(auth, id, { userId: owner.id, role: AlbumUserRole.Editor }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      await expect(sut.addUser(auth, id, { userId: owner.id, role: AlbumUserRole.Editor })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
       expect(mocks.albumContainer.addUser).not.toHaveBeenCalled();
     });
 
@@ -456,11 +450,12 @@ describe(AlbumContainerService.name, () => {
         createdAt: new Date(),
         updatedAt: new Date(),
         updateId: newUuid(),
+        createId: newUuid(),
       });
 
-      await expect(
-        sut.addUser(auth, id, { userId: sharedUser.id, role: AlbumUserRole.Editor }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      await expect(sut.addUser(auth, id, { userId: sharedUser.id, role: AlbumUserRole.Editor })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
       expect(mocks.albumContainer.addUser).not.toHaveBeenCalled();
     });
 
@@ -473,9 +468,9 @@ describe(AlbumContainerService.name, () => {
       mocks.albumContainer.getUser.mockResolvedValue(void 0);
       mocks.user.get.mockResolvedValue(void 0);
 
-      await expect(
-        sut.addUser(auth, id, { userId, role: AlbumUserRole.Editor }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      await expect(sut.addUser(auth, id, { userId, role: AlbumUserRole.Editor })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
       expect(mocks.albumContainer.addUser).not.toHaveBeenCalled();
     });
 
