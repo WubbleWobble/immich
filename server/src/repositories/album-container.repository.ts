@@ -173,6 +173,16 @@ export class AlbumContainerRepository {
       .executeTakeFirstOrThrow();
   }
 
+  @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID] })
+  async getUser(albumContainerId: string, userId: string) {
+    return this.db
+      .selectFrom('album_container_user')
+      .selectAll()
+      .where('albumContainerId', '=', albumContainerId)
+      .where('userId', '=', userId)
+      .executeTakeFirst();
+  }
+
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID, AlbumUserRole.Editor] })
   async addUser(albumContainerId: string, userId: string, role: AlbumUserRole) {
     return this.db

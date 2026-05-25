@@ -394,25 +394,89 @@ describe(AlbumContainerService.name, () => {
   });
 
   describe('share', () => {
+    const folderForOwner = (ownerId: string, id = newUuid()) => ({
+      id,
+      ownerId,
+      name: 'Folder',
+      parentId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      deletedAt: null,
+      updateId: newUuid(),
+    });
+
     it('adds a user share when called by owner', async () => {
+      const owner = UserFactory.create();
+      const sharedUser = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const id = newUuid();
+      mocks.albumContainer.getById.mockResolvedValue(folderForOwner(owner.id, id));
+      mocks.albumContainer.getUser.mockResolvedValue(void 0);
+      mocks.user.get.mockResolvedValue(sharedUser);
+
+      await sut.addUser(auth, id, { userId: sharedUser.id, role: AlbumUserRole.Editor });
+
+      expect(mocks.albumContainer.addUser).toHaveBeenCalledWith(id, sharedUser.id, AlbumUserRole.Editor);
+    });
+
+    it('rejects share with role Owner', async () => {
       const owner = UserFactory.create();
       const auth = AuthFactory.create({ id: owner.id });
       const id = newUuid();
-      const sharedUserId = newUuid();
-      mocks.albumContainer.getById.mockResolvedValue({
-        id,
-        ownerId: owner.id,
-        name: 'Folder',
-        parentId: null,
+      mocks.albumContainer.getById.mockResolvedValue(folderForOwner(owner.id, id));
+
+      await expect(
+        sut.addUser(auth, id, { userId: newUuid(), role: AlbumUserRole.Owner }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(mocks.albumContainer.addUser).not.toHaveBeenCalled();
+    });
+
+    it('rejects share with self', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const id = newUuid();
+      mocks.albumContainer.getById.mockResolvedValue(folderForOwner(owner.id, id));
+
+      await expect(
+        sut.addUser(auth, id, { userId: owner.id, role: AlbumUserRole.Editor }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(mocks.albumContainer.addUser).not.toHaveBeenCalled();
+    });
+
+    it('rejects duplicate share', async () => {
+      const owner = UserFactory.create();
+      const sharedUser = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const id = newUuid();
+      mocks.albumContainer.getById.mockResolvedValue(folderForOwner(owner.id, id));
+      mocks.albumContainer.getUser.mockResolvedValue({
+        albumContainerId: id,
+        userId: sharedUser.id,
+        role: AlbumUserRole.Viewer,
         createdAt: new Date(),
         updatedAt: new Date(),
-        deletedAt: null,
         updateId: newUuid(),
       });
 
-      await sut.addUser(auth, id, { userId: sharedUserId, role: AlbumUserRole.Editor });
+      await expect(
+        sut.addUser(auth, id, { userId: sharedUser.id, role: AlbumUserRole.Editor }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(mocks.albumContainer.addUser).not.toHaveBeenCalled();
+    });
 
-      expect(mocks.albumContainer.addUser).toHaveBeenCalledWith(id, sharedUserId, AlbumUserRole.Editor);
+    it('rejects share when user does not exist', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const id = newUuid();
+      const userId = newUuid();
+      mocks.albumContainer.getById.mockResolvedValue(folderForOwner(owner.id, id));
+      mocks.albumContainer.getUser.mockResolvedValue(void 0);
+      mocks.user.get.mockResolvedValue(void 0);
+
+      await expect(
+        sut.addUser(auth, id, { userId, role: AlbumUserRole.Editor }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(mocks.albumContainer.addUser).not.toHaveBeenCalled();
     });
 
     it('rejects share by non-owner', async () => {

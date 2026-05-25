@@ -156,6 +156,26 @@ export class AlbumContainerService extends BaseService {
     if (container.ownerId !== auth.user.id) {
       throw new ForbiddenException('Not allowed');
     }
+
+    if (dto.role === AlbumUserRole.Owner) {
+      throw new BadRequestException('Cannot add another owner');
+    }
+
+    if (dto.userId === auth.user.id) {
+      throw new BadRequestException('Cannot share folder with yourself');
+    }
+
+    const existing = await this.albumContainerRepository.getUser(id, dto.userId);
+    if (existing) {
+      throw new BadRequestException('User already added');
+    }
+
+    const user = await this.userRepository.get(dto.userId, {});
+    if (!user) {
+      this.logger.debug('Adding user to folder failed: user not found');
+      throw new BadRequestException('Invalid user');
+    }
+
     await this.albumContainerRepository.addUser(id, dto.userId, dto.role);
   }
 
