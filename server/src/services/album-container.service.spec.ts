@@ -235,7 +235,7 @@ describe(AlbumContainerService.name, () => {
       const auth = AuthFactory.create({ id: owner.id });
       const id = newUuid();
       const descendantId = newUuid();
-      mocks.albumContainer.getById.mockResolvedValue({
+      const source = {
         id,
         ownerId: owner.id,
         name: 'Folder',
@@ -244,7 +244,10 @@ describe(AlbumContainerService.name, () => {
         updatedAt: new Date(),
         deletedAt: null,
         updateId: newUuid(),
-      });
+      };
+      mocks.albumContainer.getById
+        .mockResolvedValueOnce(source)
+        .mockResolvedValueOnce({ ...source, id: descendantId });
       mocks.albumContainer.isDescendantOf.mockResolvedValue(true);
 
       await expect(sut.update(auth, id, { parentId: descendantId })).rejects.toBeInstanceOf(BadRequestException);
@@ -256,7 +259,7 @@ describe(AlbumContainerService.name, () => {
       const auth = AuthFactory.create({ id: owner.id });
       const id = newUuid();
       const newParentId = newUuid();
-      mocks.albumContainer.getById.mockResolvedValue({
+      const source = {
         id,
         ownerId: owner.id,
         name: 'Folder',
@@ -265,9 +268,65 @@ describe(AlbumContainerService.name, () => {
         updatedAt: new Date(),
         deletedAt: null,
         updateId: newUuid(),
-      });
+      };
+      mocks.albumContainer.getById
+        .mockResolvedValueOnce(source)
+        .mockResolvedValueOnce({ ...source, id: newParentId });
       mocks.albumContainer.isDescendantOf.mockResolvedValue(false);
       mocks.albumContainer.getDepth.mockResolvedValue(16);
+
+      await expect(sut.update(auth, id, { parentId: newParentId })).rejects.toBeInstanceOf(BadRequestException);
+      expect(mocks.albumContainer.move).not.toHaveBeenCalled();
+    });
+
+    it('rejects move under a folder owned by another user', async () => {
+      const owner = UserFactory.create();
+      const otherOwner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const id = newUuid();
+      const newParentId = newUuid();
+      const source = {
+        id,
+        ownerId: owner.id,
+        name: 'Folder',
+        parentId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+        updateId: newUuid(),
+      };
+      mocks.albumContainer.getById.mockResolvedValueOnce(source).mockResolvedValueOnce({
+        id: newParentId,
+        ownerId: otherOwner.id,
+        name: 'Their Folder',
+        parentId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+        updateId: newUuid(),
+      });
+
+      await expect(sut.update(auth, id, { parentId: newParentId })).rejects.toBeInstanceOf(ForbiddenException);
+      expect(mocks.albumContainer.isDescendantOf).not.toHaveBeenCalled();
+      expect(mocks.albumContainer.move).not.toHaveBeenCalled();
+    });
+
+    it('rejects move under a parent that does not exist', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const id = newUuid();
+      const newParentId = newUuid();
+      const source = {
+        id,
+        ownerId: owner.id,
+        name: 'Folder',
+        parentId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+        updateId: newUuid(),
+      };
+      mocks.albumContainer.getById.mockResolvedValueOnce(source).mockResolvedValueOnce(void 0);
 
       await expect(sut.update(auth, id, { parentId: newParentId })).rejects.toBeInstanceOf(BadRequestException);
       expect(mocks.albumContainer.move).not.toHaveBeenCalled();
@@ -290,6 +349,7 @@ describe(AlbumContainerService.name, () => {
       };
       mocks.albumContainer.getById
         .mockResolvedValueOnce(container)
+        .mockResolvedValueOnce({ ...container, id: newParentId })
         .mockResolvedValueOnce({ ...container, parentId: newParentId });
       mocks.albumContainer.isDescendantOf.mockResolvedValue(false);
       mocks.albumContainer.getDepth.mockResolvedValue(2);

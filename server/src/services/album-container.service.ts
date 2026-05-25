@@ -105,6 +105,14 @@ export class AlbumContainerService extends BaseService {
 
     if (dto.parentId !== undefined && dto.parentId !== container.parentId) {
       if (dto.parentId !== null) {
+        const parent = await this.albumContainerRepository.getById(dto.parentId);
+        if (!parent) {
+          throw new BadRequestException('Parent folder not found');
+        }
+        if (parent.ownerId !== auth.user.id) {
+          throw new ForbiddenException("Cannot move folder under another user's folder");
+        }
+
         const isCycle = await this.albumContainerRepository.isDescendantOf(dto.parentId, id);
         if (isCycle) {
           throw new BadRequestException('Cannot move a folder into its own descendant');
