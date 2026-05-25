@@ -172,7 +172,8 @@ class AssetAccess {
       return new Set<string>();
     }
 
-    return this.db
+    // Direct share: the user is in album_user for an album that contains the asset.
+    const direct = await this.db
       .with('target', (qb) => qb.selectNoFrom(sql`array[${sql.join([...assetIds])}]::uuid[]`.as('ids')))
       .selectFrom('album')
       .innerJoin('album_asset as albumAssets', 'album.id', 'albumAssets.albumId')
@@ -191,19 +192,48 @@ class AssetAccess {
       )
       .where('user.id', '=', userId)
       .where('album.deletedAt', 'is', null)
-      .execute()
-      .then((assets) => {
-        const allowedIds = new Set<string>();
-        for (const asset of assets) {
-          if (asset.id && assetIds.has(asset.id)) {
-            allowedIds.add(asset.id);
-          }
-          if (asset.livePhotoVideoId && assetIds.has(asset.livePhotoVideoId)) {
-            allowedIds.add(asset.livePhotoVideoId);
-          }
-        }
-        return allowedIds;
-      });
+      .execute();
+
+    // Cascade share: the user is in album_container_user for an ancestor folder of the album that contains the asset.
+    // Any folder share (regardless of role) grants read access to descendant album assets.
+    const cascade = await this.db
+      .with('target', (qb) => qb.selectNoFrom(sql`array[${sql.join([...assetIds])}]::uuid[]`.as('ids')))
+      .selectFrom('album')
+      .innerJoin('album_asset as albumAssets', 'album.id', 'albumAssets.albumId')
+      .innerJoin('asset', (join) =>
+        join.onRef('asset.id', '=', 'albumAssets.assetId').on('asset.deletedAt', 'is', null),
+      )
+      .crossJoin('target')
+      .select(['asset.id', 'asset.livePhotoVideoId'])
+      .where((eb) =>
+        eb.or([
+          eb('asset.id', '=', sql<string>`any(target.ids)`),
+          eb('asset.livePhotoVideoId', '=', sql<string>`any(target.ids)`),
+        ]),
+      )
+      .where('album.deletedAt', 'is', null)
+      .where('album.containerId', 'is not', null)
+      .where((eb) =>
+        eb.exists(
+          eb
+            .selectFrom('album_container_closure as c')
+            .innerJoin('album_container_user as acu', 'acu.albumContainerId', 'c.id_ancestor')
+            .whereRef('c.id_descendant', '=', 'album.containerId')
+            .where('acu.userId', '=', userId),
+        ),
+      )
+      .execute();
+
+    const allowedIds = new Set<string>();
+    for (const asset of [...direct, ...cascade]) {
+      if (asset.id && assetIds.has(asset.id)) {
+        allowedIds.add(asset.id);
+      }
+      if (asset.livePhotoVideoId && assetIds.has(asset.livePhotoVideoId)) {
+        allowedIds.add(asset.livePhotoVideoId);
+      }
+    }
+    return allowedIds;
   }
 
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID_SET] })

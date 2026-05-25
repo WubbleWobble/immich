@@ -9,6 +9,7 @@ import {
   deleteUserAdmin,
   getAlbumInfo,
   getAllAlbums,
+  getAssetInfo,
   LoginResponseDto,
   removeUserFromAlbumContainer,
   SharedLinkType,
@@ -861,6 +862,21 @@ describe('/albums', () => {
       );
       expect(recipientView).toMatchObject({ id: album.id });
 
+      // Asset cascade (H3 regression): recipient can fetch metadata for assets in the cascaded album.
+      const recipientAssetView = await getAssetInfo(
+        { id: asset1.id },
+        { headers: asBearerAuth(user2.accessToken) },
+      );
+      expect(recipientAssetView).toMatchObject({ id: asset1.id });
+
+      // Asset cascade also reachable via HTTP (covers 403 path that was broken before H3 fix).
+      {
+        const { status } = await request(app)
+          .get(`/assets/${asset1.id}`)
+          .set('Authorization', `Bearer ${user2.accessToken}`);
+        expect(status).toBe(200);
+      }
+
       // Editor cascade: recipient can add assets to the inner album.
       const asset2 = await utils.createAsset(user2.accessToken);
       const addResult = await addAssetsToAlbum(
@@ -882,6 +898,14 @@ describe('/albums', () => {
           .set('Authorization', `Bearer ${user2.accessToken}`);
         expect(status).toBe(400);
         expect(body).toEqual(errorDto.badRequest('Not found or no album.read access'));
+      }
+
+      // Asset cascade is also revoked: recipient can no longer fetch the asset.
+      {
+        const { status } = await request(app)
+          .get(`/assets/${asset1.id}`)
+          .set('Authorization', `Bearer ${user2.accessToken}`);
+        expect(status).toBe(400);
       }
     });
 
