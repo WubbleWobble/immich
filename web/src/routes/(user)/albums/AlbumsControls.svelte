@@ -46,9 +46,15 @@
     albumGroups: string[];
     searchQuery: string;
     currentFolderId?: string | null;
+    canModifyCurrentFolder?: boolean;
   }
 
-  let { albumGroups, searchQuery = $bindable(), currentFolderId = null }: Props = $props();
+  let {
+    albumGroups,
+    searchQuery = $bindable(),
+    currentFolderId = null,
+    canModifyCurrentFolder = true,
+  }: Props = $props();
 
   const handleCreateFolder = async () => {
     const result = await modalManager.show(NewFolderModal, { parentId: currentFolderId });
@@ -138,21 +144,23 @@
   <SearchBar placeholder={$t('search_albums')} bind:name={searchQuery} showLoadingSpinner={false} />
 </div>
 
-<!-- Create Album -->
-<Button
-  leadingIcon={mdiPlusBoxOutline}
-  onclick={() => createAlbumAndRedirect(undefined, undefined, currentFolderId)}
-  size="small"
-  variant="ghost"
-  color="secondary"
->
-  <p class="hidden md:block">{$t('create_album')}</p>
-</Button>
+{#if canModifyCurrentFolder}
+  <!-- Create Album -->
+  <Button
+    leadingIcon={mdiPlusBoxOutline}
+    onclick={() => createAlbumAndRedirect(undefined, undefined, currentFolderId)}
+    size="small"
+    variant="ghost"
+    color="secondary"
+  >
+    <p class="hidden md:block">{$t('create_album')}</p>
+  </Button>
 
-<!-- Create Folder -->
-<Button leadingIcon={mdiFolderPlusOutline} onclick={handleCreateFolder} size="small" variant="ghost" color="secondary">
-  <p class="hidden md:block">{$t('new_folder')}</p>
-</Button>
+  <!-- Create Folder -->
+  <Button leadingIcon={mdiFolderPlusOutline} onclick={handleCreateFolder} size="small" variant="ghost" color="secondary">
+    <p class="hidden md:block">{$t('new_folder')}</p>
+  </Button>
+{/if}
 
 <!-- Sort Albums -->
 <Dropdown

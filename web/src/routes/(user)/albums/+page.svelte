@@ -12,6 +12,7 @@
   import SearchBar from '$lib/elements/SearchBar.svelte';
   import MoveToFolderModal from '$lib/modals/MoveToFolderModal.svelte';
   import ShareFolderModal from '$lib/modals/ShareFolderModal.svelte';
+  import { authManager } from '$lib/managers/auth-manager.svelte';
   import { Route } from '$lib/route';
   import { AlbumFilter, albumViewSettings } from '$lib/stores/preferences.store';
   import { createAlbumAndRedirect } from '$lib/utils/album-utils';
@@ -36,6 +37,11 @@
 
   let containers = $derived(data.allContainers ?? []);
   let folderId = $derived(data.folderId);
+  let currentUserId = $derived(authManager.user.id);
+
+  // The current folder; the route loader returns it when folderId is set.
+  // The user can modify the current folder only when at root, or when they own it.
+  let canModifyCurrentFolder = $derived(folderId === null || data.currentFolder?.ownerId === currentUserId);
 
   // Folders that live directly under the current folder (or root if none).
   let visibleFolders = $derived(
@@ -72,6 +78,10 @@
   let isFolderMenuOpen = $state(false);
 
   const showFolderContextMenu = (position: ContextMenuPosition, folder: AlbumContainerResponseDto) => {
+    // Move / Share / Delete are owner-only on the server; don't surface a dead-end menu for cascade recipients.
+    if (folder.ownerId !== currentUserId) {
+      return;
+    }
     selectedFolder = folder;
     folderContextMenuPosition = position;
     isFolderMenuOpen = true;
@@ -134,7 +144,7 @@
 <UserPageLayout title={data.meta.title} use={[[scrollMemory, { routeStartsWith: Route.albums() }]]}>
   {#snippet buttons()}
     <div class="flex place-items-center gap-2">
-      <AlbumsControls {albumGroups} currentFolderId={folderId} bind:searchQuery />
+      <AlbumsControls {albumGroups} currentFolderId={folderId} {canModifyCurrentFolder} bind:searchQuery />
     </div>
   {/snippet}
 
@@ -192,7 +202,7 @@
       {#if filteredFolders.length === 0}
         <EmptyPlaceholder
           text={$t('no_albums_message')}
-          onClick={() => createAlbumAndRedirect(undefined, undefined, folderId)}
+          onClick={canModifyCurrentFolder ? () => createAlbumAndRedirect(undefined, undefined, folderId) : undefined}
           class="mx-auto mt-10"
         />
       {/if}
