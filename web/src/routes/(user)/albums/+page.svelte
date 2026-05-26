@@ -183,7 +183,9 @@
           <FolderCard
             {folder}
             childCount={childCountFor(folder)}
-            onShowContextMenu={(position) => showFolderContextMenu(position, folder)}
+            onShowContextMenu={folder.ownerId === currentUserId
+              ? (position) => showFolderContextMenu(position, folder)
+              : undefined}
           />
         </a>
       {/each}
