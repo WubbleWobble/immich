@@ -52,7 +52,8 @@ const AlbumContainerResponseSchema = z
       .describe('Up to 4 recent descendant asset IDs for a folder mosaic thumbnail'),
     albumContainerUsers: z
       .array(AlbumContainerUserResponseSchema)
-      .describe('Users this folder is shared with (owner not included)'),
+      .optional()
+      .describe('Users this folder is shared with (owner not included); only present for the owner'),
     createdAt: z.string().meta({ format: 'date-time' }).describe('Creation date'),
     updatedAt: z.string().meta({ format: 'date-time' }).describe('Last update date'),
   })

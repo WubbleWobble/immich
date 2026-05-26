@@ -275,6 +275,50 @@ describe(AlbumContainerRepository.name, () => {
     });
   });
 
+  describe('hasAccess', () => {
+    it('returns true for the owner', async () => {
+      const { ctx, sut } = setup();
+      const { user: owner } = await ctx.newUser();
+
+      const folder = await sut.create({ ownerId: owner.id, name: 'Owned', parentId: null });
+
+      await expect(sut.hasAccess(folder.id, owner.id)).resolves.toBe(true);
+    });
+
+    it('returns true for a user directly shared on the folder', async () => {
+      const { ctx, sut } = setup();
+      const { user: owner } = await ctx.newUser();
+      const { user: viewer } = await ctx.newUser();
+
+      const folder = await sut.create({ ownerId: owner.id, name: 'Shared', parentId: null });
+      await sut.addUser(folder.id, viewer.id, AlbumUserRole.Viewer);
+
+      await expect(sut.hasAccess(folder.id, viewer.id)).resolves.toBe(true);
+    });
+
+    it('returns true for a user shared on an ancestor folder (cascade)', async () => {
+      const { ctx, sut } = setup();
+      const { user: owner } = await ctx.newUser();
+      const { user: viewer } = await ctx.newUser();
+
+      const family = await sut.create({ ownerId: owner.id, name: 'Family', parentId: null });
+      const andi = await sut.create({ ownerId: owner.id, name: 'Andi', parentId: family.id });
+      await sut.addUser(family.id, viewer.id, AlbumUserRole.Viewer);
+
+      await expect(sut.hasAccess(andi.id, viewer.id)).resolves.toBe(true);
+    });
+
+    it('returns false for an unrelated user', async () => {
+      const { ctx, sut } = setup();
+      const { user: owner } = await ctx.newUser();
+      const { user: outsider } = await ctx.newUser();
+
+      const folder = await sut.create({ ownerId: owner.id, name: 'Private', parentId: null });
+
+      await expect(sut.hasAccess(folder.id, outsider.id)).resolves.toBe(false);
+    });
+  });
+
   describe('cascade album access', () => {
     it('grants album access to a user shared on an ancestor folder', async () => {
       const { ctx, sut } = setup();

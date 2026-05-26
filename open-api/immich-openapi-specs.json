@@ -15955,7 +15955,7 @@
       "AlbumContainerResponseDto": {
         "properties": {
           "albumContainerUsers": {
-            "description": "Users this folder is shared with (owner not included)",
+            "description": "Users this folder is shared with (owner not included); only present for the owner",
             "items": {
               "$ref": "#/components/schemas/AlbumContainerUserResponseDto"
             },
@@ -16024,7 +16024,6 @@
           }
         },
         "required": [
-          "albumContainerUsers",
           "createdAt",
           "id",
           "name",

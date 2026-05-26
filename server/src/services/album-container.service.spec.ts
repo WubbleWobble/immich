@@ -140,9 +140,9 @@ describe(AlbumContainerService.name, () => {
       const result = await sut.get(auth, id);
 
       expect(result.albumContainerUsers).toHaveLength(1);
-      expect(result.albumContainerUsers[0].userId).toEqual(sharedUser.id);
-      expect(result.albumContainerUsers[0].role).toEqual(AlbumUserRole.Viewer);
-      expect(result.albumContainerUsers[0].user.id).toEqual(sharedUser.id);
+      expect(result.albumContainerUsers?.[0].userId).toEqual(sharedUser.id);
+      expect(result.albumContainerUsers?.[0].role).toEqual(AlbumUserRole.Viewer);
+      expect(result.albumContainerUsers?.[0].user.id).toEqual(sharedUser.id);
     });
 
     it('throws NotFoundException when folder does not exist', async () => {
@@ -153,7 +153,7 @@ describe(AlbumContainerService.name, () => {
       await expect(sut.get(auth, newUuid())).rejects.toBeInstanceOf(NotFoundException);
     });
 
-    it('throws ForbiddenException when called by non-owner', async () => {
+    it('throws ForbiddenException when called by unrelated user', async () => {
       const owner = UserFactory.create();
       const intruder = UserFactory.create();
       const auth = AuthFactory.create({ id: intruder.id });
@@ -168,8 +168,74 @@ describe(AlbumContainerService.name, () => {
         deletedAt: null,
         updateId: newUuid(),
       });
+      mocks.albumContainer.hasAccess.mockResolvedValue(false);
 
       await expect(sut.get(auth, id)).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('returns the container for a cascade recipient with albumContainerUsers omitted', async () => {
+      const owner = UserFactory.create();
+      const recipient = UserFactory.create();
+      const auth = AuthFactory.create({ id: recipient.id });
+      const id = newUuid();
+      mocks.albumContainer.getById.mockResolvedValue({
+        id,
+        ownerId: owner.id,
+        name: 'Shared',
+        parentId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+        updateId: newUuid(),
+      });
+      mocks.albumContainer.hasAccess.mockResolvedValue(true);
+      mocks.albumContainer.getThumbnailAssetIdsForContainers.mockResolvedValue(new Map());
+
+      const result = await sut.get(auth, id);
+
+      expect(result.id).toEqual(id);
+      expect(result.ownerId).toEqual(owner.id);
+      expect(result.albumContainerUsers).toBeUndefined();
+      // Recipient path should not call fetchUsersByContainer at all.
+      expect(mocks.albumContainer.getUsersForContainers).not.toHaveBeenCalled();
+    });
+
+    it('populates albumContainerUsers for owner but omits them for recipient', async () => {
+      const owner = UserFactory.create();
+      const sharedUser = UserFactory.create();
+      const id = newUuid();
+      const container = {
+        id,
+        ownerId: owner.id,
+        name: 'Family',
+        parentId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+        updateId: newUuid(),
+      };
+
+      // Owner path: users populated.
+      mocks.albumContainer.getById.mockResolvedValue(container);
+      mocks.albumContainer.getThumbnailAssetIdsForContainers.mockResolvedValue(new Map());
+      mocks.albumContainer.getUsersForContainers.mockResolvedValue([
+        {
+          albumContainerId: id,
+          userId: sharedUser.id,
+          role: AlbumUserRole.Viewer,
+          user_id: sharedUser.id,
+          user_name: sharedUser.name,
+          user_email: sharedUser.email,
+          user_avatarColor: sharedUser.avatarColor ?? null,
+          user_profileImagePath: sharedUser.profileImagePath,
+          user_profileChangedAt: sharedUser.profileChangedAt,
+        },
+      ]);
+
+      const ownerAuth = AuthFactory.create({ id: owner.id });
+      const ownerResult = await sut.get(ownerAuth, id);
+      expect(ownerResult.albumContainerUsers).toHaveLength(1);
+      expect(ownerResult.albumContainerUsers?.[0].userId).toEqual(sharedUser.id);
     });
   });
 

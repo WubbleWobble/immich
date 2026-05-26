@@ -132,6 +132,33 @@ export class AlbumContainerRepository {
   }
 
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID] })
+  async hasAccess(containerId: string, userId: string): Promise<boolean> {
+    const row = await this.db
+      .selectFrom('album_container')
+      .select('album_container.id')
+      .where('album_container.id', '=', containerId)
+      .where('album_container.deletedAt', 'is', null)
+      .where((eb) =>
+        eb.or([
+          eb('album_container.ownerId', '=', userId),
+          eb.exists(
+            eb
+              .selectFrom('album_container_user')
+              .innerJoin(
+                'album_container_closure',
+                'album_container_closure.id_ancestor',
+                'album_container_user.albumContainerId',
+              )
+              .whereRef('album_container_closure.id_descendant', '=', 'album_container.id')
+              .where('album_container_user.userId', '=', userId),
+          ),
+        ]),
+      )
+      .executeTakeFirst();
+    return row !== undefined;
+  }
+
+  @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID] })
   async isDescendantOf(containerId: string, ancestorId: string): Promise<boolean> {
     const row = await this.db
       .selectFrom('album_container_closure')

@@ -35,14 +35,21 @@ export class AlbumContainerService extends BaseService {
     if (!container) {
       throw new NotFoundException('Folder not found');
     }
-    if (container.ownerId !== auth.user.id) {
-      // v1: only the owner can read folder metadata. Cascade share viewers see folders via
-      // getForUser/list endpoints once exposed; this single-get is a follow-up.
-      throw new ForbiddenException('Not allowed');
+    const isOwner = container.ownerId === auth.user.id;
+    if (!isOwner) {
+      const hasCascade = await this.albumContainerRepository.hasAccess(id, auth.user.id);
+      if (!hasCascade) {
+        throw new ForbiddenException('Not allowed');
+      }
     }
-    const usersByContainer = await this.fetchUsersByContainer([id]);
     const thumbnailsByContainer = await this.albumContainerRepository.getThumbnailAssetIdsForContainers([id]);
-    return this.mapToResponse(container, usersByContainer.get(id) ?? [], thumbnailsByContainer.get(id) ?? []);
+    // Privacy: recipients shouldn't see the full share graph, so only the owner gets albumContainerUsers.
+    let albumContainerUsers: AlbumContainerUserResponseDto[] | undefined;
+    if (isOwner) {
+      const usersByContainer = await this.fetchUsersByContainer([id]);
+      albumContainerUsers = usersByContainer.get(id) ?? [];
+    }
+    return this.mapToResponse(container, albumContainerUsers, thumbnailsByContainer.get(id) ?? []);
   }
 
   private async fetchUsersByContainer(ids: string[]): Promise<Map<string, AlbumContainerUserResponseDto[]>> {
@@ -221,7 +228,7 @@ export class AlbumContainerService extends BaseService {
       createdAt: Date | string;
       updatedAt: Date | string;
     },
-    albumContainerUsers: AlbumContainerUserResponseDto[] = [],
+    albumContainerUsers: AlbumContainerUserResponseDto[] | undefined,
     thumbnailAssetIds: string[] = [],
   ): AlbumContainerResponseDto {
     return {
@@ -230,7 +237,7 @@ export class AlbumContainerService extends BaseService {
       ownerId: container.ownerId,
       parentId: container.parentId,
       thumbnailAssetIds,
-      albumContainerUsers,
+      ...(albumContainerUsers === undefined ? {} : { albumContainerUsers }),
       createdAt: container.createdAt instanceof Date ? container.createdAt.toISOString() : container.createdAt,
       updatedAt: container.updatedAt instanceof Date ? container.updatedAt.toISOString() : container.updatedAt,
     };
