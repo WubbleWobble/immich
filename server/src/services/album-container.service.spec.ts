@@ -534,6 +534,20 @@ describe(AlbumContainerService.name, () => {
   });
 
   describe('updateUser', () => {
+    it('throws BadRequestException when role is Owner', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const id = newUuid();
+      const userId = newUuid();
+      mocks.albumContainer.getById.mockResolvedValue(folderForOwner(owner.id, id));
+
+      await expect(sut.updateUser(auth, id, userId, { role: AlbumUserRole.Owner })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(mocks.albumContainer.getUser).not.toHaveBeenCalled();
+      expect(mocks.albumContainer.updateUserRole).not.toHaveBeenCalled();
+    });
+
     it('throws NotFoundException when share does not exist', async () => {
       const owner = UserFactory.create();
       const auth = AuthFactory.create({ id: owner.id });
