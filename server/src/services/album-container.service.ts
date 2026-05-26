@@ -19,15 +19,18 @@ export class AlbumContainerService extends BaseService {
   async list(auth: AuthDto): Promise<AlbumContainerResponseDto[]> {
     const containers = await this.albumContainerRepository.getForUser(auth.user.id);
     const ids = containers.map((c) => c.id);
-    const usersByContainer = await this.fetchUsersByContainer(ids);
+    // Privacy: recipients shouldn't see the full share graph; only fetch users for owned containers.
+    const ownedIds = containers.filter((c) => c.ownerId === auth.user.id).map((c) => c.id);
+    const usersByContainer = await this.fetchUsersByContainer(ownedIds);
     const thumbnailsByContainer = await this.albumContainerRepository.getThumbnailAssetIdsForContainers(ids);
-    return containers.map((container) =>
-      this.mapToResponse(
+    return containers.map((container) => {
+      const isOwner = container.ownerId === auth.user.id;
+      return this.mapToResponse(
         container,
-        usersByContainer.get(container.id) ?? [],
+        isOwner ? (usersByContainer.get(container.id) ?? []) : undefined,
         thumbnailsByContainer.get(container.id) ?? [],
-      ),
-    );
+      );
+    });
   }
 
   async get(auth: AuthDto, id: string): Promise<AlbumContainerResponseDto> {
