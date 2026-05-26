@@ -497,4 +497,76 @@ describe(AlbumContainerService.name, () => {
       expect(mocks.albumContainer.addUser).not.toHaveBeenCalled();
     });
   });
+
+  describe('removeUser', () => {
+    it('throws NotFoundException when share does not exist', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const id = newUuid();
+      const userId = newUuid();
+      mocks.albumContainer.getById.mockResolvedValue(folderForOwner(owner.id, id));
+      mocks.albumContainer.getUser.mockResolvedValue(void 0);
+
+      await expect(sut.removeUser(auth, id, userId)).rejects.toBeInstanceOf(NotFoundException);
+      expect(mocks.albumContainer.removeUser).not.toHaveBeenCalled();
+    });
+
+    it('removes the share when it exists', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const id = newUuid();
+      const userId = newUuid();
+      mocks.albumContainer.getById.mockResolvedValue(folderForOwner(owner.id, id));
+      mocks.albumContainer.getUser.mockResolvedValue({
+        albumContainerId: id,
+        userId,
+        role: AlbumUserRole.Viewer,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        updateId: newUuid(),
+        createId: newUuid(),
+      });
+
+      await sut.removeUser(auth, id, userId);
+
+      expect(mocks.albumContainer.removeUser).toHaveBeenCalledWith(id, userId);
+    });
+  });
+
+  describe('updateUser', () => {
+    it('throws NotFoundException when share does not exist', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const id = newUuid();
+      const userId = newUuid();
+      mocks.albumContainer.getById.mockResolvedValue(folderForOwner(owner.id, id));
+      mocks.albumContainer.getUser.mockResolvedValue(void 0);
+
+      await expect(sut.updateUser(auth, id, userId, { role: AlbumUserRole.Editor })).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(mocks.albumContainer.updateUserRole).not.toHaveBeenCalled();
+    });
+
+    it('updates the role when the share exists', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const id = newUuid();
+      const userId = newUuid();
+      mocks.albumContainer.getById.mockResolvedValue(folderForOwner(owner.id, id));
+      mocks.albumContainer.getUser.mockResolvedValue({
+        albumContainerId: id,
+        userId,
+        role: AlbumUserRole.Viewer,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        updateId: newUuid(),
+        createId: newUuid(),
+      });
+
+      await sut.updateUser(auth, id, userId, { role: AlbumUserRole.Editor });
+
+      expect(mocks.albumContainer.updateUserRole).toHaveBeenCalledWith(id, userId, AlbumUserRole.Editor);
+    });
+  });
 });

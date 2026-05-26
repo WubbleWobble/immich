@@ -187,6 +187,10 @@ export class AlbumContainerService extends BaseService {
     if (container.ownerId !== auth.user.id) {
       throw new ForbiddenException('Not allowed');
     }
+    const existing = await this.albumContainerRepository.getUser(id, userId);
+    if (!existing) {
+      throw new NotFoundException('Share not found');
+    }
     await this.albumContainerRepository.updateUserRole(id, userId, dto.role);
   }
 
@@ -197,6 +201,10 @@ export class AlbumContainerService extends BaseService {
     }
     if (container.ownerId !== auth.user.id) {
       throw new ForbiddenException('Not allowed');
+    }
+    const existing = await this.albumContainerRepository.getUser(id, userId);
+    if (!existing) {
+      throw new NotFoundException('Share not found');
     }
     await this.albumContainerRepository.removeUser(id, userId);
   }
