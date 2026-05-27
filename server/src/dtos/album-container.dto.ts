@@ -44,8 +44,6 @@ const AlbumContainerResponseSchema = z
     name: z.string().describe('Folder name'),
     ownerId: z.uuidv4().describe('Owner user ID'),
     parentId: z.uuidv4().nullable().describe('Parent folder ID (null for root)'),
-    childContainerIds: z.array(z.uuidv4()).optional().describe('Direct child container IDs'),
-    childAlbumIds: z.array(z.uuidv4()).optional().describe('Direct child album IDs'),
     thumbnailAssetIds: z
       .array(z.uuidv4())
       .max(4)

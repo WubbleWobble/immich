@@ -451,10 +451,6 @@ export type AlbumContainerUserResponseDto = {
 export type AlbumContainerResponseDto = {
     /** Users this folder is shared with (owner not included); only present for the owner */
     albumContainerUsers?: AlbumContainerUserResponseDto[];
-    /** Direct child album IDs */
-    childAlbumIds?: string[];
-    /** Direct child container IDs */
-    childContainerIds?: string[];
     /** Creation date */
     createdAt: string;
     /** Container ID */
