@@ -1,5 +1,6 @@
 <script lang="ts">
   import UserAvatar from '$lib/components/shared-components/UserAvatar.svelte';
+  import { collectDescendantFolderIds } from '$lib/utils/album-folder-utils';
   import { handleError } from '$lib/utils/handle-error';
   import { normalizeSearchString } from '$lib/utils/string-utils';
   import {
@@ -69,18 +70,7 @@
       existingShares = fresh.albumContainerUsers ?? [];
 
       // Compute descendant folder set (excluding the root folder itself).
-      // eslint-disable-next-line svelte/prefer-svelte-reactivity
-      const descendants = new Set<string>([folder.id]);
-      let changed = true;
-      while (changed) {
-        changed = false;
-        for (const c of containers) {
-          if (c.parentId && descendants.has(c.parentId) && !descendants.has(c.id)) {
-            descendants.add(c.id);
-            changed = true;
-          }
-        }
-      }
+      const descendants = collectDescendantFolderIds(containers, folder.id);
       folderCount = descendants.size - 1;
       albumCount = ownedAlbums.filter((a) => a.containerId && descendants.has(a.containerId)).length;
     } catch (error) {

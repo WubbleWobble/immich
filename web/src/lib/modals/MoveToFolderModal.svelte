@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { collectDescendantFolderIds } from '$lib/utils/album-folder-utils';
   import { handleError } from '$lib/utils/handle-error';
   import {
     getAllAlbumContainers,
@@ -40,19 +41,7 @@
     if (kind !== 'folder') {
       return new Set<string>();
     }
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity
-    const blocked = new Set<string>([sourceId]);
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const c of containers) {
-        if (c.parentId && blocked.has(c.parentId) && !blocked.has(c.id)) {
-          blocked.add(c.id);
-          changed = true;
-        }
-      }
-    }
-    return blocked;
+    return collectDescendantFolderIds(containers, sourceId);
   });
 
   // Build a flat ordered list with depth for display (sorted by name within each level).

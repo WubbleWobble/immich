@@ -15,6 +15,7 @@
   import { authManager } from '$lib/managers/auth-manager.svelte';
   import { Route } from '$lib/route';
   import { AlbumFilter, albumViewSettings } from '$lib/stores/preferences.store';
+  import { getDirectChildCount, getDirectChildFolders } from '$lib/utils/album-folder-utils';
   import { createAlbumAndRedirect } from '$lib/utils/album-utils';
   import type { ContextMenuPosition } from '$lib/utils/context-menu';
   import { handleError } from '$lib/utils/handle-error';
@@ -44,9 +45,7 @@
   let canModifyCurrentFolder = $derived(folderId === null || data.currentFolder?.ownerId === currentUserId);
 
   // Folders that live directly under the current folder (or root if none).
-  let visibleFolders = $derived(
-    containers.filter((c) => c.parentId === folderId).sort((a, b) => a.name.localeCompare(b.name)),
-  );
+  let visibleFolders = $derived(getDirectChildFolders(containers, folderId));
 
   let normalizedQuery = $derived(normalizeSearchString(searchQuery));
   let filteredFolders = $derived(
@@ -61,12 +60,8 @@
 
   // Direct child count for a folder (sub-folders + albums in that folder). Includes albums
   // reached via cascade share so recipients of a shared folder see correct counts.
-  const childCountFor = (folder: AlbumContainerResponseDto) => {
-    const subFolders = containers.filter((c) => c.parentId === folder.id).length;
-    const subOwned = (data.albums ?? []).filter((a) => a.containerId === folder.id).length;
-    const subShared = (data.sharedAlbums ?? []).filter((a) => a.containerId === folder.id).length;
-    return subFolders + subOwned + subShared;
-  };
+  const childCountFor = (folder: AlbumContainerResponseDto) =>
+    getDirectChildCount(folder.id, containers, data.albums, data.sharedAlbums);
 
   const navigateToFolder = async (id: string | null) => {
     await goto(id ? Route.albums({ folder: id }) : Route.albums(), { invalidateAll: true });
