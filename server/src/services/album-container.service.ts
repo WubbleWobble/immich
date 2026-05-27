@@ -12,6 +12,10 @@ import { mapUser } from 'src/dtos/user.dto';
 import { AlbumUserRole } from 'src/enum';
 import { BaseService } from 'src/services/base.service';
 
+// Folder-tree depth cap. Mirrored on the web side at:
+//   web/src/lib/utils/album-folder-utils.ts (buildFolderBreadcrumbPath `maxDepth` default)
+// Keep the two values in sync — the web cap is a safety guard for breadcrumb walks
+// that assumes server-enforced depth ≤ MAX_DEPTH.
 const MAX_DEPTH = 16;
 
 @Injectable()

@@ -42,7 +42,10 @@ export const getDirectChildCount = (
 };
 
 /** Walk `parentId` chain from `startId` up to the root, returning the path top-down.
- *  Caps at `maxDepth` to guard against unexpected cycles or pathological data. */
+ *  Caps at `maxDepth` to guard against unexpected cycles or pathological data.
+ *  The default mirrors the server-side `MAX_DEPTH` in
+ *  `server/src/services/album-container.service.ts` — keep the two in sync.
+ */
 export const buildFolderBreadcrumbPath = (
   containers: AlbumContainerResponseDto[],
   startId: string | null | undefined,
