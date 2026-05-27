@@ -114,7 +114,12 @@ class AlbumAccess {
       .where('album_user.role', 'in', [...accessRole])
       .execute();
 
-    // Cascade share: a folder share with the same allowed role grants access to all descendant albums.
+    // Cascade folder share resolution: an album_container_user row for any ancestor folder grants
+    // access (here, with role check) to descendant albums. This same rule is encoded in:
+    //   - album-container.repository.ts (getForUser cascade EXISTS)
+    //   - album.repository.ts (buildAlbumBaseQuery cascade EXISTS)
+    // Keep semantics in sync if you change one; consider extracting to a shared SQL builder
+    // if a fourth call site is needed.
     const cascade = await this.db
       .selectFrom('album')
       .select('album.id')

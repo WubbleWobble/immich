@@ -113,6 +113,12 @@ export class AlbumContainerRepository {
       .where((eb) =>
         eb.or([
           eb('album_container.ownerId', '=', userId),
+          // Cascade folder share resolution: an album_container_user row for any ancestor of this
+          // node grants access to its descendants. This same rule is encoded in:
+          //   - access.repository.ts (AlbumAccess.checkSharedAlbumAccess cascade EXISTS)
+          //   - album.repository.ts (buildAlbumBaseQuery cascade EXISTS)
+          // Keep semantics in sync if you change one; consider extracting to a shared SQL builder
+          // if a fourth call site is needed.
           eb.exists(
             eb
               .selectFrom('album_container_user')
