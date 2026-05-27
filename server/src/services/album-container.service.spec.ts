@@ -79,6 +79,61 @@ describe(AlbumContainerService.name, () => {
 
       expect(result[0].thumbnailAssetIds).toEqual([]);
     });
+
+    it('omits albumContainerUsers for non-owned cascade-visible folders and populates it for owned ones', async () => {
+      const viewer = UserFactory.create();
+      const otherOwner = UserFactory.create();
+      const auth = AuthFactory.create({ id: viewer.id });
+      const ownedId = newUuid();
+      const sharedId = newUuid();
+      mocks.albumContainer.getForUser.mockResolvedValue([
+        {
+          id: ownedId,
+          ownerId: viewer.id,
+          name: 'My folder',
+          parentId: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          deletedAt: null,
+          updateId: newUuid(),
+        },
+        {
+          id: sharedId,
+          ownerId: otherOwner.id,
+          name: 'Shared with me',
+          parentId: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          deletedAt: null,
+          updateId: newUuid(),
+        },
+      ]);
+      const guestUserId = newUuid();
+      mocks.albumContainer.getUsersForContainers.mockResolvedValue([
+        {
+          albumContainerId: ownedId,
+          userId: guestUserId,
+          role: AlbumUserRole.Viewer,
+          user_id: guestUserId,
+          user_name: 'Guest',
+          user_email: 'guest@example.com',
+          user_avatarColor: null,
+          user_profileImagePath: '',
+          user_profileChangedAt: new Date(),
+        } as any,
+      ]);
+      mocks.albumContainer.getThumbnailAssetIdsForContainers.mockResolvedValue(new Map());
+
+      const result = await sut.list(auth);
+
+      const owned = result.find((c) => c.id === ownedId)!;
+      const shared = result.find((c) => c.id === sharedId)!;
+      expect(owned.albumContainerUsers).toBeDefined();
+      expect(owned.albumContainerUsers).toHaveLength(1);
+      expect(shared.albumContainerUsers).toBeUndefined();
+      // Repository should be queried only for owned IDs, not shared ones.
+      expect(mocks.albumContainer.getUsersForContainers).toHaveBeenCalledWith([ownedId]);
+    });
   });
 
   describe('get', () => {
