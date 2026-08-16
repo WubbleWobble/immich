@@ -117,7 +117,11 @@ const checkOtherAccess = async (access: AccessRepository, request: OtherAccessRe
       const isOwner = await access.asset.checkOwnerAccess(auth.user.id, ids, auth.session?.hasElevatedPermission);
       const isAlbum = await access.asset.checkAlbumAccess(auth.user.id, setDifference(ids, isOwner));
       const isPartner = await access.asset.checkPartnerAccess(auth.user.id, setDifference(ids, isOwner, isAlbum));
-      return setUnion(isOwner, isAlbum, isPartner);
+      const isSmartAlbum = await access.asset.checkSmartAlbumAccess(
+        auth.user.id,
+        setDifference(ids, isOwner, isAlbum, isPartner),
+      );
+      return setUnion(isOwner, isAlbum, isPartner, isSmartAlbum);
     }
 
     case Permission.AssetShare: {
@@ -130,14 +134,22 @@ const checkOtherAccess = async (access: AccessRepository, request: OtherAccessRe
       const isOwner = await access.asset.checkOwnerAccess(auth.user.id, ids, auth.session?.hasElevatedPermission);
       const isAlbum = await access.asset.checkAlbumAccess(auth.user.id, setDifference(ids, isOwner));
       const isPartner = await access.asset.checkPartnerAccess(auth.user.id, setDifference(ids, isOwner, isAlbum));
-      return setUnion(isOwner, isAlbum, isPartner);
+      const isSmartAlbum = await access.asset.checkSmartAlbumAccess(
+        auth.user.id,
+        setDifference(ids, isOwner, isAlbum, isPartner),
+      );
+      return setUnion(isOwner, isAlbum, isPartner, isSmartAlbum);
     }
 
     case Permission.AssetDownload: {
       const isOwner = await access.asset.checkOwnerAccess(auth.user.id, ids, auth.session?.hasElevatedPermission);
       const isAlbum = await access.asset.checkAlbumAccess(auth.user.id, setDifference(ids, isOwner));
       const isPartner = await access.asset.checkPartnerAccess(auth.user.id, setDifference(ids, isOwner, isAlbum));
-      return setUnion(isOwner, isAlbum, isPartner);
+      const isSmartAlbum = await access.asset.checkSmartAlbumAccess(
+        auth.user.id,
+        setDifference(ids, isOwner, isAlbum, isPartner),
+      );
+      return setUnion(isOwner, isAlbum, isPartner, isSmartAlbum);
     }
 
     case Permission.AssetUpdate: {

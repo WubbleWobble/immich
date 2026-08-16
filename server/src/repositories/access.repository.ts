@@ -2,9 +2,10 @@ import { Injectable } from '@nestjs/common';
 import { Kysely, NotNull, sql } from 'kysely';
 import { InjectKysely } from 'nestjs-kysely';
 import { ChunkedSet, DummyValue, GenerateSql } from 'src/decorators';
-import { AlbumUserRole, AssetVisibility } from 'src/enum';
+import { sanitizeSmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
+import { AlbumKind, AlbumUserRole, AssetVisibility } from 'src/enum';
 import { DB } from 'src/schema';
-import { asUuid } from 'src/utils/database';
+import { asUuid, searchAssetBuilder } from 'src/utils/database';
 
 class ActivityAccess {
   constructor(private db: Kysely<DB>) {}
@@ -177,6 +178,61 @@ class AssetAccess {
         }
         return allowedIds;
       });
+  }
+
+  /**
+   * Membership in a smart album is computed, not stored in `album_asset`, so `checkAlbumAccess`
+   * cannot see it. For each smart album shared with `userId`, evaluate its filter (scoped to the
+   * album owner's library) against the candidate asset ids. Motion parts of matched live photos
+   * are granted the same way `checkAlbumAccess` grants them.
+   */
+  async checkSmartAlbumAccess(userId: string, assetIds: Set<string>) {
+    if (assetIds.size === 0) {
+      return new Set<string>();
+    }
+
+    const albums = await this.db
+      .selectFrom('album')
+      .innerJoin('album_user as viewer', (join) =>
+        join.onRef('viewer.albumId', '=', 'album.id').on('viewer.userId', '=', userId),
+      )
+      .innerJoin('user', (join) => join.onRef('user.id', '=', 'viewer.userId').on('user.deletedAt', 'is', null))
+      .innerJoin('album_user as owner', (join) =>
+        join.onRef('owner.albumId', '=', 'album.id').on('owner.role', '=', sql.lit(AlbumUserRole.Owner)),
+      )
+      .select(['album.filter', 'owner.userId as ownerId'])
+      .where('album.kind', '=', AlbumKind.Smart)
+      .where('album.filter', 'is not', null)
+      .where('album.deletedAt', 'is', null)
+      .execute();
+
+    const remaining = new Set(assetIds);
+    const allowedIds = new Set<string>();
+    for (const album of albums) {
+      if (remaining.size === 0) {
+        break;
+      }
+      if (!album.filter) {
+        continue;
+      }
+      const candidateIds = [...remaining];
+      const matches = await searchAssetBuilder(this.db, {
+        ...sanitizeSmartAlbumFilter(album.filter),
+        userIds: [album.ownerId],
+      })
+        .select(['asset.id', 'asset.livePhotoVideoId'])
+        .where((eb) => eb.or([eb('asset.id', 'in', candidateIds), eb('asset.livePhotoVideoId', 'in', candidateIds)]))
+        .execute();
+      for (const match of matches) {
+        for (const id of [match.id, match.livePhotoVideoId]) {
+          if (id && remaining.has(id)) {
+            allowedIds.add(id);
+            remaining.delete(id);
+          }
+        }
+      }
+    }
+    return allowedIds;
   }
 
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID_SET] })
