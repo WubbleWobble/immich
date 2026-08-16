@@ -1016,6 +1016,41 @@ describe(AlbumService.name, () => {
       expect(mocks.albumUser.update).not.toHaveBeenCalled();
     });
 
+    it('should reject demoting the smart album owner to viewer', async () => {
+      // Demoting the sole owner would leave the smart album with no library to evaluate
+      // its filter against.
+      const album = AlbumFactory.from().albumUser().kind(AlbumKind.Smart).filter({ isFavorite: true }).build();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+
+      await expect(
+        sut.updateUser(AuthFactory.create(owner), album.id, owner.id, { role: AlbumUserRole.Viewer }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(mocks.albumUser.update).not.toHaveBeenCalled();
+    });
+
+    it('should allow updating a smart album share to viewer', async () => {
+      const user = UserFactory.create();
+      const album = AlbumFactory.from()
+        .albumUser({ userId: user.id, role: AlbumUserRole.Viewer })
+        .kind(AlbumKind.Smart)
+        .filter({ isFavorite: true })
+        .build();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.albumUser.update.mockResolvedValue();
+
+      await sut.updateUser(AuthFactory.create(owner), album.id, user.id, { role: AlbumUserRole.Viewer });
+
+      expect(mocks.albumUser.update).toHaveBeenCalledWith(
+        { albumId: album.id, userId: user.id },
+        { role: AlbumUserRole.Viewer },
+      );
+    });
+
     it('should reject promoting a smart album share to owner', async () => {
       // A second owner would break the single-owner assumption smart-album evaluation
       // relies on when resolving whose library the filter runs against.
@@ -1227,11 +1262,11 @@ describe(AlbumService.name, () => {
       const marker = { id: newUuid(), lat: 1, lon: 2, city: null, state: null, country: null };
       mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
       mocks.album.getById.mockResolvedValue(getForAlbum(album));
-      mocks.search.searchMapMarkers.mockResolvedValue([marker]);
+      mocks.map.getMapMarkersForSearch.mockResolvedValue([marker]);
 
       await expect(sut.getMapMarkers(AuthFactory.create(owner), album.id)).resolves.toEqual([marker]);
 
-      expect(mocks.search.searchMapMarkers).toHaveBeenCalledWith(
+      expect(mocks.map.getMapMarkersForSearch).toHaveBeenCalledWith(
         expect.objectContaining({ isFavorite: true, userIds: [owner.id] }),
       );
       expect(mocks.map.getAlbumMapMarkers).not.toHaveBeenCalled();
@@ -1247,7 +1282,7 @@ describe(AlbumService.name, () => {
       await expect(sut.getMapMarkers(AuthFactory.create(owner), album.id)).resolves.toEqual([]);
 
       expect(mocks.map.getAlbumMapMarkers).toHaveBeenCalledWith(album.id);
-      expect(mocks.search.searchMapMarkers).not.toHaveBeenCalled();
+      expect(mocks.map.getMapMarkersForSearch).not.toHaveBeenCalled();
     });
   });
 

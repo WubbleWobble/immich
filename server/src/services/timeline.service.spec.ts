@@ -1,5 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import { AlbumKind, AlbumUserRole, AssetVisibility } from 'src/enum';
+import { AlbumKind, AlbumUserRole, AssetOrder, AssetVisibility } from 'src/enum';
 import { TimelineService } from 'src/services/timeline.service';
 import { AlbumFactory } from 'test/factories/album.factory';
 import { authStub } from 'test/fixtures/auth.stub';
@@ -209,7 +209,7 @@ describe(TimelineService.name, () => {
   });
 
   describe('smart album routing', () => {
-    it('getTimeBuckets should query search and bucket results by month for a smart album', async () => {
+    it('getTimeBuckets should apply the smart filter as an assetFilter subquery', async () => {
       const smartAlbum = AlbumFactory.from({ id: 'smart-album-id' })
         .kind(AlbumKind.Smart)
         .filter({ isFavorite: true })
@@ -217,7 +217,7 @@ describe(TimelineService.name, () => {
       const owner = smartAlbum.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!.user;
       mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['smart-album-id']));
       mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
-      mocks.search.searchTimeBuckets.mockResolvedValue([
+      mocks.asset.getTimeBuckets.mockResolvedValue([
         { timeBucket: '2024-12-01', count: 2 },
         { timeBucket: '2024-11-01', count: 1 },
       ]);
@@ -228,29 +228,40 @@ describe(TimelineService.name, () => {
         { timeBucket: '2024-12-01', count: 2 },
         { timeBucket: '2024-11-01', count: 1 },
       ]);
-      expect(mocks.search.searchTimeBuckets).toHaveBeenCalledWith(
-        expect.objectContaining({ isFavorite: true, userIds: [owner.id] }),
-        undefined,
+      expect(mocks.asset.getTimeBuckets).toHaveBeenCalledWith(
+        expect.objectContaining({
+          albumId: undefined,
+          assetFilter: expect.objectContaining({ isFavorite: true, userIds: [owner.id] }),
+        }),
       );
-      expect(mocks.asset.getTimeBuckets).not.toHaveBeenCalled();
     });
 
-    it('getTimeBuckets should short-circuit when the smart album has no matching assets', async () => {
-      const smartAlbum = AlbumFactory.from({ id: 'empty-smart-album' })
+    it('getTimeBuckets should preserve request-level options alongside the smart filter', async () => {
+      const smartAlbum = AlbumFactory.from({ id: 'smart-album-id' })
         .kind(AlbumKind.Smart)
         .filter({ isFavorite: true })
         .build();
-      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['empty-smart-album']));
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['smart-album-id']));
       mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
-      mocks.search.searchTimeBuckets.mockResolvedValue([]);
+      mocks.asset.getTimeBuckets.mockResolvedValue([]);
 
-      const result = await sut.getTimeBuckets(authStub.admin, { albumId: 'empty-smart-album' });
+      await sut.getTimeBuckets(authStub.admin, {
+        albumId: 'smart-album-id',
+        order: AssetOrder.Asc,
+        withStacked: true,
+      });
 
-      expect(result).toEqual([]);
-      expect(mocks.asset.getTimeBuckets).not.toHaveBeenCalled();
+      // Request options ride through to the bucket query; membership is the subquery.
+      expect(mocks.asset.getTimeBuckets).toHaveBeenCalledWith(
+        expect.objectContaining({
+          order: AssetOrder.Asc,
+          withStacked: true,
+          assetFilter: expect.objectContaining({ isFavorite: true }),
+        }),
+      );
     });
 
-    it('getTimeBucket should query search with date range and return assets for a smart album', async () => {
+    it('getTimeBucket should apply the smart filter as an assetFilter subquery', async () => {
       const smartAlbum = AlbumFactory.from({ id: 'smart-album-id' })
         .kind(AlbumKind.Smart)
         .filter({ isFavorite: true })
@@ -260,7 +271,6 @@ describe(TimelineService.name, () => {
       mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
       const json = `{"id":["asset-1","asset-2"]}`;
       mocks.asset.getTimeBucket.mockResolvedValue({ assets: json });
-      mocks.search.searchAssetIds.mockResolvedValue(['asset-1', 'asset-2']);
 
       const result = await sut.getTimeBucket(authStub.admin, {
         albumId: 'smart-album-id',
@@ -268,28 +278,17 @@ describe(TimelineService.name, () => {
       });
 
       expect(result).toEqual(json);
-      expect(mocks.search.searchAssetIds).toHaveBeenCalledWith(
-        expect.objectContaining({
-          isFavorite: true,
-          userIds: [owner.id],
-          takenAfter: expect.any(Date),
-          takenBefore: expect.any(Date),
-        }),
-      );
       expect(mocks.asset.getTimeBucket).toHaveBeenCalledWith(
         '2024-12-01',
         expect.objectContaining({
           albumId: undefined,
-          assetIds: ['asset-1', 'asset-2'],
-          // Search membership defaults to timeline-only; the bucket query must match it
-          // rather than fall back to the repository's timeline+archive default.
-          visibility: AssetVisibility.Timeline,
+          assetFilter: expect.objectContaining({ isFavorite: true, userIds: [owner.id] }),
         }),
         authStub.admin,
       );
     });
 
-    it('getTimeBucket should carry an archive filter visibility into the bucket query', async () => {
+    it('should carry an archive filter visibility inside the membership subquery', async () => {
       const smartAlbum = AlbumFactory.from({ id: 'smart-album-id' })
         .kind(AlbumKind.Smart)
         .filter({ visibility: AssetVisibility.Archive })
@@ -297,101 +296,52 @@ describe(TimelineService.name, () => {
       mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['smart-album-id']));
       mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
       mocks.asset.getTimeBucket.mockResolvedValue({ assets: '{"id":["asset-1"]}' });
-      mocks.search.searchAssetIds.mockResolvedValue(['asset-1']);
 
       await sut.getTimeBucket(authStub.admin, { albumId: 'smart-album-id', timeBucket: '2024-12-01' });
 
-      expect(mocks.search.searchAssetIds).toHaveBeenCalledWith(
-        expect.objectContaining({ visibility: AssetVisibility.Archive }),
-      );
       expect(mocks.asset.getTimeBucket).toHaveBeenCalledWith(
         '2024-12-01',
-        expect.objectContaining({ visibility: AssetVisibility.Archive }),
+        expect.objectContaining({
+          assetFilter: expect.objectContaining({ visibility: AssetVisibility.Archive }),
+        }),
         authStub.admin,
       );
     });
 
-    it('getTimeBucket should accept a full ISO timeBucket string and derive valid dates', async () => {
-      const smartAlbum = AlbumFactory.from({ id: 'smart-album-id' })
-        .kind(AlbumKind.Smart)
-        .filter({ isFavorite: true })
-        .build();
-      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['smart-album-id']));
-      mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
-      const json = `{"id":[]}`;
-      mocks.asset.getTimeBucket.mockResolvedValue({ assets: json });
-      mocks.search.searchAssetIds.mockResolvedValue(['a']);
-
-      await sut.getTimeBucket(authStub.admin, {
-        albumId: 'smart-album-id',
-        timeBucket: '2024-10-01T00:00:00.000Z',
-      });
-
-      const call = mocks.search.searchAssetIds.mock.calls.at(-1)!;
-      const options = call[0] as { takenAfter: Date; takenBefore: Date };
-      expect(Number.isNaN(options.takenAfter.getTime())).toBe(false);
-      expect(Number.isNaN(options.takenBefore.getTime())).toBe(false);
-      // The range is widened by a day on each side: it filters on fileCreatedAt while
-      // buckets are keyed on localDateTime, which can differ by a timezone offset.
-      expect(options.takenAfter.toISOString()).toBe('2024-09-30T00:00:00.000Z');
-      expect(options.takenBefore.toISOString()).toBe('2024-11-02T00:00:00.000Z');
-    });
-
-    it('getTimeBucket should reject an unparseable timeBucket value', async () => {
-      const smartAlbum = AlbumFactory.from({ id: 'smart-album-id' })
-        .kind(AlbumKind.Smart)
-        .filter({ isFavorite: true })
-        .build();
-      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['smart-album-id']));
-      mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
-
-      await expect(
-        sut.getTimeBucket(authStub.admin, {
-          albumId: 'smart-album-id',
-          timeBucket: 'not-a-date',
-        }),
-      ).rejects.toThrow(BadRequestException);
-    });
-
-    it('getTimeBucket should return an empty payload when a smart-album bucket has no matching assets', async () => {
-      const smartAlbum = AlbumFactory.from({ id: 'smart-album-id' })
-        .kind(AlbumKind.Smart)
-        .filter({ isFavorite: true })
-        .build();
-      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['smart-album-id']));
-      mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
-      mocks.search.searchAssetIds.mockResolvedValue([]);
-
-      const result = await sut.getTimeBucket(authStub.admin, {
-        albumId: 'smart-album-id',
-        timeBucket: '2024-12-01',
-      });
-
-      expect(JSON.parse(result)).toEqual(expect.objectContaining({ id: [] }));
-      expect(mocks.asset.getTimeBucket).not.toHaveBeenCalled();
-    });
-
-    it('getTimeBuckets should strip locked visibility from a legacy stored filter', async () => {
+    it('should strip locked visibility from a legacy stored filter', async () => {
       const smartAlbum = AlbumFactory.from({ id: 'smart-album-id' })
         .kind(AlbumKind.Smart)
         .filter({ visibility: AssetVisibility.Locked as never, isFavorite: true })
         .build();
       mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['smart-album-id']));
       mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
-      mocks.search.searchTimeBuckets.mockResolvedValue([]);
+      mocks.asset.getTimeBuckets.mockResolvedValue([]);
 
       await sut.getTimeBuckets(authStub.admin, { albumId: 'smart-album-id' });
 
       // Rows written before the visibility restriction may still carry locked; evaluating it
       // would bypass the elevated-permission requirement, so it must be dropped.
-      expect(mocks.search.searchTimeBuckets).toHaveBeenCalledWith(
-        expect.objectContaining({ isFavorite: true }),
-        undefined,
-      );
-      expect(mocks.search.searchTimeBuckets).not.toHaveBeenCalledWith(
-        expect.objectContaining({ visibility: AssetVisibility.Locked }),
-        undefined,
-      );
+      const options = mocks.asset.getTimeBuckets.mock.calls.at(-1)![0];
+      expect(options.assetFilter).toEqual(expect.objectContaining({ isFavorite: true }));
+      expect(options.assetFilter).not.toHaveProperty('visibility');
+    });
+
+    it('should strip trash filters from a legacy stored filter', async () => {
+      const smartAlbum = AlbumFactory.from({ id: 'smart-album-id' })
+        .kind(AlbumKind.Smart)
+        .filter({ isFavorite: true, ...({ trashedAfter: new Date('2024-01-01T00:00:00Z') } as object) })
+        .build();
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['smart-album-id']));
+      mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
+      mocks.asset.getTimeBuckets.mockResolvedValue([]);
+
+      await sut.getTimeBuckets(authStub.admin, { albumId: 'smart-album-id' });
+
+      // trashedAfter would flip the search builder's withDeleted flag and surface the
+      // owner's trashed assets to sharees.
+      const options = mocks.asset.getTimeBuckets.mock.calls.at(-1)![0];
+      expect(options.assetFilter).toEqual(expect.objectContaining({ isFavorite: true }));
+      expect(options.assetFilter).not.toHaveProperty('trashedAfter');
     });
 
     it('getTimeBuckets should use the asset repository path for a regular album', async () => {
@@ -403,8 +353,8 @@ describe(TimelineService.name, () => {
       const result = await sut.getTimeBuckets(authStub.admin, { albumId: 'regular-album-id' });
 
       expect(result).toEqual([{ timeBucket: '2024-01-01', count: 5 }]);
-      expect(mocks.search.searchTimeBuckets).not.toHaveBeenCalled();
       expect(mocks.asset.getTimeBuckets).toHaveBeenCalledWith(expect.objectContaining({ albumId: 'regular-album-id' }));
+      expect(mocks.asset.getTimeBuckets.mock.calls.at(-1)![0]).not.toHaveProperty('assetFilter');
     });
   });
 });

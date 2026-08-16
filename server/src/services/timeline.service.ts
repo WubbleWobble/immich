@@ -19,14 +19,17 @@ export class TimelineService extends BaseService {
     await this.timeBucketChecks(auth, dto);
     const timeBucketOptions = await this.buildTimeBucketOptions(auth, dto);
 
+    // Smart-album membership rides along as an id subquery (assetFilter), so every other
+    // request option - orderBy, personId, tagId, favorites, visibility, bbox - still applies,
+    // and no per-asset id list is materialized. The membership subquery enforces the filter's
+    // own visibility (timeline by default), so it intersects correctly with the request's.
     const smart = await this.loadSmartAlbumContext(dto.albumId);
     if (smart) {
-      // Aggregate over the filter directly: bucket keys and visibility semantics match the
-      // membership query exactly, and no per-asset id list is materialized.
-      return await this.searchRepository.searchTimeBuckets(
-        { ...smart.filter, userIds: [smart.ownerId] },
-        timeBucketOptions.order,
-      );
+      return await this.assetRepository.getTimeBuckets({
+        ...timeBucketOptions,
+        albumId: undefined,
+        assetFilter: { ...smart.filter, userIds: [smart.ownerId] },
+      });
     }
 
     return await this.assetRepository.getTimeBuckets(timeBucketOptions);
@@ -39,22 +42,12 @@ export class TimelineService extends BaseService {
 
     const smart = await this.loadSmartAlbumContext(dto.albumId);
     if (smart) {
-      const range = parseBucketDateRange(dto.timeBucket);
-      const ids = await this.getSmartAlbumAssetIds(smart, range);
-      if (ids.length === 0) {
-        return emptyTimeBucketAssets();
-      }
       const bucket = await this.assetRepository.getTimeBucket(
         dto.timeBucket,
         {
           ...timeBucketOptions,
           albumId: undefined,
-          assetIds: ids,
-          // The bucket CTE applies its own visibility filter; carry the smart filter's
-          // visibility through (search defaults to timeline) so archive smart albums are
-          // not emptied by the repository's timeline+archive default clashing with search's
-          // timeline-only membership.
-          visibility: smart.filter.visibility ?? AssetVisibility.Timeline,
+          assetFilter: { ...smart.filter, userIds: [smart.ownerId] },
         },
         auth,
       );
@@ -79,13 +72,6 @@ export class TimelineService extends BaseService {
       return null;
     }
     return { filter: sanitizeSmartAlbumFilter(album.filter), ownerId };
-  }
-
-  private getSmartAlbumAssetIds(
-    { filter, ownerId }: SmartAlbumContext,
-    range?: { takenAfter: Date; takenBefore: Date },
-  ): Promise<string[]> {
-    return this.searchRepository.searchAssetIds({ ...filter, ...range, userIds: [ownerId] });
   }
 
   private async buildTimeBucketOptions(auth: AuthDto, dto: TimeBucketDto): Promise<TimeBucketOptions> {
@@ -141,48 +127,4 @@ export class TimelineService extends BaseService {
       }
     }
   }
-}
-
-// Time buckets are month-truncated. The client may send either the bare date form
-// `YYYY-MM-01` or the full ISO form `YYYY-MM-01T00:00:00.000Z`. Parse into a
-// [start, nextMonth) range for the search query, widened by a day on each side:
-// the range filters on fileCreatedAt (UTC) while buckets are keyed on localDateTime,
-// which can differ by up to a timezone offset. The bucket query itself still filters
-// exactly, so the widening only costs a few extra candidate ids at month boundaries.
-function parseBucketDateRange(timeBucket: string): { takenAfter: Date; takenBefore: Date } {
-  // Strip any +/- prefix used elsewhere in the asset repo.
-  const normalized = timeBucket.replace(/^[+-]/, '');
-  const start = new Date(normalized);
-  if (Number.isNaN(start.getTime())) {
-    throw new BadRequestException(`Invalid timeBucket value: ${timeBucket}`);
-  }
-  const end = new Date(start);
-  end.setUTCMonth(end.getUTCMonth() + 1);
-  start.setUTCDate(start.getUTCDate() - 1);
-  end.setUTCDate(end.getUTCDate() + 1);
-  return { takenAfter: start, takenBefore: end };
-}
-
-// Matches the JSON shape produced by AssetRepository.getTimeBucket so the
-// client sees an indistinguishable empty bucket whether served by search or by the asset join.
-function emptyTimeBucketAssets(): string {
-  return JSON.stringify({
-    city: [],
-    country: [],
-    duration: [],
-    id: [],
-    visibility: [],
-    isFavorite: [],
-    isImage: [],
-    isTrashed: [],
-    livePhotoVideoId: [],
-    fileCreatedAt: [],
-    localOffsetHours: [],
-    createdAt: [],
-    ownerId: [],
-    projectionType: [],
-    ratio: [],
-    status: [],
-    thumbhash: [],
-  });
 }

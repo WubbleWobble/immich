@@ -172,7 +172,7 @@ export class AlbumService extends BaseService {
       if (!ownerId) {
         return [];
       }
-      return this.searchRepository.searchMapMarkers({
+      return this.mapRepository.getMapMarkersForSearch({
         ...sanitizeSmartAlbumFilter(album.filter),
         userIds: [ownerId],
       });
@@ -504,11 +504,19 @@ export class AlbumService extends BaseService {
     await this.requireAccess({ auth, permission: Permission.AlbumShare, ids: [id] });
 
     const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
-    // Viewer is the only sharable role on a smart album: an Editor could broaden the filter,
-    // and a second Owner breaks the single-owner assumption every smart-album evaluation
-    // path relies on when resolving whose library the filter runs against.
-    if (album.kind === AlbumKind.Smart && dto.role !== AlbumUserRole.Viewer) {
-      throw new BadRequestException('Smart albums only support the viewer role');
+    if (album.kind === AlbumKind.Smart) {
+      // Viewer is the only sharable role on a smart album: an Editor could broaden the filter,
+      // and a second Owner breaks the single-owner assumption every smart-album evaluation
+      // path relies on when resolving whose library the filter runs against.
+      if (dto.role !== AlbumUserRole.Viewer) {
+        throw new BadRequestException('Smart albums only support the viewer role');
+      }
+      // ... and by the same assumption, the owner row itself is immutable: demoting the sole
+      // owner to viewer would leave the album with no library to evaluate against.
+      const target = album.albumUsers.find(({ user: { id: albumUserId } }) => albumUserId === userId);
+      if (target?.role === AlbumUserRole.Owner) {
+        throw new BadRequestException('Cannot change the role of the smart album owner');
+      }
     }
 
     await this.albumUserRepository.update({ albumId: id, userId }, { role: dto.role });
