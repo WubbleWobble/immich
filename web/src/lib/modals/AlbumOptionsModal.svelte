@@ -10,6 +10,7 @@
     handleUpdateUserAlbumRole,
   } from '$lib/services/album.service';
   import {
+    AlbumKind,
     AlbumUserRole,
     AssetOrder,
     getAlbumInfo,
@@ -120,7 +121,10 @@
                 <Select
                   value={role}
                   options={[
-                    { label: $t('role_editor'), value: AlbumUserRole.Editor },
+                    // Smart albums are read-only, so shares collapse to Owner + Viewer.
+                    ...(album.kind === AlbumKind.Smart
+                      ? []
+                      : [{ label: $t('role_editor'), value: AlbumUserRole.Editor }]),
                     { label: $t('role_viewer'), value: AlbumUserRole.Viewer },
                     { label: $t('owner'), value: AlbumUserRole.Owner },
                     { label: $t('remove_user'), value: 'none' },

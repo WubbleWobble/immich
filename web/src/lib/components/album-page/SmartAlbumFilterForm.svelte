@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  import { AssetTypeEnum, AssetVisibility, type SmartAlbumFilter } from '@immich/sdk';
+  import { AssetTypeEnum, Visibility, type SmartAlbumFilter } from '@immich/sdk';
   import { MediaType } from '$lib/constants';
   import type { SearchFilter } from '$lib/types';
   import { parseUtcDate } from '$lib/utils/date-time';
@@ -38,7 +38,7 @@
         takenBefore: toStartOfDay(f.takenBefore),
       },
       display: {
-        isArchive: f.visibility === AssetVisibility.Archive,
+        isArchive: f.visibility === Visibility.Archive,
         isFavorite: f.isFavorite ?? false,
         isNotInAlbum: f.isNotInAlbum ?? false,
       },
@@ -75,7 +75,7 @@
       lensModel: filter.camera.lensModel,
       takenAfter: parseOptional(filter.date.takenAfter)?.startOf('day').toISO() || undefined,
       takenBefore: parseOptional(filter.date.takenBefore)?.endOf('day').toISO() || undefined,
-      visibility: filter.display.isArchive ? AssetVisibility.Archive : undefined,
+      visibility: filter.display.isArchive ? Visibility.Archive : undefined,
       isFavorite: filter.display.isFavorite || undefined,
       isNotInAlbum: filter.display.isNotInAlbum || undefined,
       personIds: filter.personIds.size > 0 ? [...filter.personIds] : undefined,
@@ -146,6 +146,11 @@
         continue;
       }
       if (Array.isArray(v) && v.length === 0) {
+        continue;
+      }
+      // Smart-album filters only accept timeline/archive visibility; a locked/hidden
+      // search must not carry its visibility into the stored filter (server rejects it).
+      if (key === 'visibility' && v !== Visibility.Timeline && v !== Visibility.Archive) {
         continue;
       }
       out[key] = v;
