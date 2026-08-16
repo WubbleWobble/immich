@@ -23,20 +23,16 @@ export class DownloadService extends BaseService {
     } else if (dto.albumId) {
       const albumId = dto.albumId;
       await this.requireAccess({ auth, permission: Permission.AlbumDownload, ids: [albumId] });
-      // Smart albums have no album_asset rows; resolve membership from the filter instead.
+      // Smart albums have no album_asset rows; stream membership from the filter instead.
       const album = await this.albumRepository.getById(albumId, { withAssets: false });
-      if (album?.kind === AlbumKind.Smart && album.filter) {
-        const ownerId = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
-        const assetIds = ownerId
-          ? await this.searchRepository.searchAssetIds({
+      const ownerId = album?.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
+      assets =
+        album?.kind === AlbumKind.Smart && album.filter && ownerId
+          ? this.downloadRepository.downloadSearchResults({
               ...sanitizeSmartAlbumFilter(album.filter),
               userIds: [ownerId],
             })
-          : [];
-        assets = this.downloadRepository.downloadAssetIds(assetIds);
-      } else {
-        assets = this.downloadRepository.downloadAlbumId(albumId);
-      }
+          : this.downloadRepository.downloadAlbumId(albumId);
     } else if (dto.userId) {
       const userId = dto.userId;
       await this.requireAccess({ auth, permission: Permission.TimelineDownload, ids: [userId] });

@@ -165,18 +165,17 @@ export class AlbumService extends BaseService {
       return [];
     }
 
-    // Smart albums have no album_asset rows; resolve membership from the filter instead.
+    // Smart albums have no album_asset rows; resolve markers from the filter instead.
     const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
     if (album.kind === AlbumKind.Smart && album.filter) {
       const ownerId = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
       if (!ownerId) {
         return [];
       }
-      const assetIds = await this.searchRepository.searchAssetIds({
+      return this.searchRepository.searchMapMarkers({
         ...sanitizeSmartAlbumFilter(album.filter),
         userIds: [ownerId],
       });
-      return this.mapRepository.getMapMarkersForAssetIds(assetIds);
     }
 
     return this.mapRepository.getAlbumMapMarkers(id);
@@ -199,9 +198,10 @@ export class AlbumService extends BaseService {
       throw new BadRequestException('Smart albums cannot be created with initial assetIds');
     }
 
-    // Smart albums are read-only, so shares collapse to Owner + Viewer. An Editor on a smart
-    // album could broaden the filter and browse the owner's whole library.
-    if (kind === AlbumKind.Smart && albumUsers.some(({ role }) => role === AlbumUserRole.Editor)) {
+    // Smart albums are read-only and single-owner, so shares collapse to Viewer. An Editor
+    // could broaden the filter and browse the owner's whole library; a second Owner breaks
+    // the single-owner assumption used to resolve whose library the filter runs against.
+    if (kind === AlbumKind.Smart && albumUsers.some(({ role }) => role !== AlbumUserRole.Viewer)) {
       throw new BadRequestException('Smart albums only support the viewer role');
     }
 
@@ -504,7 +504,10 @@ export class AlbumService extends BaseService {
     await this.requireAccess({ auth, permission: Permission.AlbumShare, ids: [id] });
 
     const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
-    if (album.kind === AlbumKind.Smart && dto.role === AlbumUserRole.Editor) {
+    // Viewer is the only sharable role on a smart album: an Editor could broaden the filter,
+    // and a second Owner breaks the single-owner assumption every smart-album evaluation
+    // path relies on when resolving whose library the filter runs against.
+    if (album.kind === AlbumKind.Smart && dto.role !== AlbumUserRole.Viewer) {
       throw new BadRequestException('Smart albums only support the viewer role');
     }
 

@@ -1,9 +1,12 @@
 import { BadRequestException } from '@nestjs/common';
 import { Readable } from 'node:stream';
 import { DownloadResponseDto } from 'src/dtos/download.dto';
+import { AlbumKind, AlbumUserRole } from 'src/enum';
 import { DownloadService } from 'src/services/download.service';
+import { AlbumFactory } from 'test/factories/album.factory';
 import { AssetFactory } from 'test/factories/asset.factory';
 import { authStub } from 'test/fixtures/auth.stub';
+import { getForAlbum } from 'test/mappers';
 import { makeStream, newTestService, ServiceMocks } from 'test/utils';
 import { vitest } from 'vitest';
 
@@ -254,6 +257,28 @@ describe(DownloadService.name, () => {
 
       expect(mocks.access.album.checkOwnerAccess).toHaveBeenCalledWith(authStub.admin.user.id, new Set(['album-1']));
       expect(mocks.downloadRepository.downloadAlbumId).toHaveBeenCalledWith('album-1');
+    });
+
+    it('should stream filter matches for a smart album (albumId)', async () => {
+      const smartAlbum = AlbumFactory.from().kind(AlbumKind.Smart).filter({ isFavorite: true }).build();
+      const { user: owner } = smartAlbum.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+
+      mocks.user.getMetadata.mockResolvedValue([]);
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([smartAlbum.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
+      mocks.downloadRepository.downloadSearchResults.mockReturnValue(
+        makeStream([
+          { id: 'asset-1', livePhotoVideoId: null, size: 100_000 },
+          { id: 'asset-2', livePhotoVideoId: null, size: 5000 },
+        ]),
+      );
+
+      await expect(sut.getDownloadInfo(authStub.admin, { albumId: smartAlbum.id })).resolves.toEqual(downloadResponse);
+
+      expect(mocks.downloadRepository.downloadSearchResults).toHaveBeenCalledWith(
+        expect.objectContaining({ isFavorite: true, userIds: [owner.id] }),
+      );
+      expect(mocks.downloadRepository.downloadAlbumId).not.toHaveBeenCalled();
     });
 
     it('should return a list of archives (userId)', async () => {

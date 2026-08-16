@@ -405,6 +405,22 @@ describe(AlbumService.name, () => {
       expect(mocks.album.create).not.toHaveBeenCalled();
     });
 
+    it('should reject a smart album shared with a second owner', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create(owner);
+
+      await expect(
+        sut.create(auth, {
+          albumName: 'Smart with second owner',
+          kind: AlbumKind.Smart,
+          filter: {},
+          albumUsers: [{ userId: newUuid(), role: AlbumUserRole.Owner }],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(mocks.album.create).not.toHaveBeenCalled();
+    });
+
     it('should reject a regular album that includes a filter', async () => {
       const owner = UserFactory.create();
       const auth = AuthFactory.create(owner);
@@ -999,6 +1015,26 @@ describe(AlbumService.name, () => {
 
       expect(mocks.albumUser.update).not.toHaveBeenCalled();
     });
+
+    it('should reject promoting a smart album share to owner', async () => {
+      // A second owner would break the single-owner assumption smart-album evaluation
+      // relies on when resolving whose library the filter runs against.
+      const user = UserFactory.create();
+      const album = AlbumFactory.from()
+        .albumUser({ userId: user.id, role: AlbumUserRole.Viewer })
+        .kind(AlbumKind.Smart)
+        .filter({ isFavorite: true })
+        .build();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+
+      await expect(
+        sut.updateUser(AuthFactory.create(owner), album.id, user.id, { role: AlbumUserRole.Owner }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(mocks.albumUser.update).not.toHaveBeenCalled();
+    });
   });
 
   describe('getAlbumInfo', () => {
@@ -1181,6 +1217,37 @@ describe(AlbumService.name, () => {
         { page: 1, size: 1 },
         expect.objectContaining({ isFavorite: true, userIds: [owner.id] }),
       );
+    });
+  });
+
+  describe('getMapMarkers', () => {
+    it('should resolve markers from the filter for a smart album', async () => {
+      const album = AlbumFactory.from().kind(AlbumKind.Smart).filter({ isFavorite: true }).build();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const marker = { id: newUuid(), lat: 1, lon: 2, city: null, state: null, country: null };
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.search.searchMapMarkers.mockResolvedValue([marker]);
+
+      await expect(sut.getMapMarkers(AuthFactory.create(owner), album.id)).resolves.toEqual([marker]);
+
+      expect(mocks.search.searchMapMarkers).toHaveBeenCalledWith(
+        expect.objectContaining({ isFavorite: true, userIds: [owner.id] }),
+      );
+      expect(mocks.map.getAlbumMapMarkers).not.toHaveBeenCalled();
+    });
+
+    it('should use album_asset markers for a regular album', async () => {
+      const album = AlbumFactory.create();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.map.getAlbumMapMarkers.mockResolvedValue([]);
+
+      await expect(sut.getMapMarkers(AuthFactory.create(owner), album.id)).resolves.toEqual([]);
+
+      expect(mocks.map.getAlbumMapMarkers).toHaveBeenCalledWith(album.id);
+      expect(mocks.search.searchMapMarkers).not.toHaveBeenCalled();
     });
   });
 
