@@ -10,11 +10,11 @@ import {
   deleteUserAdmin,
   getAlbumInfo,
   getAllAlbums,
+  getAssetInfo,
   getTimeBuckets,
   LoginResponseDto,
   SharedLinkType,
   tagAssets,
-  updateAlbumUser,
 } from '@immich/sdk';
 import { createUserDto } from 'src/fixtures';
 import { errorDto } from 'src/responses';
@@ -886,6 +886,14 @@ describe('/albums', () => {
       expect(recipientBuckets.length).toBeGreaterThan(0);
       expect(recipientBuckets.reduce((sum, b) => sum + b.count, 0)).toBeGreaterThanOrEqual(1);
 
+      // Smart-album membership feeds the asset access checks: the recipient can read the
+      // owner's matched asset (thumbnails/detail/download all route through this permission).
+      const recipientAssetInfo = await getAssetInfo(
+        { id: ownerAsset.id },
+        { headers: asBearerAuth(recipient.accessToken) },
+      );
+      expect(recipientAssetInfo.id).toBe(ownerAsset.id);
+
       // Recipient is still a Viewer: PUT /albums/:id/assets is rejected by access control
       // before the smart-album kind check has a chance to run.
       const recipientAsset = await utils.createAsset(recipient.accessToken);
@@ -896,23 +904,21 @@ describe('/albums', () => {
       expect(viewerAttempt.status).toBe(400);
       expect(viewerAttempt.body).toEqual(errorDto.badRequest('Not found or no albumAsset.create access'));
 
-      // Owner upgrades recipient to Editor.
-      await updateAlbumUser(
-        {
-          id: smartAlbum.id,
-          userId: recipient.userId,
-          updateAlbumUserDto: { role: AlbumUserRole.Editor },
-        },
-        { headers: asBearerAuth(owner.accessToken) },
-      );
+      // Smart albums collapse to Owner + Viewer: promoting the recipient to Editor is rejected.
+      const promoteAttempt = await request(app)
+        .put(`/albums/${smartAlbum.id}/user/${recipient.userId}`)
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .send({ role: AlbumUserRole.Editor });
+      expect(promoteAttempt.status).toBe(400);
+      expect(promoteAttempt.body).toEqual(errorDto.badRequest('Smart albums only support the viewer role'));
 
-      // As Editor the access check passes, but the smart-album-specific guard now fires.
-      const editorAttempt = await request(app)
+      // Even the owner cannot add assets directly - smart albums are read-only.
+      const ownerAttempt = await request(app)
         .put(`/albums/${smartAlbum.id}/assets`)
-        .set('Authorization', `Bearer ${recipient.accessToken}`)
-        .send({ ids: [recipientAsset.id] });
-      expect(editorAttempt.status).toBe(400);
-      expect(editorAttempt.body).toEqual(errorDto.badRequest('Cannot add assets to a smart album'));
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .send({ ids: [ownerAsset.id] });
+      expect(ownerAttempt.status).toBe(400);
+      expect(ownerAttempt.body).toEqual(errorDto.badRequest('Cannot add assets to a smart album'));
     });
   });
 });
