@@ -904,13 +904,26 @@ describe('/albums', () => {
       expect(viewerAttempt.status).toBe(400);
       expect(viewerAttempt.body).toEqual(errorDto.badRequest('Not found or no albumAsset.create access'));
 
-      // Smart albums collapse to Owner + Viewer: promoting the recipient to Editor is rejected.
-      const promoteAttempt = await request(app)
-        .put(`/albums/${smartAlbum.id}/user/${recipient.userId}`)
-        .set('Authorization', `Bearer ${owner.accessToken}`)
-        .send({ role: AlbumUserRole.Editor });
-      expect(promoteAttempt.status).toBe(400);
-      expect(promoteAttempt.body).toEqual(errorDto.badRequest('Smart albums only support the viewer role'));
+      // Viewer is the only sharable smart-album role: promoting the recipient to Editor
+      // (filter mutation) or Owner (breaks the single-owner evaluation assumption) is rejected.
+      for (const role of [AlbumUserRole.Editor, AlbumUserRole.Owner]) {
+        const promoteAttempt = await request(app)
+          .put(`/albums/${smartAlbum.id}/user/${recipient.userId}`)
+          .set('Authorization', `Bearer ${owner.accessToken}`)
+          .send({ role });
+        expect(promoteAttempt.status).toBe(400);
+        expect(promoteAttempt.body).toEqual(errorDto.badRequest('Smart albums only support the viewer role'));
+      }
+
+      // A public shared link on the smart album grants asset access through the same
+      // filter-membership check as logged-in sharees.
+      const sharedLink = await utils.createSharedLink(owner.accessToken, {
+        type: SharedLinkType.Album,
+        albumId: smartAlbum.id,
+      });
+      const linkAssetInfo = await request(app).get(`/assets/${ownerAsset.id}`).query({ key: sharedLink.key });
+      expect(linkAssetInfo.status).toBe(200);
+      expect(linkAssetInfo.body.id).toBe(ownerAsset.id);
 
       // Even the owner cannot add assets directly - smart albums are read-only.
       const ownerAttempt = await request(app)
