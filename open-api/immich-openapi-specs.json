@@ -22038,7 +22038,11 @@
             "type": "string"
           },
           "visibility": {
-            "$ref": "#/components/schemas/AssetVisibility"
+            "enum": [
+              "timeline",
+              "archive"
+            ],
+            "type": "string"
           }
         },
         "type": "object"

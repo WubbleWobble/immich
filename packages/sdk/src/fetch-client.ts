@@ -508,7 +508,7 @@ export type SmartAlbumFilter = {
     updatedAfter?: string;
     /** Filter by update date (before) */
     updatedBefore?: string;
-    visibility?: AssetVisibility;
+    visibility?: Visibility;
 };
 export type AlbumResponseDto = {
     /** Album name */
@@ -6853,6 +6853,10 @@ export enum AssetTypeEnum {
     Video = "VIDEO",
     Audio = "AUDIO",
     Other = "OTHER"
+}
+export enum Visibility {
+    Timeline = "timeline",
+    Archive = "archive"
 }
 export enum AlbumKind {
     Regular = "regular",
