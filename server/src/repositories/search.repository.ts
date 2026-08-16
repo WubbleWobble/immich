@@ -223,6 +223,44 @@ export class SearchRepository {
 
   @GenerateSql({
     params: [
+      {
+        takenAfter: DummyValue.DATE,
+        lensModel: DummyValue.STRING,
+        isFavorite: true,
+        userIds: [DummyValue.UUID],
+      },
+    ],
+  })
+  async searchAssetIds(options: AssetSearchOptions): Promise<string[]> {
+    const orderDirection = (options.orderDirection?.toLowerCase() || 'desc') as OrderByDirection;
+    const items = await searchAssetBuilder(this.db, options)
+      .select('asset.id')
+      .orderBy('asset.fileCreatedAt', orderDirection)
+      .execute();
+    return items.map((item) => item.id);
+  }
+
+  @GenerateSql({
+    params: [
+      {
+        takenAfter: DummyValue.DATE,
+        lensModel: DummyValue.STRING,
+        isFavorite: true,
+        userIds: [DummyValue.UUID],
+      },
+    ],
+  })
+  searchDateRange(options: AssetSearchOptions) {
+    return searchAssetBuilder(this.db, options)
+      .select((qb) => [
+        qb.fn.min(sql<Date | null>`coalesce(asset."localDateTime", asset."fileCreatedAt")`).as('startDate'),
+        qb.fn.max(sql<Date | null>`coalesce(asset."localDateTime", asset."fileCreatedAt")`).as('endDate'),
+      ])
+      .executeTakeFirstOrThrow();
+  }
+
+  @GenerateSql({
+    params: [
       100,
       {
         takenAfter: DummyValue.DATE,
