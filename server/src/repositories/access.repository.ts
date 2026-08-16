@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Kysely, NotNull, sql } from 'kysely';
 import { InjectKysely } from 'nestjs-kysely';
 import { ChunkedSet, DummyValue, GenerateSql } from 'src/decorators';
-import { sanitizeSmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
+import { sanitizeSmartAlbumFilter, SmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
 import { AlbumKind, AlbumUserRole, AssetVisibility } from 'src/enum';
 import { DB } from 'src/schema';
 import { asUuid, searchAssetBuilder } from 'src/utils/database';
@@ -206,6 +206,38 @@ class AssetAccess {
       .where('album.deletedAt', 'is', null)
       .execute();
 
+    return this.matchSmartAlbumAssets(albums, assetIds);
+  }
+
+  /**
+   * Shared-link counterpart of `checkSmartAlbumAccess`: a link to a smart album grants access to
+   * whatever the album's filter currently matches in the owner's library.
+   */
+  async checkSharedLinkSmartAlbumAccess(sharedLinkId: string, assetIds: Set<string>) {
+    if (assetIds.size === 0) {
+      return new Set<string>();
+    }
+
+    const albums = await this.db
+      .selectFrom('shared_link')
+      .innerJoin('album', 'album.id', 'shared_link.albumId')
+      .innerJoin('album_user as owner', (join) =>
+        join.onRef('owner.albumId', '=', 'album.id').on('owner.role', '=', sql.lit(AlbumUserRole.Owner)),
+      )
+      .select(['album.filter', 'owner.userId as ownerId'])
+      .where('shared_link.id', '=', sharedLinkId)
+      .where('album.kind', '=', AlbumKind.Smart)
+      .where('album.filter', 'is not', null)
+      .where('album.deletedAt', 'is', null)
+      .execute();
+
+    return this.matchSmartAlbumAssets(albums, assetIds);
+  }
+
+  private async matchSmartAlbumAssets(
+    albums: { filter: SmartAlbumFilter | null; ownerId: string }[],
+    assetIds: Set<string>,
+  ) {
     const remaining = new Set(assetIds);
     const allowedIds = new Set<string>();
     for (const album of albums) {

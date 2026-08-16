@@ -64,15 +64,24 @@ const checkSharedLinkAccess = async (
 
   switch (permission) {
     case Permission.AssetRead: {
-      return await access.asset.checkSharedLinkAccess(sharedLinkId, ids);
+      const isLink = await access.asset.checkSharedLinkAccess(sharedLinkId, ids);
+      const isSmartAlbum = await access.asset.checkSharedLinkSmartAlbumAccess(sharedLinkId, setDifference(ids, isLink));
+      return setUnion(isLink, isSmartAlbum);
     }
 
     case Permission.AssetView: {
-      return await access.asset.checkSharedLinkAccess(sharedLinkId, ids);
+      const isLink = await access.asset.checkSharedLinkAccess(sharedLinkId, ids);
+      const isSmartAlbum = await access.asset.checkSharedLinkSmartAlbumAccess(sharedLinkId, setDifference(ids, isLink));
+      return setUnion(isLink, isSmartAlbum);
     }
 
     case Permission.AssetDownload: {
-      return sharedLink.allowDownload ? await access.asset.checkSharedLinkAccess(sharedLinkId, ids) : new Set();
+      if (!sharedLink.allowDownload) {
+        return new Set<string>();
+      }
+      const isLink = await access.asset.checkSharedLinkAccess(sharedLinkId, ids);
+      const isSmartAlbum = await access.asset.checkSharedLinkSmartAlbumAccess(sharedLinkId, setDifference(ids, isLink));
+      return setUnion(isLink, isSmartAlbum);
     }
 
     case Permission.AssetUpload: {
