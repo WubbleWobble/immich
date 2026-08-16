@@ -473,8 +473,6 @@ export type SmartAlbumFilter = {
     isMotion?: boolean;
     /** Filter assets not in any album */
     isNotInAlbum?: boolean;
-    /** Filter by offline status */
-    isOffline?: boolean;
     /** Filter by lens model */
     lensModel?: string | null;
     /** Library ID to filter by */
@@ -499,10 +497,6 @@ export type SmartAlbumFilter = {
     takenAfter?: string;
     /** Filter by taken date (before) */
     takenBefore?: string;
-    /** Filter by trash date (after) */
-    trashedAfter?: string;
-    /** Filter by trash date (before) */
-    trashedBefore?: string;
     "type"?: AssetTypeEnum;
     /** Filter by update date (after) */
     updatedAfter?: string;
