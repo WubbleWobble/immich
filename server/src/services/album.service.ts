@@ -14,7 +14,7 @@ import {
 import { BulkIdErrorReason, BulkIdResponseDto, BulkIdsDto } from 'src/dtos/asset-ids.response.dto';
 import { AuthDto } from 'src/dtos/auth.dto';
 import { MapMarkerResponseDto } from 'src/dtos/map.dto';
-import { SmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
+import { sanitizeSmartAlbumFilter, SmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
 import { AlbumKind, AlbumUserRole, Permission } from 'src/enum';
 import { AlbumAssetCount, AlbumInfoOptions } from 'src/repositories/album.repository';
 import { BaseService } from 'src/services/base.service';
@@ -165,6 +165,20 @@ export class AlbumService extends BaseService {
       return [];
     }
 
+    // Smart albums have no album_asset rows; resolve membership from the filter instead.
+    const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
+    if (album.kind === AlbumKind.Smart && album.filter) {
+      const ownerId = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
+      if (!ownerId) {
+        return [];
+      }
+      const assetIds = await this.searchRepository.searchAssetIds({
+        ...sanitizeSmartAlbumFilter(album.filter),
+        userIds: [ownerId],
+      });
+      return this.mapRepository.getMapMarkersForAssetIds(assetIds);
+    }
+
     return this.mapRepository.getAlbumMapMarkers(id);
   }
 
@@ -183,6 +197,12 @@ export class AlbumService extends BaseService {
 
     if (kind === AlbumKind.Smart && dto.assetIds && dto.assetIds.length > 0) {
       throw new BadRequestException('Smart albums cannot be created with initial assetIds');
+    }
+
+    // Smart albums are read-only, so shares collapse to Owner + Viewer. An Editor on a smart
+    // album could broaden the filter and browse the owner's whole library.
+    if (kind === AlbumKind.Smart && albumUsers.some(({ role }) => role === AlbumUserRole.Editor)) {
+      throw new BadRequestException('Smart albums only support the viewer role');
     }
 
     for (const { userId } of albumUsers) {
@@ -240,6 +260,15 @@ export class AlbumService extends BaseService {
       throw new BadRequestException('Filter can only be set on smart albums');
     }
 
+    // Filter mutation is owner-only. Smart-album reads always evaluate against the owner's
+    // library, so anyone else who can broaden the filter can browse the owner's assets.
+    if (dto.filter !== undefined) {
+      const ownerId = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
+      if (ownerId !== auth.user.id) {
+        throw new BadRequestException('Only the album owner can update a smart album filter');
+      }
+    }
+
     if (dto.albumThumbnailAssetId) {
       const results = await this.albumRepository.getAssetIds(id, [dto.albumThumbnailAssetId]);
       if (results.size === 0) {
@@ -259,6 +288,12 @@ export class AlbumService extends BaseService {
       },
       auth.user.id,
     );
+
+    if (dto.filter !== undefined) {
+      // The list view serves cached metadata; a changed filter means the cached count,
+      // thumbnail, and date range no longer describe the album.
+      await this.albumRepository.markCacheInvalidated([album.id], new Date());
+    }
 
     return mapAlbum({ ...updatedAlbum, assets: album.assets });
   }
@@ -326,15 +361,28 @@ export class AlbumService extends BaseService {
       return results;
     }
 
+    // Smart albums are read-only; the bulk path must enforce the same guard as addAssets().
+    const targetAlbums = [];
+    for (const albumId of allowedAlbumIds) {
+      const album = await this.findOrFail(albumId, auth.user.id, { withAssets: false });
+      if (album.kind !== AlbumKind.Smart) {
+        targetAlbums.push(album);
+      }
+    }
+    if (targetAlbums.length === 0) {
+      results.error = BulkIdErrorReason.NO_PERMISSION;
+      return results;
+    }
+
     const albumAssetValues: { albumId: string; assetId: string }[] = [];
     const events: { id: string; recipients: string[] }[] = [];
-    for (const albumId of allowedAlbumIds) {
+    for (const album of targetAlbums) {
+      const albumId = album.id;
       const existingAssetIds = await this.albumRepository.getAssetIds(albumId, [...allowedAssetIds]);
       const notPresentAssetIds = [...allowedAssetIds].filter((id) => !existingAssetIds.has(id));
       if (notPresentAssetIds.length === 0) {
         continue;
       }
-      const album = await this.findOrFail(albumId, auth.user.id, { withAssets: false });
       results.error = undefined;
       results.success = true;
 
@@ -392,10 +440,20 @@ export class AlbumService extends BaseService {
 
     const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
 
+    const isSmart = album.kind === AlbumKind.Smart;
+
     for (const { userId, role } of albumUsers) {
       if (role === AlbumUserRole.Owner) {
         throw new BadRequestException('Cannot add another owner');
       }
+
+      // Smart albums are read-only, so shares collapse to Owner + Viewer (an Editor could
+      // broaden the filter). Without an explicit role the DB default is Editor, so a smart
+      // album must default to Viewer instead.
+      if (isSmart && role === AlbumUserRole.Editor) {
+        throw new BadRequestException('Smart albums only support the viewer role');
+      }
+      const effectiveRole = role ?? (isSmart ? AlbumUserRole.Viewer : undefined);
 
       const exists = album.albumUsers.find(({ user: { id } }) => id === userId);
       if (exists) {
@@ -408,7 +466,7 @@ export class AlbumService extends BaseService {
         throw new BadRequestException('Invalid user');
       }
 
-      await this.albumUserRepository.create({ userId, albumId: id, role });
+      await this.albumUserRepository.create({ userId, albumId: id, role: effectiveRole });
       await this.eventRepository.emit('AlbumInvite', { id, userId, senderName: auth.user.name });
     }
 
@@ -444,6 +502,12 @@ export class AlbumService extends BaseService {
 
   async updateUser(auth: AuthDto, id: string, userId: string, dto: UpdateAlbumUserDto): Promise<void> {
     await this.requireAccess({ auth, permission: Permission.AlbumShare, ids: [id] });
+
+    const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
+    if (album.kind === AlbumKind.Smart && dto.role === AlbumUserRole.Editor) {
+      throw new BadRequestException('Smart albums only support the viewer role');
+    }
+
     await this.albumUserRepository.update({ albumId: id, userId }, { role: dto.role });
   }
 
@@ -464,26 +528,26 @@ export class AlbumService extends BaseService {
     ownerId: string,
     filter: SmartAlbumFilter,
   ): Promise<SmartAlbumCachedMetadata> {
-    const { items } = await this.searchRepository.searchMetadata(
-      { page: 1, size: 1000 },
-      { ...filter, userIds: [ownerId] },
-    );
-    const dateMillis: number[] = [];
-    for (const item of items) {
-      const raw = item.localDateTime ?? item.fileCreatedAt;
+    const options = { ...sanitizeSmartAlbumFilter(filter), userIds: [ownerId] };
+    // Count and date range are aggregates so albums beyond any page size stay accurate;
+    // only the thumbnail needs an actual row (most recent match).
+    const [{ total }, range, { items }] = await Promise.all([
+      this.searchRepository.searchStatistics(options),
+      this.searchRepository.searchDateRange(options),
+      this.searchRepository.searchMetadata({ page: 1, size: 1 }, options),
+    ]);
+    const toDateOnlyOrNull = (raw: Date | string | null) => {
       if (raw == null) {
-        continue;
+        return null;
       }
-      const ms = raw instanceof Date ? raw.getTime() : new Date(raw).getTime();
-      if (!Number.isNaN(ms)) {
-        dateMillis.push(ms);
-      }
-    }
+      const date = raw instanceof Date ? raw : new Date(raw);
+      return Number.isNaN(date.getTime()) ? null : toDateOnly(date);
+    };
     const fresh: SmartAlbumCachedMetadata = {
-      cachedAssetCount: items.length,
+      cachedAssetCount: Number(total),
       cachedThumbnailAssetId: items[0]?.id ?? null,
-      cachedStartDate: dateMillis.length > 0 ? toDateOnly(new Date(Math.min(...dateMillis))) : null,
-      cachedEndDate: dateMillis.length > 0 ? toDateOnly(new Date(Math.max(...dateMillis))) : null,
+      cachedStartDate: toDateOnlyOrNull(range.startDate),
+      cachedEndDate: toDateOnlyOrNull(range.endDate),
       cacheComputedAt: new Date(),
     };
     await this.albumRepository.updateCachedMetadata(albumId, fresh);
@@ -572,7 +636,7 @@ export class AlbumService extends BaseService {
       // accept it — we add it here to ask "does this single asset match the filter?"
       const { items } = await this.searchRepository.searchMetadata(
         { page: 1, size: 1 },
-        { ...(album.filter as SmartAlbumFilter), userIds: [ownerId], id: assetId },
+        { ...sanitizeSmartAlbumFilter(album.filter as SmartAlbumFilter), userIds: [ownerId], id: assetId },
       );
       if (items.length > 0) {
         idsToInvalidate.push(album.id);

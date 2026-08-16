@@ -1,16 +1,12 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { AuthDto } from 'src/dtos/auth.dto';
-import { SmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
+import { sanitizeSmartAlbumFilter, SmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
 import { TimeBucketAssetDto, TimeBucketDto, TimeBucketsResponseDto } from 'src/dtos/time-bucket.dto';
 import { AlbumKind, AlbumUserRole, AssetVisibility, Permission } from 'src/enum';
 import { TimeBucketOptions } from 'src/repositories/asset.repository';
 import { BaseService } from 'src/services/base.service';
 import { requireElevatedPermission } from 'src/utils/access';
 import { getMyPartnerIds } from 'src/utils/asset.util';
-
-// v1 cap on smart-album asset enumeration for timeline bucketing.
-// TODO: replace with streaming/pagination once we have a stable cursor in the timeline API.
-const SMART_ALBUM_TIMELINE_PAGE_SIZE = 1000;
 
 interface SmartAlbumContext {
   filter: SmartAlbumFilter;
@@ -76,18 +72,14 @@ export class TimelineService extends BaseService {
     if (!ownerId) {
       return null;
     }
-    return { filter: album.filter, ownerId };
+    return { filter: sanitizeSmartAlbumFilter(album.filter), ownerId };
   }
 
-  private async getSmartAlbumAssetIds(
+  private getSmartAlbumAssetIds(
     { filter, ownerId }: SmartAlbumContext,
     range?: { takenAfter: Date; takenBefore: Date },
   ): Promise<string[]> {
-    const { items } = await this.searchRepository.searchMetadata(
-      { page: 1, size: SMART_ALBUM_TIMELINE_PAGE_SIZE },
-      { ...filter, ...range, userIds: [ownerId] },
-    );
-    return items.map((item) => item.id);
+    return this.searchRepository.searchAssetIds({ ...filter, ...range, userIds: [ownerId] });
   }
 
   private async buildTimeBucketOptions(auth: AuthDto, dto: TimeBucketDto): Promise<TimeBucketOptions> {

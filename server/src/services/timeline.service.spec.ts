@@ -221,10 +221,7 @@ describe(TimelineService.name, () => {
         { timeBucket: '2024-12-01', count: 2 },
         { timeBucket: '2024-11-01', count: 1 },
       ]);
-      mocks.search.searchMetadata.mockResolvedValue({
-        items: [{ id: 'asset-1' }, { id: 'asset-2' }, { id: 'asset-3' }] as any,
-        hasNextPage: false,
-      });
+      mocks.search.searchAssetIds.mockResolvedValue(['asset-1', 'asset-2', 'asset-3']);
 
       const result = await sut.getTimeBuckets(authStub.admin, { albumId: 'smart-album-id' });
 
@@ -232,8 +229,7 @@ describe(TimelineService.name, () => {
         { timeBucket: '2024-12-01', count: 2 },
         { timeBucket: '2024-11-01', count: 1 },
       ]);
-      expect(mocks.search.searchMetadata).toHaveBeenCalledWith(
-        { page: 1, size: 1000 },
+      expect(mocks.search.searchAssetIds).toHaveBeenCalledWith(
         expect.objectContaining({ isFavorite: true, userIds: [owner.id] }),
       );
       expect(mocks.asset.getTimeBuckets).toHaveBeenCalledWith(
@@ -251,7 +247,7 @@ describe(TimelineService.name, () => {
         .build();
       mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['empty-smart-album']));
       mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
-      mocks.search.searchMetadata.mockResolvedValue({ items: [], hasNextPage: false });
+      mocks.search.searchAssetIds.mockResolvedValue([]);
 
       const result = await sut.getTimeBuckets(authStub.admin, { albumId: 'empty-smart-album' });
 
@@ -269,10 +265,7 @@ describe(TimelineService.name, () => {
       mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
       const json = `{"id":["asset-1","asset-2"]}`;
       mocks.asset.getTimeBucket.mockResolvedValue({ assets: json });
-      mocks.search.searchMetadata.mockResolvedValue({
-        items: [{ id: 'asset-1' }, { id: 'asset-2' }] as any,
-        hasNextPage: false,
-      });
+      mocks.search.searchAssetIds.mockResolvedValue(['asset-1', 'asset-2']);
 
       const result = await sut.getTimeBucket(authStub.admin, {
         albumId: 'smart-album-id',
@@ -280,8 +273,7 @@ describe(TimelineService.name, () => {
       });
 
       expect(result).toEqual(json);
-      expect(mocks.search.searchMetadata).toHaveBeenCalledWith(
-        { page: 1, size: 1000 },
+      expect(mocks.search.searchAssetIds).toHaveBeenCalledWith(
         expect.objectContaining({
           isFavorite: true,
           userIds: [owner.id],
@@ -308,15 +300,15 @@ describe(TimelineService.name, () => {
       mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
       const json = `{"id":[]}`;
       mocks.asset.getTimeBucket.mockResolvedValue({ assets: json });
-      mocks.search.searchMetadata.mockResolvedValue({ items: [{ id: 'a' }] as any, hasNextPage: false });
+      mocks.search.searchAssetIds.mockResolvedValue(['a']);
 
       await sut.getTimeBucket(authStub.admin, {
         albumId: 'smart-album-id',
         timeBucket: '2024-10-01T00:00:00.000Z',
       });
 
-      const call = mocks.search.searchMetadata.mock.calls.at(-1)!;
-      const options = call[1] as { takenAfter: Date; takenBefore: Date };
+      const call = mocks.search.searchAssetIds.mock.calls.at(-1)!;
+      const options = call[0] as { takenAfter: Date; takenBefore: Date };
       expect(Number.isNaN(options.takenAfter.getTime())).toBe(false);
       expect(Number.isNaN(options.takenBefore.getTime())).toBe(false);
       expect(options.takenAfter.toISOString()).toBe('2024-10-01T00:00:00.000Z');
@@ -346,7 +338,7 @@ describe(TimelineService.name, () => {
         .build();
       mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['smart-album-id']));
       mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
-      mocks.search.searchMetadata.mockResolvedValue({ items: [], hasNextPage: false });
+      mocks.search.searchAssetIds.mockResolvedValue([]);
 
       const result = await sut.getTimeBucket(authStub.admin, {
         albumId: 'smart-album-id',
@@ -355,6 +347,25 @@ describe(TimelineService.name, () => {
 
       expect(JSON.parse(result)).toEqual(expect.objectContaining({ id: [] }));
       expect(mocks.asset.getTimeBucket).not.toHaveBeenCalled();
+    });
+
+    it('getTimeBuckets should strip locked visibility from a legacy stored filter', async () => {
+      const smartAlbum = AlbumFactory.from({ id: 'smart-album-id' })
+        .kind(AlbumKind.Smart)
+        .filter({ visibility: AssetVisibility.Locked as never, isFavorite: true })
+        .build();
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['smart-album-id']));
+      mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
+      mocks.search.searchAssetIds.mockResolvedValue([]);
+
+      await sut.getTimeBuckets(authStub.admin, { albumId: 'smart-album-id' });
+
+      // Rows written before the visibility restriction may still carry locked; evaluating it
+      // would bypass the elevated-permission requirement, so it must be dropped.
+      expect(mocks.search.searchAssetIds).toHaveBeenCalledWith(expect.objectContaining({ isFavorite: true }));
+      expect(mocks.search.searchAssetIds).not.toHaveBeenCalledWith(
+        expect.objectContaining({ visibility: AssetVisibility.Locked }),
+      );
     });
 
     it('getTimeBuckets should use the asset repository path for a regular album', async () => {
@@ -366,7 +377,7 @@ describe(TimelineService.name, () => {
       const result = await sut.getTimeBuckets(authStub.admin, { albumId: 'regular-album-id' });
 
       expect(result).toEqual([{ timeBucket: '2024-01-01', count: 5 }]);
-      expect(mocks.search.searchMetadata).not.toHaveBeenCalled();
+      expect(mocks.search.searchAssetIds).not.toHaveBeenCalled();
       expect(mocks.asset.getTimeBuckets).toHaveBeenCalledWith(expect.objectContaining({ albumId: 'regular-album-id' }));
     });
   });

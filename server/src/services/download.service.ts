@@ -4,7 +4,8 @@ import sanitize from 'sanitize-filename';
 import { StorageCore } from 'src/cores/storage.core';
 import { AuthDto } from 'src/dtos/auth.dto';
 import { DownloadArchiveDto, DownloadArchiveInfo, DownloadInfoDto, DownloadResponseDto } from 'src/dtos/download.dto';
-import { Permission } from 'src/enum';
+import { sanitizeSmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
+import { AlbumKind, AlbumUserRole, Permission } from 'src/enum';
 import { ImmichReadStream } from 'src/repositories/storage.repository';
 import { BaseService } from 'src/services/base.service';
 import { HumanReadableSize } from 'src/utils/bytes';
@@ -22,7 +23,20 @@ export class DownloadService extends BaseService {
     } else if (dto.albumId) {
       const albumId = dto.albumId;
       await this.requireAccess({ auth, permission: Permission.AlbumDownload, ids: [albumId] });
-      assets = this.downloadRepository.downloadAlbumId(albumId);
+      // Smart albums have no album_asset rows; resolve membership from the filter instead.
+      const album = await this.albumRepository.getById(albumId, { withAssets: false });
+      if (album?.kind === AlbumKind.Smart && album.filter) {
+        const ownerId = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
+        const assetIds = ownerId
+          ? await this.searchRepository.searchAssetIds({
+              ...sanitizeSmartAlbumFilter(album.filter),
+              userIds: [ownerId],
+            })
+          : [];
+        assets = this.downloadRepository.downloadAssetIds(assetIds);
+      } else {
+        assets = this.downloadRepository.downloadAlbumId(albumId);
+      }
     } else if (dto.userId) {
       const userId = dto.userId;
       await this.requireAccess({ auth, permission: Permission.TimelineDownload, ids: [userId] });
