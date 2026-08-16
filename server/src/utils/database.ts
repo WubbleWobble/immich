@@ -365,8 +365,22 @@ export function withEdits(eb: ExpressionBuilder<DB, 'asset'>): AliasedEditAction
   ).as('edits') as AliasedEditActions;
 }
 
-const joinDeduplicationPlugin = new DeduplicateJoinsPlugin();
+// Also attached at query level by consumers that embed searchAssetBuilder() output as a
+// subquery: an embedded builder's own plugins do not run, only the root query's do.
+export const joinDeduplicationPlugin = new DeduplicateJoinsPlugin();
 /** TODO: This should only be used for search-related queries, not as a general purpose query builder */
+
+/**
+ * Single-column (asset.id) form of searchAssetBuilder for embedding as an `IN (...)` subquery.
+ * The embedding root query must attach {@link joinDeduplicationPlugin} — an embedded builder's
+ * own plugins do not run.
+ */
+export function searchAssetIdSubquery(
+  kysely: Kysely<DB>,
+  options: AssetSearchBuilderOptions,
+): SelectQueryBuilder<DB, 'asset', { id: string }> {
+  return searchAssetBuilder(kysely, options).select('asset.id').$castTo<{ id: string }>();
+}
 
 export function searchAssetBuilder(kysely: Kysely<DB>, options: AssetSearchBuilderOptions) {
   options.withDeleted ||= !!(options.trashedAfter || options.trashedBefore || options.isOffline);

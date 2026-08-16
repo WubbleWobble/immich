@@ -4,7 +4,7 @@ import { InjectKysely } from 'nestjs-kysely';
 import { AssetVisibility } from 'src/enum';
 import { AssetSearchOptions } from 'src/repositories/search.repository';
 import { DB } from 'src/schema';
-import { anyUuid, searchAssetBuilder } from 'src/utils/database';
+import { anyUuid, joinDeduplicationPlugin, searchAssetIdSubquery } from 'src/utils/database';
 
 const builder = (db: Kysely<DB>) =>
   db
@@ -32,13 +32,17 @@ export class DownloadRepository {
       .stream();
   }
 
-  // Smart albums have no album_asset rows; stream whatever the filter matches instead of
-  // materializing the full id list first.
+  // Smart albums have no album_asset rows; membership is applied as an id subquery so the
+  // download query keeps its own asset_exif join regardless of which EXIF fields the filter
+  // uses, and rows stream without materializing the full id list first.
   downloadSearchResults(options: AssetSearchOptions) {
-    return searchAssetBuilder(this.db, options)
-      .innerJoin('asset_exif', 'asset_exif.assetId', 'asset.id')
-      .select(['asset.id', 'asset.livePhotoVideoId', 'asset_exif.fileSizeInByte as size'])
-      .stream();
+    return (
+      builder(this.db)
+        .where('asset.id', 'in', searchAssetIdSubquery(this.db, options))
+        // The embedded subquery relies on the root query to deduplicate its joins.
+        .withPlugin(joinDeduplicationPlugin)
+        .stream()
+    );
   }
 
   downloadUserId(userId: string) {

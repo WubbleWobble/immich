@@ -10,10 +10,12 @@ import { DummyValue, GenerateSql } from 'src/decorators';
 import { AssetVisibility, SystemMetadataKey } from 'src/enum';
 import { ConfigRepository } from 'src/repositories/config.repository';
 import { LoggingRepository } from 'src/repositories/logging.repository';
+import { AssetSearchBuilderOptions } from 'src/repositories/search.repository';
 import { SystemMetadataRepository } from 'src/repositories/system-metadata.repository';
 import { DB } from 'src/schema';
 import { GeodataPlacesTable } from 'src/schema/tables/geodata-places.table';
 import { NaturalEarthCountriesTable } from 'src/schema/tables/natural-earth-countries.table';
+import { joinDeduplicationPlugin, searchAssetIdSubquery } from 'src/utils/database';
 
 export interface MapMarkerSearchOptions {
   isArchived?: boolean;
@@ -76,6 +78,18 @@ export class MapRepository {
       .innerJoin('album_asset', 'asset.id', 'album_asset.assetId')
       .where('album_asset.albumId', '=', albumId)
       .execute();
+  }
+
+  // Smart albums have no album_asset rows; membership is applied as an id subquery so the
+  // marker query keeps its own asset_exif join regardless of which EXIF fields the filter uses.
+  getMapMarkersForSearch(options: AssetSearchBuilderOptions) {
+    return (
+      this.mapMarkersQuery()
+        .where('asset.id', 'in', searchAssetIdSubquery(this.db as unknown as Kysely<DB>, options))
+        // The embedded subquery relies on the root query to deduplicate its joins.
+        .withPlugin(joinDeduplicationPlugin)
+        .execute()
+    );
   }
 
   @GenerateSql({ params: [[DummyValue.UUID], [DummyValue.UUID]] })
