@@ -1,12 +1,13 @@
 import { Injectable } from '@nestjs/common';
-import { Kysely, OrderByDirection, Selectable, ShallowDehydrateObject, sql } from 'kysely';
+import { Kysely, NotNull, OrderByDirection, Selectable, ShallowDehydrateObject, sql } from 'kysely';
 import { InjectKysely } from 'nestjs-kysely';
 import { DummyValue, GenerateSql } from 'src/decorators';
-import { AssetStatus, AssetType, AssetVisibility, VectorIndex } from 'src/enum';
+import { AssetOrder, AssetStatus, AssetType, AssetVisibility, VectorIndex } from 'src/enum';
+import { TimeBucketItem } from 'src/repositories/asset.repository';
 import { probes } from 'src/repositories/database.repository';
 import { DB } from 'src/schema';
 import { AssetExifTable } from 'src/schema/tables/asset-exif.table';
-import { anyUuid, searchAssetBuilder, withExifInner } from 'src/utils/database';
+import { anyUuid, searchAssetBuilder, truncatedDate, withExifInner } from 'src/utils/database';
 import { paginationHelper } from 'src/utils/pagination';
 import { isValidInteger } from 'src/validation';
 
@@ -177,6 +178,15 @@ export interface GetCameraLensModelsOptions {
   model?: string;
 }
 
+export interface SearchMapMarker {
+  id: string;
+  lat: number;
+  lon: number;
+  city: string | null;
+  state: string | null;
+  country: string | null;
+}
+
 @Injectable()
 export class SearchRepository {
   constructor(@InjectKysely() private db: Kysely<DB>) {}
@@ -257,6 +267,61 @@ export class SearchRepository {
         qb.fn.max(sql<Date | null>`coalesce(asset."localDateTime", asset."fileCreatedAt")`).as('endDate'),
       ])
       .executeTakeFirstOrThrow();
+  }
+
+  // Month-bucket aggregate over filter matches; mirrors AssetRepository.getTimeBuckets so the
+  // bucket keys line up with getTimeBucket lookups. Aggregating here avoids materializing every
+  // matching asset id for large smart albums.
+  @GenerateSql({
+    params: [
+      {
+        lensModel: DummyValue.STRING,
+        isFavorite: true,
+        userIds: [DummyValue.UUID],
+      },
+    ],
+  })
+  searchTimeBuckets(options: AssetSearchOptions, order?: AssetOrder): Promise<TimeBucketItem[]> {
+    return this.db
+      .with('asset', () => searchAssetBuilder(this.db, options).select(truncatedDate<Date>().as('timeBucket')))
+      .selectFrom('asset')
+      .select(sql<string>`("timeBucket" AT TIME ZONE 'UTC')::date::text`.as('timeBucket'))
+      .select((eb) => eb.fn.countAll<number>().as('count'))
+      .groupBy('timeBucket')
+      .orderBy('timeBucket', order ?? 'desc')
+      .execute() as Promise<TimeBucketItem[]>;
+  }
+
+  // Map markers for filter matches; mirrors MapRepository.mapMarkersQuery. Avoids materializing
+  // every matching asset id for large smart albums.
+  @GenerateSql({
+    params: [
+      {
+        lensModel: DummyValue.STRING,
+        isFavorite: true,
+        userIds: [DummyValue.UUID],
+      },
+    ],
+  })
+  searchMapMarkers(options: AssetSearchOptions): Promise<SearchMapMarker[]> {
+    return searchAssetBuilder(this.db, options)
+      .innerJoin('asset_exif', (builder) =>
+        builder
+          .onRef('asset.id', '=', 'asset_exif.assetId')
+          .on('asset_exif.latitude', 'is not', null)
+          .on('asset_exif.longitude', 'is not', null),
+      )
+      .orderBy('asset.fileCreatedAt', 'desc')
+      .select([
+        'asset.id',
+        'asset_exif.latitude as lat',
+        'asset_exif.longitude as lon',
+        'asset_exif.city',
+        'asset_exif.state',
+        'asset_exif.country',
+      ])
+      .$narrowType<{ lat: NotNull; lon: NotNull }>()
+      .execute() as Promise<SearchMapMarker[]>;
   }
 
   @GenerateSql({
