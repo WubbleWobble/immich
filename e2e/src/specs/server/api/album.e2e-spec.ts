@@ -13,6 +13,7 @@ import {
   getAssetInfo,
   getTimeBuckets,
   LoginResponseDto,
+  searchAssets,
   SharedLinkType,
   tagAssets,
 } from '@immich/sdk';
@@ -508,6 +509,8 @@ describe('/albums', () => {
         assetCount: 0,
         isActivityEnabled: true,
         order: AssetOrder.Desc,
+        kind: AlbumKind.Regular,
+        filter: null,
       });
     });
 
@@ -819,15 +822,41 @@ describe('/albums', () => {
       });
 
       // Owner uploads one asset and tags it; the tag becomes the smart-album filter.
+      // Metadata extraction REPLACES an asset's tags from EXIF/sidecar data
+      // (MetadataService.applyTagList), so a manual tag applied while extraction is still
+      // pending gets wiped. Wait for upload processing to finish before tagging - queue
+      // polling races the event handler that enqueues the job, so use the websocket signal.
+      const ownerWebsocket = await utils.connectWebsocket(owner.accessToken);
       const ownerAsset = await utils.createAsset(owner.accessToken);
+      await utils.waitForWebsocketEvent({ event: 'assetUpload', id: ownerAsset.id });
+      utils.disconnectWebsocket(ownerWebsocket);
       const tag = await createTag(
         { tagCreateDto: { name: 'smart-album-tag' } },
         { headers: asBearerAuth(owner.accessToken) },
       );
-      await tagAssets(
+      const tagResults = await tagAssets(
         { id: tag.id, bulkIdsDto: { ids: [ownerAsset.id] } },
         { headers: asBearerAuth(owner.accessToken) },
       );
+      expect(tagResults).toEqual([{ id: ownerAsset.id, success: true }]);
+
+      // Barrier: metadata extraction can transiently wipe the manual tag (applyTagList
+      // replaces tags from EXIF/sidecar; the sidecar round-trip restores it). Wait until the
+      // tag is actually searchable - the same visibility the smart album evaluates.
+      const deadline = Date.now() + 10_000;
+      while (true) {
+        const { assets: searchHits } = await searchAssets(
+          { metadataSearchDto: { tagIds: [tag.id] } },
+          { headers: asBearerAuth(owner.accessToken) },
+        );
+        if (searchHits.items.some(({ id }) => id === ownerAsset.id)) {
+          break;
+        }
+        if (Date.now() > deadline) {
+          throw new Error('Tagged asset never became searchable');
+        }
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
 
       // Owner creates a smart album whose filter matches the tagged asset.
       const smartAlbum = await utils.createAlbum(owner.accessToken, {
