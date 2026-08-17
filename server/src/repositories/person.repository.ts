@@ -325,19 +325,54 @@ export class PersonRepository {
   }
 
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.STRING, { withHidden: true }] })
-  getByName(userId: string, personName: string, { withHidden }: PersonNameSearchOptions) {
-    return this.db
-      .with('similarity_threshold', (db) =>
-        db.selectNoFrom(sql`set_config('pg_trgm.word_similarity_threshold', '0.5', true)`.as('thresh')),
-      )
-      .selectFrom(['similarity_threshold', 'person'])
-      .selectAll('person')
-      .where('person.ownerId', '=', userId)
-      .where(() => sql`f_unaccent("person"."name") %> f_unaccent(${personName})`)
-      .orderBy(sql`f_unaccent("person"."name") <->>> f_unaccent(${personName})`)
-      .limit(100)
-      .$if(!withHidden, (qb) => qb.where('person.isHidden', '=', false))
-      .execute();
+  getByName(
+    userId: string,
+    personName: string,
+    { withHidden }: PersonNameSearchOptions,
+    lockVisibility?: OwnerLockVisibility[],
+  ) {
+    return (
+      this.db
+        .with('similarity_threshold', (db) =>
+          db.selectNoFrom(sql`set_config('pg_trgm.word_similarity_threshold', '0.5', true)`.as('thresh')),
+        )
+        .selectFrom(['similarity_threshold', 'person'])
+        .selectAll('person')
+        .where('person.ownerId', '=', userId)
+        .where(() => sql`f_unaccent("person"."name") %> f_unaccent(${personName})`)
+        .orderBy(sql`f_unaccent("person"."name") <->>> f_unaccent(${personName})`)
+        .limit(100)
+        .$if(!withHidden, (qb) => qb.where('person.isHidden', '=', false))
+        // A person whose every face is on a locked-away asset must not surface in search.
+        .$if(!!lockVisibility?.length, (qb) =>
+          qb
+            .where((eb) =>
+              eb.exists((eb) =>
+                eb
+                  .selectFrom('asset_face')
+                  .whereRef('asset_face.personId', '=', 'person.id')
+                  .where('asset_face.deletedAt', 'is', null)
+                  .where('asset_face.isVisible', '=', true)
+                  .where((eb) =>
+                    eb.exists((eb) =>
+                      withLockVisibility(
+                        eb
+                          .selectFrom('asset')
+                          .whereRef('asset.id', '=', 'asset_face.assetId')
+                          .where('asset.visibility', '=', sql.lit(AssetVisibility.Timeline))
+                          .where('asset.deletedAt', 'is', null),
+                        this.db,
+                        lockVisibility!,
+                      ),
+                    ),
+                  ),
+              ),
+            )
+            // Embedded lock-visibility subqueries rely on the root query for join deduplication.
+            .withPlugin(joinDeduplicationPlugin),
+        )
+        .execute()
+    );
   }
 
   @GenerateSql({ params: [DummyValue.UUID, { withHidden: true }] })
@@ -352,19 +387,24 @@ export class PersonRepository {
   }
 
   @GenerateSql({ params: [DummyValue.UUID] })
-  async getStatistics(personId: string): Promise<PersonStatistics> {
+  async getStatistics(personId: string, lockVisibility?: OwnerLockVisibility[]): Promise<PersonStatistics> {
+    // Rooted at asset (rather than asset_face with a left join) so the lock-visibility
+    // clause can apply directly; face rows without a live timeline asset contributed
+    // nothing to count(distinct) in either shape.
     const result = await this.db
-      .selectFrom('asset_face')
-      .leftJoin('asset', (join) =>
-        join
-          .onRef('asset.id', '=', 'asset_face.assetId')
-          .on('asset.visibility', '=', sql.lit(AssetVisibility.Timeline))
-          .on('asset.deletedAt', 'is', null),
-      )
+      .selectFrom('asset')
+      .innerJoin('asset_face', 'asset_face.assetId', 'asset.id')
       .select((eb) => eb.fn.count(eb.fn('distinct', ['asset.id'])).as('count'))
+      .where('asset.visibility', '=', sql.lit(AssetVisibility.Timeline))
+      .where('asset.deletedAt', 'is', null)
       .where('asset_face.deletedAt', 'is', null)
       .where('asset_face.isVisible', 'is', true)
       .where('asset_face.personId', '=', personId)
+      // Locked-away assets do not count; the embedded subqueries rely on the root query
+      // for join deduplication.
+      .$if(!!lockVisibility?.length, (qb) =>
+        withLockVisibility(qb, this.db, lockVisibility!).withPlugin(joinDeduplicationPlugin),
+      )
       .executeTakeFirst();
 
     return {

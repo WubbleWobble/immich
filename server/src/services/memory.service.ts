@@ -97,8 +97,8 @@ export class MemoryService extends BaseService {
       .map((memory: Memory) => mapMemory(memory, auth));
   }
 
-  statistics(auth: AuthDto, dto: MemorySearchDto) {
-    return this.memoryRepository.statistics(auth.user.id, dto);
+  async statistics(auth: AuthDto, dto: MemorySearchDto) {
+    return this.memoryRepository.statistics(auth.user.id, dto, await this.getViewerLockVisibility(auth));
   }
 
   async get(auth: AuthDto, id: string): Promise<MemoryResponseDto> {

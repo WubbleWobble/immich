@@ -1,5 +1,6 @@
 import {
   AlbumKind,
+  AlbumUserRole,
   AssetVisibility,
   AlbumResponseDto,
   createAlbumContainer,
@@ -481,5 +482,63 @@ describe('/albums/:id/lock', () => {
     expect(search.status).toBe(200);
     const searchIds = search.body.flatMap(({ assets }: { assets: { id: string }[] }) => assets.map(({ id }) => id));
     expect(searchIds).not.toContain(ownerAssetA.id);
+  });
+
+  it("a sharee's own lock on a shared album hides the owner's assets from the sharee", async () => {
+    // A dedicated sharee (NOT a partner - partner timeline access would legitimately
+    // rescue the asset) gets an album share, then locks it for themselves.
+    const sharee = await utils.userSetup(admin.accessToken, {
+      email: 'lock-sharee@immich.cloud',
+      name: 'Lock Sharee',
+      password: 'password-lock-sharee',
+    });
+    const sharedAsset = await utils.createAsset(owner.accessToken);
+    const sharedAlbum = await utils.createAlbum(owner.accessToken, {
+      albumName: 'Shared With Sharee',
+      assetIds: [sharedAsset.id],
+      albumUsers: [{ userId: sharee.userId, role: AlbumUserRole.Editor }],
+    });
+
+    // The share grants direct-id access.
+    const before = await request(app)
+      .get(`/assets/${sharedAsset.id}`)
+      .set('Authorization', `Bearer ${sharee.accessToken}`);
+    expect(before.status).toBe(200);
+
+    await setupPinCode({ pinCodeSetupDto: { pinCode: PIN } }, { headers: asBearerAuth(sharee.accessToken) });
+    await elevate(sharee.accessToken);
+    const lockResponse = await request(app)
+      .post(`/albums/${sharedAlbum.id}/lock`)
+      .set('Authorization', `Bearer ${sharee.accessToken}`);
+    expect(lockResponse.status).toBe(204);
+
+    // The still-elevated session bypasses the lock.
+    const elevated = await request(app)
+      .get(`/assets/${sharedAsset.id}`)
+      .set('Authorization', `Bearer ${sharee.accessToken}`);
+    expect(elevated.status).toBe(200);
+
+    // A fresh sharee session can reach neither the album nor its assets by known id...
+    const fresh = await login({
+      loginCredentialDto: { email: 'lock-sharee@immich.cloud', password: 'password-lock-sharee' },
+    });
+    const hiddenAsset = await request(app)
+      .get(`/assets/${sharedAsset.id}`)
+      .set('Authorization', `Bearer ${fresh.accessToken}`);
+    expect(hiddenAsset.status).toBe(400);
+    const albums = await getAllAlbums({}, { headers: asBearerAuth(fresh.accessToken) });
+    expect(albums.map(({ id }) => id)).not.toContain(sharedAlbum.id);
+
+    // ... nor quietly leave the hidden album (self-removal is a write on hidden content).
+    const leave = await request(app)
+      .delete(`/albums/${sharedAlbum.id}/user/me`)
+      .set('Authorization', `Bearer ${fresh.accessToken}`);
+    expect(leave.status).toBe(400);
+
+    // The owner is entirely unaffected by the sharee's lock.
+    const ownerView = await request(app)
+      .get(`/assets/${sharedAsset.id}`)
+      .set('Authorization', `Bearer ${owner.accessToken}`);
+    expect(ownerView.status).toBe(200);
   });
 });

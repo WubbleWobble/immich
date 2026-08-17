@@ -50,6 +50,16 @@ import { Point, transformPoints } from 'src/utils/transform';
 
 @Injectable()
 export class PersonService extends BaseService {
+  /** People are derived from the viewer's own assets, so the only relevant lock owner is the viewer. */
+  private getViewerLockVisibility(auth: AuthDto) {
+    return this.lockRepository.getOwnerLockVisibility({
+      viewerId: auth.user.id,
+      ownerIds: [auth.user.id],
+      revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
+      isElevated: !!auth.session?.hasElevatedPermission,
+    });
+  }
+
   async getAll(auth: AuthDto, dto: PersonSearchDto): Promise<PeopleResponseDto> {
     const { withHidden = false, closestAssetId, closestPersonId, page, size } = dto;
     let closestFaceAssetId = closestAssetId;
@@ -66,13 +76,7 @@ export class PersonService extends BaseService {
       closestFaceAssetId = person.faceAssetId;
     }
     const { machineLearning } = await this.getConfig({ withCache: false });
-    // People are derived from the viewer's own assets, so the only relevant lock owner is the viewer.
-    const lockVisibility = await this.lockRepository.getOwnerLockVisibility({
-      viewerId: auth.user.id,
-      ownerIds: [auth.user.id],
-      revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
-      isElevated: !!auth.session?.hasElevatedPermission,
-    });
+    const lockVisibility = await this.getViewerLockVisibility(auth);
     const { items, hasNextPage } = await this.personRepository.getAllForUser(
       pagination,
       auth.user.id,
@@ -184,7 +188,7 @@ export class PersonService extends BaseService {
 
   async getStatistics(auth: AuthDto, id: string): Promise<PersonStatisticsResponseDto> {
     await this.requireAccess({ auth, permission: Permission.PersonRead, ids: [id] });
-    return this.personRepository.getStatistics(id);
+    return this.personRepository.getStatistics(id, await this.getViewerLockVisibility(auth));
   }
 
   async getThumbnail(auth: AuthDto, id: string): Promise<ImmichFileResponse> {
@@ -192,6 +196,18 @@ export class PersonService extends BaseService {
     const person = await this.personRepository.getById(id);
     if (!person || !person.thumbnailPath) {
       throw new NotFoundException();
+    }
+
+    // The face crop is derived from the feature-face asset; if the viewer has locked that
+    // asset away, the crop must be unreachable too (the person may otherwise be visible).
+    if (person.faceAssetId && !auth.sharedLink && !auth.session?.hasElevatedPermission) {
+      const visible = await this.accessRepository.asset.excludeHiddenForLocker(
+        auth.user.id,
+        new Set([person.faceAssetId]),
+      );
+      if (visible.size === 0) {
+        throw new NotFoundException();
+      }
     }
 
     return new ImmichFileResponse({

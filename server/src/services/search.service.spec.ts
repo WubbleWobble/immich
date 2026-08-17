@@ -33,11 +33,11 @@ describe(SearchService.name, () => {
 
       await sut.searchPerson(auth, { name, withHidden: false });
 
-      expect(mocks.person.getByName).toHaveBeenCalledWith(auth.user.id, name, { withHidden: false });
+      expect(mocks.person.getByName).toHaveBeenCalledWith(auth.user.id, name, { withHidden: false }, undefined);
 
       await sut.searchPerson(auth, { name, withHidden: true });
 
-      expect(mocks.person.getByName).toHaveBeenCalledWith(auth.user.id, name, { withHidden: true });
+      expect(mocks.person.getByName).toHaveBeenCalledWith(auth.user.id, name, { withHidden: true }, undefined);
     });
   });
 
@@ -201,7 +201,11 @@ describe(SearchService.name, () => {
       await expect(
         sut.getSearchSuggestions(authStub.user1, { includeNull: false, type: SearchSuggestionType.CAMERA_LENS_MODEL }),
       ).resolves.toEqual(['10-24mm']);
-      expect(mocks.search.getCameraLensModels).toHaveBeenCalledWith([authStub.user1.user.id], expect.anything(), undefined);
+      expect(mocks.search.getCameraLensModels).toHaveBeenCalledWith(
+        [authStub.user1.user.id],
+        expect.anything(),
+        undefined,
+      );
     });
 
     it('should return search suggestions for camera lens model (including null)', async () => {
@@ -211,7 +215,11 @@ describe(SearchService.name, () => {
       await expect(
         sut.getSearchSuggestions(authStub.user1, { includeNull: true, type: SearchSuggestionType.CAMERA_LENS_MODEL }),
       ).resolves.toEqual(['10-24mm', null]);
-      expect(mocks.search.getCameraLensModels).toHaveBeenCalledWith([authStub.user1.user.id], expect.anything(), undefined);
+      expect(mocks.search.getCameraLensModels).toHaveBeenCalledWith(
+        [authStub.user1.user.id],
+        expect.anything(),
+        undefined,
+      );
     });
   });
 

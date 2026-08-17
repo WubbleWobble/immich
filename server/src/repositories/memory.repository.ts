@@ -48,10 +48,27 @@ export class MemoryRepository implements IBulkAsset {
     { params: [DummyValue.UUID, {}] },
     { name: 'date filter', params: [DummyValue.UUID, { for: DummyValue.DATE }] },
   )
-  statistics(ownerId: string, dto: MemorySearchDto) {
-    return this.searchBuilder(ownerId, dto)
-      .select((qb) => qb.fn.countAll<number>().as('total'))
-      .executeTakeFirstOrThrow();
+  statistics(ownerId: string, dto: MemorySearchDto, lockVisibility?: OwnerLockVisibility[]) {
+    let qb = this.searchBuilder(ownerId, dto);
+    // With locks in play, only memories that still have at least one visible asset count
+    // (mirroring search(), which drops memories whose every asset is locked away). The
+    // embedded subqueries rely on the root query for join deduplication.
+    if (lockVisibility?.length) {
+      const visibleAsset = withLockVisibility(
+        this.db
+          .selectFrom('asset')
+          .select('asset.id')
+          .innerJoin('memory_asset', 'asset.id', 'memory_asset.assetId')
+          // Correlated ref to the outer memory row; 'memory' is outside this builder's type scope.
+          .whereRef('memory_asset.memoriesId', '=', 'memory.id' as never)
+          .where('asset.visibility', '=', sql.lit(AssetVisibility.Timeline))
+          .where('asset.deletedAt', 'is', null),
+        this.db,
+        lockVisibility,
+      );
+      qb = qb.where((eb) => eb.exists(visibleAsset)).withPlugin(joinDeduplicationPlugin);
+    }
+    return qb.select((eb) => eb.fn.countAll<number>().as('total')).executeTakeFirstOrThrow();
   }
 
   @GenerateSql(

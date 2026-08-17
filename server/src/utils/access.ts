@@ -124,11 +124,16 @@ const checkOtherAccess = async (access: AccessRepository, request: OtherAccessRe
 
     case Permission.AssetRead: {
       const isOwner = await access.asset.checkOwnerAccess(auth.user.id, ids, auth.session?.hasElevatedPermission);
-      const isAlbum = await access.asset.checkAlbumAccess(auth.user.id, setDifference(ids, isOwner));
+      const isAlbum = await access.asset.checkAlbumAccess(
+        auth.user.id,
+        setDifference(ids, isOwner),
+        auth.session?.hasElevatedPermission,
+      );
       const isPartner = await access.asset.checkPartnerAccess(auth.user.id, setDifference(ids, isOwner, isAlbum));
       const isSmartAlbum = await access.asset.checkSmartAlbumAccess(
         auth.user.id,
         setDifference(ids, isOwner, isAlbum, isPartner),
+        auth.session?.hasElevatedPermission,
       );
       const combined = setUnion(isOwner, isAlbum, isPartner, isSmartAlbum);
       // Locked-content exclusion on the FINAL grant set: any path (including membership in
@@ -152,11 +157,16 @@ const checkOtherAccess = async (access: AccessRepository, request: OtherAccessRe
 
     case Permission.AssetView: {
       const isOwner = await access.asset.checkOwnerAccess(auth.user.id, ids, auth.session?.hasElevatedPermission);
-      const isAlbum = await access.asset.checkAlbumAccess(auth.user.id, setDifference(ids, isOwner));
+      const isAlbum = await access.asset.checkAlbumAccess(
+        auth.user.id,
+        setDifference(ids, isOwner),
+        auth.session?.hasElevatedPermission,
+      );
       const isPartner = await access.asset.checkPartnerAccess(auth.user.id, setDifference(ids, isOwner, isAlbum));
       const isSmartAlbum = await access.asset.checkSmartAlbumAccess(
         auth.user.id,
         setDifference(ids, isOwner, isAlbum, isPartner),
+        auth.session?.hasElevatedPermission,
       );
       const combined = setUnion(isOwner, isAlbum, isPartner, isSmartAlbum);
       // Locked-content exclusion on the FINAL grant set: any path (including membership in
@@ -169,11 +179,16 @@ const checkOtherAccess = async (access: AccessRepository, request: OtherAccessRe
 
     case Permission.AssetDownload: {
       const isOwner = await access.asset.checkOwnerAccess(auth.user.id, ids, auth.session?.hasElevatedPermission);
-      const isAlbum = await access.asset.checkAlbumAccess(auth.user.id, setDifference(ids, isOwner));
+      const isAlbum = await access.asset.checkAlbumAccess(
+        auth.user.id,
+        setDifference(ids, isOwner),
+        auth.session?.hasElevatedPermission,
+      );
       const isPartner = await access.asset.checkPartnerAccess(auth.user.id, setDifference(ids, isOwner, isAlbum));
       const isSmartAlbum = await access.asset.checkSmartAlbumAccess(
         auth.user.id,
         setDifference(ids, isOwner, isAlbum, isPartner),
+        auth.session?.hasElevatedPermission,
       );
       const combined = setUnion(isOwner, isAlbum, isPartner, isSmartAlbum);
       // Locked-content exclusion on the FINAL grant set: any path (including membership in

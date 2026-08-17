@@ -588,8 +588,11 @@ export class AlbumService extends BaseService {
     // non-admin can remove themselves
     if (auth.user.id !== userId) {
       await this.requireAccess({ auth, permission: Permission.AlbumShare, ids: [id] });
-      await BaseService.create(LockService, this).assertAlbumVisibleForViewer(auth, id);
     }
+    // Hidden albums are write-protected even for self-removal: leaving a locked shared
+    // album is a state change on hidden content (it can even un-hide the sharee's own
+    // assets by making them zero-container), so it requires an elevated session too.
+    await BaseService.create(LockService, this).assertAlbumVisibleForViewer(auth, id);
 
     await this.albumUserRepository.delete({ albumId: id, userId });
   }

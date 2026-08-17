@@ -770,9 +770,9 @@ describe(AlbumService.name, () => {
       mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
       mocks.lock.isAlbumHiddenForViewer.mockResolvedValue(true);
 
-      await expect(
-        sut.update(AuthFactory.create(owner), album.id, { albumName: 'new name' }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      await expect(sut.update(AuthFactory.create(owner), album.id, { albumName: 'new name' })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
 
       expect(mocks.album.update).not.toHaveBeenCalled();
     });
@@ -1162,6 +1162,19 @@ describe(AlbumService.name, () => {
   });
 
   describe('removeUser', () => {
+    it('should block a sharee removing themselves from an album they locked (non-elevated session)', async () => {
+      const sharee = UserFactory.create();
+      const album = AlbumFactory.from().albumUser({ userId: sharee.id }).build();
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.lock.isAlbumHiddenForViewer.mockResolvedValue(true);
+
+      await expect(sut.removeUser(AuthFactory.create(sharee), album.id, 'me')).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+
+      expect(mocks.albumUser.delete).not.toHaveBeenCalled();
+    });
+
     it('should require a valid album id', async () => {
       mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['album-1']));
       mocks.album.getById.mockResolvedValue(void 0);
@@ -1638,9 +1651,9 @@ describe(AlbumService.name, () => {
       mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
       mocks.lock.isAlbumHiddenForViewer.mockResolvedValue(true);
 
-      await expect(
-        sut.addAssets(AuthFactory.create(owner), album.id, { ids: [newUuid()] }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      await expect(sut.addAssets(AuthFactory.create(owner), album.id, { ids: [newUuid()] })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
 
       expect(mocks.album.addAssetIds).not.toHaveBeenCalled();
     });

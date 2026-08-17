@@ -714,20 +714,31 @@ export class AssetRepository {
       .executeTakeFirst();
   }
 
-  getStatistics(ownerId: string, { visibility, isFavorite, isTrashed }: AssetStatsOptions): Promise<AssetStats> {
-    return this.db
-      .selectFrom('asset')
-      .select((eb) => eb.fn.countAll<number>().filterWhere('type', '=', AssetType.Audio).as(AssetType.Audio))
-      .select((eb) => eb.fn.countAll<number>().filterWhere('type', '=', AssetType.Image).as(AssetType.Image))
-      .select((eb) => eb.fn.countAll<number>().filterWhere('type', '=', AssetType.Video).as(AssetType.Video))
-      .select((eb) => eb.fn.countAll<number>().filterWhere('type', '=', AssetType.Other).as(AssetType.Other))
-      .where('ownerId', '=', asUuid(ownerId))
-      .$if(visibility === undefined, withDefaultVisibility)
-      .$if(!!visibility, (qb) => qb.where('asset.visibility', '=', visibility!))
-      .$if(isFavorite !== undefined, (qb) => qb.where('isFavorite', '=', isFavorite!))
-      .$if(!!isTrashed, (qb) => qb.where('asset.status', '!=', AssetStatus.Deleted))
-      .where('deletedAt', isTrashed ? 'is not' : 'is', null)
-      .executeTakeFirstOrThrow();
+  getStatistics(
+    ownerId: string,
+    { visibility, isFavorite, isTrashed }: AssetStatsOptions,
+    lockVisibility?: OwnerLockVisibility[],
+  ): Promise<AssetStats> {
+    return (
+      this.db
+        .selectFrom('asset')
+        .select((eb) => eb.fn.countAll<number>().filterWhere('type', '=', AssetType.Audio).as(AssetType.Audio))
+        .select((eb) => eb.fn.countAll<number>().filterWhere('type', '=', AssetType.Image).as(AssetType.Image))
+        .select((eb) => eb.fn.countAll<number>().filterWhere('type', '=', AssetType.Video).as(AssetType.Video))
+        .select((eb) => eb.fn.countAll<number>().filterWhere('type', '=', AssetType.Other).as(AssetType.Other))
+        .where('ownerId', '=', asUuid(ownerId))
+        .$if(visibility === undefined, withDefaultVisibility)
+        .$if(!!visibility, (qb) => qb.where('asset.visibility', '=', visibility!))
+        .$if(isFavorite !== undefined, (qb) => qb.where('isFavorite', '=', isFavorite!))
+        .$if(!!isTrashed, (qb) => qb.where('asset.status', '!=', AssetStatus.Deleted))
+        .where('deletedAt', isTrashed ? 'is not' : 'is', null)
+        // Counts must not reveal locked-away content; the embedded subqueries rely on the
+        // root query for join deduplication.
+        .$if(!!lockVisibility?.length, (qb) =>
+          withLockVisibility(qb, this.db, lockVisibility!).withPlugin(joinDeduplicationPlugin),
+        )
+        .executeTakeFirstOrThrow()
+    );
   }
 
   @GenerateSql({ params: [{}] })

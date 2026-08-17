@@ -5,8 +5,8 @@ import { ChunkedSet, DummyValue, GenerateSql } from 'src/decorators';
 import { SmartAlbumFilter, toEvaluableSmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
 import { AlbumKind, AlbumUserRole, AssetVisibility } from 'src/enum';
 import { DB } from 'src/schema';
-import { asUuid, joinDeduplicationPlugin, searchAssetBuilder, withLockVisibility } from 'src/utils/database';
-import { getOwnerLockVisibility, NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
+import { anyUuid, asUuid, joinDeduplicationPlugin, searchAssetBuilder, withLockVisibility } from 'src/utils/database';
+import { NO_REVEALED_LOCKS, getHiddenAlbumIdsQuery, getOwnerLockVisibility } from 'src/utils/lock-visibility';
 
 class ActivityAccess {
   constructor(private db: Kysely<DB>) {}
@@ -174,10 +174,17 @@ class AssetAccess {
 
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID_SET] })
   @ChunkedSet({ paramIndex: 1 })
-  async checkAlbumAccess(userId: string, assetIds: Set<string>) {
+  async checkAlbumAccess(userId: string, assetIds: Set<string>, isElevated = false) {
     if (assetIds.size === 0) {
       return new Set<string>();
     }
+
+    // A shared album the viewer locked (or one inside a folder they locked) must not grant
+    // access to its assets outside an elevated session - the viewer's own locks apply to
+    // shared content too, even though the assets belong to the album owner. Excluding the
+    // hidden albums here (rather than post-filtering) lets another, unlocked share - or the
+    // partner path, which runs on whatever this check does not grant - still rescue access.
+    const hiddenAlbumIds = isElevated ? [] : await getHiddenAlbumIdsQuery(this.db, userId, NO_REVEALED_LOCKS);
 
     // Direct share: the user is in album_user for an album that contains the asset.
     const direct = await this.db
@@ -199,6 +206,7 @@ class AssetAccess {
       )
       .where('user.id', '=', userId)
       .where('album.deletedAt', 'is', null)
+      .$if(hiddenAlbumIds.length > 0, (qb) => qb.where((eb) => eb.not(eb('album.id', '=', anyUuid(hiddenAlbumIds)))))
       .execute();
 
     // Cascade share: the user is in album_container_user for an ancestor folder of the album that contains the asset.
@@ -229,6 +237,7 @@ class AssetAccess {
             .where('acu.userId', '=', userId),
         ),
       )
+      .$if(hiddenAlbumIds.length > 0, (qb) => qb.where((eb) => eb.not(eb('album.id', '=', anyUuid(hiddenAlbumIds)))))
       .execute();
 
     const allowedIds = new Set<string>();
@@ -249,10 +258,14 @@ class AssetAccess {
    * album owner's library) against the candidate asset ids. Motion parts of matched live photos
    * are granted the same way `checkAlbumAccess` grants them.
    */
-  async checkSmartAlbumAccess(userId: string, assetIds: Set<string>) {
+  async checkSmartAlbumAccess(userId: string, assetIds: Set<string>, isElevated = false) {
     if (assetIds.size === 0) {
       return new Set<string>();
     }
+
+    // Same rule as checkAlbumAccess: a shared smart album the viewer locked (directly or
+    // via a locked folder) must not grant access outside an elevated session.
+    const hiddenAlbumIds = isElevated ? [] : await getHiddenAlbumIdsQuery(this.db, userId, NO_REVEALED_LOCKS);
 
     const albums = await this.db
       .selectFrom('album')
@@ -267,6 +280,7 @@ class AssetAccess {
       .where('album.kind', '=', AlbumKind.Smart)
       .where('album.filter', 'is not', null)
       .where('album.deletedAt', 'is', null)
+      .$if(hiddenAlbumIds.length > 0, (qb) => qb.where((eb) => eb.not(eb('album.id', '=', anyUuid(hiddenAlbumIds)))))
       .execute();
 
     return this.matchSmartAlbumAssets(albums, assetIds);
@@ -355,9 +369,10 @@ class AssetAccess {
    * elevated session, the viewer's own effectively-hidden assets are unreachable even by
    * known id - and via ANY grant path, including membership in the viewer's own (locked)
    * albums, which would otherwise resurrect access through the album-share check. Only the
-   * viewer's OWN assets are affected: the per-owner SQL scopes by asset.ownerId, so assets
-   * of other owners (shared albums, partners - already filtered by the partner check) pass
-   * through untouched.
+   * viewer's OWN assets are affected: the per-owner SQL scopes by asset.ownerId. Foreign
+   * assets reached through a shared album the viewer locked are handled upstream - the
+   * album grant itself is withheld in checkAlbumAccess - and partner assets are filtered
+   * by the owner's locks in the partner check.
    */
   async excludeHiddenForLocker(viewerId: string, assetIds: Set<string>): Promise<Set<string>> {
     if (assetIds.size === 0) {

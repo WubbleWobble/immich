@@ -48,6 +48,7 @@ import {
 } from 'src/utils/asset.util';
 import { updateLockedColumns } from 'src/utils/database';
 import { extractTimeZone } from 'src/utils/date';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
 import { transformOcrBoundingBox } from 'src/utils/transform';
 
 @Injectable()
@@ -57,7 +58,14 @@ export class AssetService extends BaseService {
       requireElevatedPermission(auth);
     }
 
-    const stats = await this.assetRepository.getStatistics(auth.user.id, dto);
+    // Statistics are over the viewer's own library, so the viewer is the only relevant lock owner.
+    const lockVisibility = await this.lockRepository.getOwnerLockVisibility({
+      viewerId: auth.user.id,
+      ownerIds: [auth.user.id],
+      revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
+      isElevated: !!auth.session?.hasElevatedPermission,
+    });
+    const stats = await this.assetRepository.getStatistics(auth.user.id, dto, lockVisibility);
     return mapStats(stats);
   }
 

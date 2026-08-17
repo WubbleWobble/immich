@@ -129,6 +129,31 @@ describe(PersonService.name, () => {
   });
 
   describe('getThumbnail', () => {
+    it('should block the face crop when its source asset is locked away (non-elevated session)', async () => {
+      const auth = AuthFactory.create();
+      const faceAssetId = newUuid();
+      const person = PersonFactory.create({ thumbnailPath: '/path/to/thumbnail.jpg', faceAssetId });
+
+      mocks.person.getById.mockResolvedValue(person);
+      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
+      mocks.access.asset.excludeHiddenForLocker.mockResolvedValue(new Set());
+
+      await expect(sut.getThumbnail(auth, person.id)).rejects.toBeInstanceOf(NotFoundException);
+      expect(mocks.storage.createReadStream).not.toHaveBeenCalled();
+      expect(mocks.access.asset.excludeHiddenForLocker).toHaveBeenCalledWith(auth.user.id, new Set([faceAssetId]));
+    });
+
+    it('should serve the face crop in an elevated session without a visibility check', async () => {
+      const auth = AuthFactory.from().session({ hasElevatedPermission: true }).build();
+      const person = PersonFactory.create({ thumbnailPath: '/path/to/thumbnail.jpg', faceAssetId: newUuid() });
+
+      mocks.person.getById.mockResolvedValue(person);
+      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
+
+      await expect(sut.getThumbnail(auth, person.id)).resolves.toBeDefined();
+      expect(mocks.access.asset.excludeHiddenForLocker).not.toHaveBeenCalled();
+    });
+
     it('should require person.read permission', async () => {
       const auth = AuthFactory.create();
       const person = PersonFactory.create();
