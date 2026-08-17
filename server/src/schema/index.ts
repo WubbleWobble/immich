@@ -51,6 +51,8 @@ import { AssetTable } from 'src/schema/tables/asset.table';
 import { FaceSearchTable } from 'src/schema/tables/face-search.table';
 import { GeodataPlacesTable } from 'src/schema/tables/geodata-places.table';
 import { LibraryTable } from 'src/schema/tables/library.table';
+import { LockedAlbumTable } from 'src/schema/tables/locked-album.table';
+import { LockedContainerTable } from 'src/schema/tables/locked-container.table';
 import { MemoryAssetAuditTable } from 'src/schema/tables/memory-asset-audit.table';
 import { MemoryAssetTable } from 'src/schema/tables/memory-asset.table';
 import { MemoryAuditTable } from 'src/schema/tables/memory-audit.table';
@@ -119,6 +121,8 @@ export class ImmichDatabase {
     FaceSearchTable,
     GeodataPlacesTable,
     LibraryTable,
+    LockedAlbumTable,
+    LockedContainerTable,
     MemoryTable,
     MemoryAuditTable,
     MemoryAssetTable,
@@ -224,6 +228,9 @@ export interface DB {
   geodata_places: GeodataPlacesTable;
 
   library: LibraryTable;
+
+  locked_album: LockedAlbumTable;
+  locked_container: LockedContainerTable;
 
   memory: MemoryTable;
   memory_audit: MemoryAuditTable;
