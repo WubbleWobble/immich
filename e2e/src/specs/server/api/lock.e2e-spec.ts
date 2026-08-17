@@ -648,4 +648,121 @@ describe('/albums/:id/lock', () => {
       .set('Authorization', `Bearer ${owner.accessToken}`);
     expect(unlockResponse.status).toBe(204);
   });
+
+  it("locking a cascade-shared folder hides the sharee's own asset filed in its album", async () => {
+    // Owner shares a FOLDER (not the album) with the sharee as editor; the sharee's only
+    // path to the album is the folder cascade. The sharee files their own asset there and
+    // locks the folder - the asset's sole sharee-visible container is then hidden, so the
+    // asset must hide too (it must NOT read as zero-container).
+    const folder = await createAlbumContainer(
+      { createAlbumContainerDto: { name: 'Cascade Lock Folder' } },
+      { headers: asBearerAuth(owner.accessToken) },
+    );
+    const cascadeAlbum = await utils.createAlbum(owner.accessToken, {
+      albumName: 'Cascade Lock Album',
+      containerId: folder.id,
+    });
+    const sharee = await login({
+      loginCredentialDto: { email: 'lock-sharee@immich.cloud', password: 'password-lock-sharee' },
+    });
+    const shareResponse = await request(app)
+      .post(`/album-containers/${folder.id}/users`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .send({ userId: sharee.userId, role: 'editor' });
+    expect([200, 201, 204]).toContain(shareResponse.status);
+
+    const shareeAsset = await utils.createAsset(sharee.accessToken);
+    const add = await request(app)
+      .put(`/albums/${cascadeAlbum.id}/assets`)
+      .set('Authorization', `Bearer ${sharee.accessToken}`)
+      .send({ ids: [shareeAsset.id] });
+    expect(add.status).toBe(200);
+
+    // Visible while the folder is unlocked.
+    let ids = await timelineAssetIds(sharee.accessToken);
+    expect(ids).toContain(shareeAsset.id);
+
+    await elevate(sharee.accessToken);
+    const lockResponse = await request(app)
+      .post(`/album-containers/${folder.id}/lock`)
+      .set('Authorization', `Bearer ${sharee.accessToken}`);
+    expect(lockResponse.status).toBe(204);
+
+    // A fresh sharee session: the asset is hidden from the timeline and by direct id.
+    const fresh = await login({
+      loginCredentialDto: { email: 'lock-sharee@immich.cloud', password: 'password-lock-sharee' },
+    });
+    ids = await timelineAssetIds(fresh.accessToken);
+    expect(ids).not.toContain(shareeAsset.id);
+    const direct = await request(app)
+      .get(`/assets/${shareeAsset.id}`)
+      .set('Authorization', `Bearer ${fresh.accessToken}`);
+    expect(direct.status).toBe(400);
+
+    const unlockResponse = await request(app)
+      .delete(`/album-containers/${folder.id}/lock`)
+      .set('Authorization', `Bearer ${sharee.accessToken}`);
+    expect(unlockResponse.status).toBe(204);
+
+    ids = await timelineAssetIds(fresh.accessToken);
+    expect(ids).toContain(shareeAsset.id);
+  });
+
+  it('a smart album in a cascade-shared folder grants asset access and feeds the folder mosaic', async () => {
+    // Tag barrier as elsewhere: re-tag and poll until searchable.
+    const smartAsset = await utils.createAsset(owner.accessToken);
+    const tag = await createTag(
+      { tagCreateDto: { name: 'cascade-smart-tag' } },
+      { headers: asBearerAuth(owner.accessToken) },
+    );
+    const deadline = Date.now() + 10_000;
+    while (true) {
+      await tagAssets({ id: tag.id, bulkIdsDto: { ids: [smartAsset.id] } }, { headers: asBearerAuth(owner.accessToken) });
+      const { body } = await request(app)
+        .post('/search/metadata')
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .send({ tagIds: [tag.id] });
+      if (body.assets.items.some(({ id }: { id: string }) => id === smartAsset.id)) {
+        break;
+      }
+      if (Date.now() > deadline) {
+        throw new Error('Tagged asset never became searchable');
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+
+    const folder = await createAlbumContainer(
+      { createAlbumContainerDto: { name: 'Smart Cascade Folder' } },
+      { headers: asBearerAuth(owner.accessToken) },
+    );
+    const smartAlbum = await utils.createAlbum(owner.accessToken, {
+      albumName: 'Cascade Smart Album',
+      kind: AlbumKind.Smart,
+      filter: { tagIds: [tag.id] },
+      containerId: folder.id,
+    });
+
+    const sharee = await login({
+      loginCredentialDto: { email: 'lock-sharee@immich.cloud', password: 'password-lock-sharee' },
+    });
+    const shareResponse = await request(app)
+      .post(`/album-containers/${folder.id}/users`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .send({ userId: sharee.userId, role: 'viewer' });
+    expect([200, 201, 204]).toContain(shareResponse.status);
+
+    // The sharee's only route to the matched asset is the smart album inside the folder.
+    const direct = await request(app)
+      .get(`/assets/${smartAsset.id}`)
+      .set('Authorization', `Bearer ${sharee.accessToken}`);
+    expect(direct.status).toBe(200);
+
+    // Folder mosaic: prime the smart-album cache via the album list, then the folder's
+    // thumbnails must include the smart album's cached cover even with no regular albums.
+    await getAllAlbums({}, { headers: asBearerAuth(owner.accessToken) });
+    const folders = await getAllAlbumContainers({ headers: asBearerAuth(owner.accessToken) });
+    const mosaic = folders.find(({ id }) => id === folder.id);
+    expect(mosaic?.thumbnailAssetIds).toContain(smartAsset.id);
+    void smartAlbum;
+  });
 });

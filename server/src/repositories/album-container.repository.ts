@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Kysely, sql } from 'kysely';
 import { InjectKysely } from 'nestjs-kysely';
 import { DummyValue, GenerateSql } from 'src/decorators';
-import { AlbumUserRole } from 'src/enum';
+import { AlbumKind, AlbumUserRole } from 'src/enum';
 import { DB } from 'src/schema';
 import { anyUuid } from 'src/utils/database';
 
@@ -256,14 +256,14 @@ export class AlbumContainerRepository {
       return result;
     }
 
-    // Source: regular albums under the container subtree -> their album_asset rows.
+    // Source: regular albums under the container subtree -> their album_asset rows,
+    // UNIONed with smart albums' cached cover assets (smart membership is computed, not
+    // stored, so the maintained cachedThumbnailAssetId stands in - one cover per smart
+    // album rather than its full match set, which is enough for a mosaic tile).
     // Sorted by asset.fileCreatedAt DESC to match what AlbumCover uses for recency.
     // Asset IDs are deduped per container (an asset can live in multiple albums under a folder)
     // and the top 4 per container are kept in app code.
-    //
-    // Note: when smart-albums also land on this branch, this method will need a UNION with
-    // smart-album cached-thumbnail rows so folders containing smart albums also surface a mosaic.
-    const rows = await this.db
+    const regularRows = await this.db
       .selectFrom('album_container_closure as closure')
       .innerJoin('album', 'album.containerId', 'closure.id_descendant')
       .innerJoin('album_asset', 'album_asset.albumId', 'album.id')
@@ -277,6 +277,22 @@ export class AlbumContainerRepository {
       .select(['closure.id_ancestor as containerId', 'asset.id as assetId', 'asset.fileCreatedAt as fileCreatedAt'])
       .orderBy('fileCreatedAt', 'desc')
       .execute();
+
+    const smartRows = await this.db
+      .selectFrom('album_container_closure as closure')
+      .innerJoin('album', 'album.containerId', 'closure.id_descendant')
+      .innerJoin('asset', 'asset.id', 'album.cachedThumbnailAssetId')
+      .where('closure.id_ancestor', 'in', containerIds)
+      .where('album.kind', '=', sql.lit(AlbumKind.Smart))
+      .where('album.deletedAt', 'is', null)
+      .where('asset.deletedAt', 'is', null)
+      .where((eb) => eb.not(eb('album.id', '=', anyUuid(excludedAlbumIds))))
+      .select(['closure.id_ancestor as containerId', 'asset.id as assetId', 'asset.fileCreatedAt as fileCreatedAt'])
+      .execute();
+
+    const rows = [...regularRows, ...smartRows].sort(
+      (a, b) => new Date(b.fileCreatedAt).getTime() - new Date(a.fileCreatedAt).getTime(),
+    );
 
     for (const row of rows) {
       const list = result.get(row.containerId) ?? [];

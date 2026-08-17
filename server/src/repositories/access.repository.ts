@@ -267,12 +267,11 @@ class AssetAccess {
     // via a locked folder) must not grant access outside an elevated session.
     const hiddenAlbumIds = isElevated ? [] : await getHiddenAlbumIdsQuery(this.db, userId, NO_REVEALED_LOCKS);
 
+    // Smart albums reach the viewer either through a direct album_user row or through a
+    // folder share on an ancestor container (same cascade rule as checkAlbumAccess) -
+    // a smart album inside a shared folder must grant access to its matched assets too.
     const albums = await this.db
       .selectFrom('album')
-      .innerJoin('album_user as viewer', (join) =>
-        join.onRef('viewer.albumId', '=', 'album.id').on('viewer.userId', '=', userId),
-      )
-      .innerJoin('user', (join) => join.onRef('user.id', '=', 'viewer.userId').on('user.deletedAt', 'is', null))
       .innerJoin('album_user as owner', (join) =>
         join.onRef('owner.albumId', '=', 'album.id').on('owner.role', '=', sql.lit(AlbumUserRole.Owner)),
       )
@@ -280,6 +279,26 @@ class AssetAccess {
       .where('album.kind', '=', AlbumKind.Smart)
       .where('album.filter', 'is not', null)
       .where('album.deletedAt', 'is', null)
+      .where((eb) =>
+        eb.or([
+          eb.exists(
+            eb
+              .selectFrom('album_user as viewer')
+              .innerJoin('user', (join) => join.onRef('user.id', '=', 'viewer.userId').on('user.deletedAt', 'is', null))
+              .select('viewer.userId')
+              .whereRef('viewer.albumId', '=', 'album.id')
+              .where('viewer.userId', '=', userId),
+          ),
+          eb.exists(
+            eb
+              .selectFrom('album_container_closure as c')
+              .innerJoin('album_container_user as acu', 'acu.albumContainerId', 'c.id_ancestor')
+              .select('c.id_descendant')
+              .whereRef('c.id_descendant', '=', 'album.containerId')
+              .where('acu.userId', '=', userId),
+          ),
+        ]),
+      )
       .$if(hiddenAlbumIds.length > 0, (qb) => qb.where((eb) => eb.not(eb('album.id', '=', anyUuid(hiddenAlbumIds)))))
       .execute();
 

@@ -431,21 +431,45 @@ export function withLockVisibility<O>(
   };
 
   return qb.where((eb) => {
-    // Container memberships only count when the lock owner can see the album (they have an
-    // album_user row - owner or sharee). A membership in a stranger's album must neither
-    // rescue an asset from the owner's locks nor count against the zero-container clause:
-    // the owner's privacy cannot depend on albums they cannot see or control.
+    // Container memberships only count when the lock owner can see the album - via their
+    // own album_user row (owner or sharee) OR via a folder share on an ancestor container
+    // (album_container_user + closure), mirroring checkAlbumAccess. A membership in a
+    // stranger's album must neither rescue an asset from the owner's locks nor count
+    // against the zero-container clause: the owner's privacy cannot depend on albums they
+    // cannot see or control. The cascade branch matters for lockable folder shares: an
+    // asset whose only lock-owner-visible container is a cascade-shared album must count
+    // that album (and hide when the folder is locked), not read as zero-container.
     const liveMembership = (assetRef: 'asset.id', lockOwnerId: string) =>
       eb
         .selectFrom('album_asset')
         .innerJoin('album', (join) =>
           join.onRef('album.id', '=', 'album_asset.albumId').on('album.deletedAt', 'is', null),
         )
-        .innerJoin('album_user', (join) =>
-          join.onRef('album_user.albumId', '=', 'album.id').on('album_user.userId', '=', asUuid(lockOwnerId)),
-        )
         .select('album_asset.assetId')
-        .whereRef('album_asset.assetId', '=', assetRef);
+        .whereRef('album_asset.assetId', '=', assetRef)
+        .where((eb2) =>
+          eb2.or([
+            eb2.exists(
+              eb2
+                .selectFrom('album_user')
+                .select('album_user.userId')
+                .whereRef('album_user.albumId', '=', 'album.id')
+                .where('album_user.userId', '=', asUuid(lockOwnerId)),
+            ),
+            eb2.exists(
+              eb2
+                .selectFrom('album_container_closure as lock_closure')
+                .innerJoin(
+                  'album_container_user as lock_folder_user',
+                  'lock_folder_user.albumContainerId',
+                  'lock_closure.id_ancestor',
+                )
+                .select('lock_closure.id_descendant')
+                .whereRef('lock_closure.id_descendant', '=', 'album.containerId')
+                .where('lock_folder_user.userId', '=', asUuid(lockOwnerId)),
+            ),
+          ]),
+        );
 
     return eb.or([
       eb.not(eb('asset.ownerId', '=', anyUuid(ownersWithLocks))),
