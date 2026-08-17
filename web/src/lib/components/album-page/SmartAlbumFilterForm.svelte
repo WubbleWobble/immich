@@ -76,26 +76,71 @@
   ] as const satisfies readonly (keyof SmartAlbumFilter)[];
 
   /**
+   * Values the form's widgets cannot express even though the key is form-managed: the
+   * favorites checkbox cannot distinguish "unset" from `isFavorite: false` (non-favorites
+   * only), and the rating picker cannot express `rating: null` (unrated). These are carried
+   * instead; a checked/selected form value still overrides them on merge.
+   */
+  const isFormRepresentable = (key: string, value: unknown): boolean => {
+    if (key === 'isFavorite' && value === false) {
+      return false;
+    }
+    if (key === 'rating' && value === null) {
+      return false;
+    }
+    return true;
+  };
+
+  /**
    * Criteria in `filter` the form cannot edit (e.g. description, OCR text, created/updated
-   * dates, library). Callers must merge these back into the submit payload, otherwise
-   * editing a filter would silently broaden it by dropping them.
+   * dates, library) or cannot represent (see isFormRepresentable). Callers must merge these
+   * back into the submit payload, otherwise editing a filter would silently broaden it by
+   * dropping them.
    */
   export function carriedSmartAlbumFilterFields(
     filter: SmartAlbumFilter | null | undefined,
   ): Partial<SmartAlbumFilter> {
     return Object.fromEntries(
       Object.entries(filter ?? {}).filter(
-        ([key, value]) => !(FORM_MANAGED_FILTER_KEYS as readonly string[]).includes(key) && value !== undefined,
+        ([key, value]) =>
+          value !== undefined &&
+          (!(FORM_MANAGED_FILTER_KEYS as readonly string[]).includes(key) || !isFormRepresentable(key, value)),
       ),
     ) as Partial<SmartAlbumFilter>;
   }
 
   /**
-   * An "empty" filter (no criteria, or only empty arrays) matches the owner's entire
-   * timeline - almost certainly an accident, and dangerous once shared.
+   * An "empty" filter matches the owner's entire timeline - almost certainly an accident,
+   * and dangerous once shared. Mirrors the server-side check: no-op values the search
+   * builder ignores (timeline visibility, isNotInAlbum: false, null library, empty strings
+   * and arrays) do not count as criteria.
    */
   export function isEmptySmartAlbumFilter(filter: Partial<SmartAlbumFilter>): boolean {
-    return Object.values(filter).every((value) => value === undefined || (Array.isArray(value) && value.length === 0));
+    return !Object.entries(filter).some(([key, value]) => {
+      if (value === undefined) {
+        return false;
+      }
+      if (Array.isArray(value)) {
+        return value.length > 0;
+      }
+      switch (key) {
+        case 'visibility': {
+          return value !== Visibility.Timeline;
+        }
+        case 'isNotInAlbum': {
+          return value === true;
+        }
+        case 'libraryId':
+        case 'description':
+        case 'ocr':
+        case 'originalFileName': {
+          return typeof value === 'string' && value.length > 0;
+        }
+        default: {
+          return true;
+        }
+      }
+    });
   }
 
   /**
@@ -180,8 +225,8 @@
       if (v === undefined) {
         continue;
       }
-      // tagIds: null is a meaningful "untagged" value, keep it.
-      if (v === null && key !== 'tagIds') {
+      // tagIds: null ("untagged") and rating: null ("unrated") are meaningful, keep them.
+      if (v === null && key !== 'tagIds' && key !== 'rating') {
         continue;
       }
       // Drop empty strings / empty arrays — they are noise.
