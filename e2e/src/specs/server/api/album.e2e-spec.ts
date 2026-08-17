@@ -514,6 +514,16 @@ describe('/albums', () => {
       });
     });
 
+    it('should reject a smart album with an empty filter', async () => {
+      // An empty filter matches the owner's whole timeline - dangerous once shared.
+      const { status, body } = await request(app)
+        .post('/albums')
+        .send({ albumName: 'Empty smart album', kind: AlbumKind.Smart, filter: {} })
+        .set('Authorization', `Bearer ${user1.accessToken}`);
+      expect(status).toBe(400);
+      expect(body).toEqual(errorDto.badRequest('Smart album filter must contain at least one criterion'));
+    });
+
     it('should not be able to share album with owner', async () => {
       const { status, body } = await request(app)
         .post('/albums')
