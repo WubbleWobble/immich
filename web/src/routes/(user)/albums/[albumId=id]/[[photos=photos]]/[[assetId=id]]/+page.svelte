@@ -33,6 +33,7 @@
   import { assetViewerManager } from '$lib/managers/asset-viewer-manager.svelte';
   import { authManager } from '$lib/managers/auth-manager.svelte';
   import { eventManager } from '$lib/managers/event-manager.svelte';
+  import { lockManager } from '$lib/managers/lock-manager.svelte';
   import { featureFlagsManager } from '$lib/managers/feature-flags-manager.svelte';
   import { TimelineManager } from '$lib/managers/timeline-manager/timeline-manager.svelte';
   import type { TimelineAsset } from '$lib/managers/timeline-manager/types';
@@ -76,6 +77,8 @@
     mdiDeleteOutline,
     mdiDotsHorizontal,
     mdiDotsVertical,
+    mdiLockOffOutline,
+    mdiLockOutline,
     mdiDownload,
     mdiImageOutline,
     mdiImagePlusOutline,
@@ -251,6 +254,22 @@
   onDestroy(() => activityManager.reset());
 
   const isOwned = $derived(album.albumUsers[0].user.id === authManager.user.id);
+
+  // Elevation-gated lock toggle: the menu item only exists during an elevated session
+  // (plausible deniability - no lock affordance is visible to a shoulder-surfer).
+  $effect(() => {
+    void lockManager.refresh();
+  });
+
+  const handleToggleLock = async () => {
+    try {
+      await (lockManager.lockedAlbumIds.has(album.id)
+        ? lockManager.unlockAlbum(album.id)
+        : lockManager.lockAlbum(album.id));
+    } catch (error) {
+      handleError(error, $t('errors.unable_to_save_settings'));
+    }
+  };
   const isSmart = $derived(album.kind === AlbumKind.Smart);
 
   const handleEditFilter = async () => {
@@ -432,7 +451,6 @@
                 {isOwned}
                 bind:description={() => album.description, (description) => (album = { ...album, description })}
               />
-
             </section>
           {/if}
 
@@ -565,13 +583,20 @@
               />
             {/if}
 
-            {#if isOwned || containsEditors}
+            {#if isOwned || containsEditors || lockManager.isElevated}
               <ButtonContextMenu
                 icon={mdiDotsVertical}
                 title={$t('album_options')}
                 color="secondary"
                 offset={{ x: 175, y: 25 }}
               >
+                {#if lockManager.isElevated}
+                  <MenuOption
+                    icon={lockManager.lockedAlbumIds.has(album.id) ? mdiLockOffOutline : mdiLockOutline}
+                    text={lockManager.lockedAlbumIds.has(album.id) ? $t('unlock_for_me') : $t('lock_for_me')}
+                    onClick={handleToggleLock}
+                  />
+                {/if}
                 {#if containsEditors}
                   <MenuOption
                     icon={showAlbumUsers ? mdiAccountEye : mdiAccountEyeOutline}
@@ -593,11 +618,7 @@
                 {/if}
 
                 {#if isOwned && isSmart}
-                  <MenuOption
-                    icon={mdiAutoFix}
-                    text={$t('smart_album_edit_filter')}
-                    onClick={handleEditFilter}
-                  />
+                  <MenuOption icon={mdiAutoFix} text={$t('smart_album_edit_filter')} onClick={handleEditFilter} />
                 {/if}
 
                 {#if isOwned}

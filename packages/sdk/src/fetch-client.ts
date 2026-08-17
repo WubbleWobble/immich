@@ -1390,6 +1390,12 @@ export type ValidateLibraryResponseDto = {
     /** Validation results for import paths */
     importPaths?: ValidateLibraryImportPathResponseDto[];
 };
+export type LocksResponseDto = {
+    /** Albums the requesting user has locked */
+    lockedAlbumIds: string[];
+    /** Folders the requesting user has locked */
+    lockedContainerIds: string[];
+};
 export type MapReverseGeocodeResponseDto = {
     /** City name */
     city: string | null;
@@ -3750,6 +3756,28 @@ export function updateAlbumContainer({ id, updateAlbumContainerDto }: {
     })));
 }
 /**
+ * Unlock folder for the requesting user (requires an elevated session)
+ */
+export function unlockAlbumContainer({ id }: {
+    id: string;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchText(`/album-containers/${encodeURIComponent(id)}/lock`, {
+        ...opts,
+        method: "DELETE"
+    }));
+}
+/**
+ * Lock folder for the requesting user (requires an elevated session)
+ */
+export function lockAlbumContainer({ id }: {
+    id: string;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchText(`/album-containers/${encodeURIComponent(id)}/lock`, {
+        ...opts,
+        method: "POST"
+    }));
+}
+/**
  * Add user to folder
  */
 export function addUserToAlbumContainer({ id, albumContainerUserCreateDto }: {
@@ -3924,6 +3952,28 @@ export function addAssetsToAlbum({ id, bulkIdsDto }: {
         method: "PUT",
         body: bulkIdsDto
     })));
+}
+/**
+ * Unlock album for the requesting user (requires an elevated session)
+ */
+export function unlockAlbum({ id }: {
+    id: string;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchText(`/albums/${encodeURIComponent(id)}/lock`, {
+        ...opts,
+        method: "DELETE"
+    }));
+}
+/**
+ * Lock album for the requesting user (requires an elevated session)
+ */
+export function lockAlbum({ id }: {
+    id: string;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchText(`/albums/${encodeURIComponent(id)}/lock`, {
+        ...opts,
+        method: "POST"
+    }));
 }
 /**
  * Retrieve album map markers
@@ -4826,6 +4876,17 @@ export function validate({ id, validateLibraryDto }: {
         method: "POST",
         body: validateLibraryDto
     })));
+}
+/**
+ * Get the locks of the requesting user (requires an elevated session)
+ */
+export function getLocks(opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchJson<{
+        status: 200;
+        data: LocksResponseDto;
+    }>("/locks", {
+        ...opts
+    }));
 }
 /**
  * Retrieve map markers

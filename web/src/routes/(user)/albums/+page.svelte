@@ -18,12 +18,19 @@
   import { getDirectChildCount, getDirectChildFolders } from '$lib/utils/album-folder-utils';
   import { createAlbumAndRedirect } from '$lib/utils/album-utils';
   import type { ContextMenuPosition } from '$lib/utils/context-menu';
+  import { lockManager } from '$lib/managers/lock-manager.svelte';
   import { handleError } from '$lib/utils/handle-error';
   import { normalizeSearchString } from '$lib/utils/string-utils';
   import { deleteAlbumContainer, type AlbumContainerResponseDto } from '@immich/sdk';
   import { goto, invalidateAll } from '$app/navigation';
   import { modalManager, toastManager } from '@immich/ui';
-  import { mdiDeleteOutline, mdiFolderMoveOutline, mdiShareVariantOutline } from '@mdi/js';
+  import {
+    mdiDeleteOutline,
+    mdiFolderMoveOutline,
+    mdiLockOffOutline,
+    mdiLockOutline,
+    mdiShareVariantOutline,
+  } from '@mdi/js';
   import { t } from 'svelte-i18n';
   import type { PageData } from './$types';
 
@@ -66,6 +73,10 @@
   const navigateToFolder = async (id: string | null) => {
     await goto(id ? Route.albums({ folder: id }) : Route.albums(), { invalidateAll: true });
   };
+
+  $effect(() => {
+    void lockManager.refresh();
+  });
 
   // Folder context menu state.
   let folderContextMenuPosition: ContextMenuPosition = $state({ x: 0, y: 0 });
@@ -111,6 +122,22 @@
     const changed = await modalManager.show(ShareFolderModal, { folder });
     if (changed) {
       await invalidateAll();
+    }
+  };
+
+  const handleToggleFolderLock = async () => {
+    const folder = selectedFolder;
+    closeFolderMenu();
+    if (!folder) {
+      return;
+    }
+    try {
+      await (lockManager.lockedContainerIds.has(folder.id)
+        ? lockManager.unlockContainer(folder.id)
+        : lockManager.lockContainer(folder.id));
+      await invalidateAll();
+    } catch (error) {
+      handleError(error, $t('errors.unable_to_save_settings'));
     }
   };
 
@@ -215,5 +242,12 @@
 >
   <MenuOption icon={mdiFolderMoveOutline} text={$t('move_to_folder')} onClick={handleMoveFolder} />
   <MenuOption icon={mdiShareVariantOutline} text={$t('share')} onClick={handleShareFolder} />
+  {#if lockManager.isElevated && selectedFolder}
+    <MenuOption
+      icon={lockManager.lockedContainerIds.has(selectedFolder.id) ? mdiLockOffOutline : mdiLockOutline}
+      text={lockManager.lockedContainerIds.has(selectedFolder.id) ? $t('unlock_for_me') : $t('lock_for_me')}
+      onClick={handleToggleFolderLock}
+    />
+  {/if}
   <MenuOption icon={mdiDeleteOutline} text={$t('delete')} onClick={handleDeleteFolder} />
 </RightClickContextMenu>

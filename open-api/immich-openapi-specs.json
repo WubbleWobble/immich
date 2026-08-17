@@ -1874,6 +1874,100 @@
         "x-immich-state": "Alpha"
       }
     },
+    "/album-containers/{id}/lock": {
+      "delete": {
+        "operationId": "unlockAlbumContainer",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Unlock folder for the requesting user (requires an elevated session)",
+        "tags": [
+          "Album Containers"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2",
+            "state": "Added"
+          },
+          {
+            "version": "v2",
+            "state": "Alpha"
+          }
+        ],
+        "x-immich-state": "Alpha"
+      },
+      "post": {
+        "operationId": "lockAlbumContainer",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Lock folder for the requesting user (requires an elevated session)",
+        "tags": [
+          "Album Containers"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2",
+            "state": "Added"
+          },
+          {
+            "version": "v2",
+            "state": "Alpha"
+          }
+        ],
+        "x-immich-state": "Alpha"
+      }
+    },
     "/album-containers/{id}/users": {
       "post": {
         "operationId": "addUserToAlbumContainer",
@@ -2645,6 +2739,100 @@
         ],
         "x-immich-permission": "albumAsset.create",
         "x-immich-state": "Stable"
+      }
+    },
+    "/albums/{id}/lock": {
+      "delete": {
+        "operationId": "unlockAlbum",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Unlock album for the requesting user (requires an elevated session)",
+        "tags": [
+          "Albums"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2",
+            "state": "Added"
+          },
+          {
+            "version": "v2",
+            "state": "Alpha"
+          }
+        ],
+        "x-immich-state": "Alpha"
+      },
+      "post": {
+        "operationId": "lockAlbum",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Lock album for the requesting user (requires an elevated session)",
+        "tags": [
+          "Albums"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2",
+            "state": "Added"
+          },
+          {
+            "version": "v2",
+            "state": "Alpha"
+          }
+        ],
+        "x-immich-state": "Alpha"
       }
     },
     "/albums/{id}/map-markers": {
@@ -6571,6 +6759,50 @@
           }
         ],
         "x-immich-state": "Stable"
+      }
+    },
+    "/locks": {
+      "get": {
+        "operationId": "getLocks",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocksResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Get the locks of the requesting user (requires an elevated session)",
+        "tags": [
+          "Locks"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2",
+            "state": "Added"
+          },
+          {
+            "version": "v2",
+            "state": "Alpha"
+          }
+        ],
+        "x-immich-state": "Alpha"
       }
     },
     "/map/markers": {
@@ -15714,6 +15946,10 @@
       "description": "An external library is made up of input file paths or expressions that are scanned for asset files. Discovered files are automatically imported. Assets much be unique within a library, but can be duplicated across libraries. Each user has a default upload library, and can have one or more external libraries."
     },
     {
+      "name": "Locks",
+      "description": "Per-user lock state for albums and folders. Locked items are hidden from their locker until revealed in an elevated session; other users are unaffected."
+    },
+    {
       "name": "Maintenance (admin)",
       "description": "Maintenance mode allows you to put Immich in a read-only state to perform various operations."
     },
@@ -18874,6 +19110,33 @@
       },
       "LicenseResponseDto": {
         "$ref": "#/components/schemas/UserLicense"
+      },
+      "LocksResponseDto": {
+        "properties": {
+          "lockedAlbumIds": {
+            "description": "Albums the requesting user has locked",
+            "items": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "lockedContainerIds": {
+            "description": "Folders the requesting user has locked",
+            "items": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "lockedAlbumIds",
+          "lockedContainerIds"
+        ],
+        "type": "object"
       },
       "LogLevel": {
         "description": "Log level",
