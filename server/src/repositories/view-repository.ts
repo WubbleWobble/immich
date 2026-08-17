@@ -3,13 +3,13 @@ import { InjectKysely } from 'nestjs-kysely';
 import { DummyValue, GenerateSql } from 'src/decorators';
 import { AssetVisibility } from 'src/enum';
 import { DB } from 'src/schema';
-import { asUuid, withExif } from 'src/utils/database';
+import { asUuid, joinDeduplicationPlugin, OwnerLockVisibility, withExif, withLockVisibility } from 'src/utils/database';
 
 export class ViewRepository {
   constructor(@InjectKysely() private db: Kysely<DB>) {}
 
   @GenerateSql({ params: [DummyValue.UUID] })
-  async getUniqueOriginalPaths(userId: string) {
+  async getUniqueOriginalPaths(userId: string, lockVisibility?: OwnerLockVisibility[]) {
     const results = await this.db
       .selectFrom('asset')
       .select((eb) => eb.fn<string>('substring', ['asset.originalPath', eb.val('^(.*/)[^/]*$')]).as('directoryPath'))
@@ -17,6 +17,9 @@ export class ViewRepository {
       .where('ownerId', '=', asUuid(userId))
       .where('visibility', '=', AssetVisibility.Timeline)
       .where('deletedAt', 'is', null)
+      .$if(!!lockVisibility?.length, (qb) =>
+        withLockVisibility(qb, this.db, lockVisibility!).withPlugin(joinDeduplicationPlugin),
+      )
       .where('fileCreatedAt', 'is not', null)
       .where('fileModifiedAt', 'is not', null)
       .where('localDateTime', 'is not', null)
@@ -27,7 +30,7 @@ export class ViewRepository {
   }
 
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.STRING] })
-  async getAssetsByOriginalPath(userId: string, partialPath: string) {
+  async getAssetsByOriginalPath(userId: string, partialPath: string, lockVisibility?: OwnerLockVisibility[]) {
     const normalizedPath = partialPath.replaceAll(/\/$/g, '');
 
     return this.db
@@ -37,6 +40,9 @@ export class ViewRepository {
       .where('ownerId', '=', asUuid(userId))
       .where('visibility', '=', AssetVisibility.Timeline)
       .where('deletedAt', 'is', null)
+      .$if(!!lockVisibility?.length, (qb) =>
+        withLockVisibility(qb, this.db, lockVisibility!).withPlugin(joinDeduplicationPlugin),
+      )
       .where('fileCreatedAt', 'is not', null)
       .where('fileModifiedAt', 'is not', null)
       .where('localDateTime', 'is not', null)

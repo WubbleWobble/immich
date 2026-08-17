@@ -431,11 +431,18 @@ export function withLockVisibility<O>(
   };
 
   return qb.where((eb) => {
-    const liveMembership = (assetRef: 'asset.id') =>
+    // Container memberships only count when the lock owner can see the album (they have an
+    // album_user row - owner or sharee). A membership in a stranger's album must neither
+    // rescue an asset from the owner's locks nor count against the zero-container clause:
+    // the owner's privacy cannot depend on albums they cannot see or control.
+    const liveMembership = (assetRef: 'asset.id', lockOwnerId: string) =>
       eb
         .selectFrom('album_asset')
         .innerJoin('album', (join) =>
           join.onRef('album.id', '=', 'album_asset.albumId').on('album.deletedAt', 'is', null),
+        )
+        .innerJoin('album_user', (join) =>
+          join.onRef('album_user.albumId', '=', 'album.id').on('album_user.userId', '=', asUuid(lockOwnerId)),
         )
         .select('album_asset.assetId')
         .whereRef('album_asset.assetId', '=', assetRef);
@@ -446,7 +453,7 @@ export function withLockVisibility<O>(
         const ownerClauses = [
           // Visible via an unlocked (live) regular-album membership.
           eb.exists(
-            liveMembership('asset.id').where((eb2) =>
+            liveMembership('asset.id', entry.ownerId).where((eb2) =>
               eb2.not(eb2('album_asset.albumId', '=', anyUuid(entry.hiddenAlbumIds))),
             ),
           ),
@@ -454,7 +461,7 @@ export function withLockVisibility<O>(
         if (entry.visibleSmartFilters.length > 0) {
           ownerClauses.push(eb('asset.id', 'in', unionSmart(entry.visibleSmartFilters)));
         }
-        const zeroContainer = [eb.not(eb.exists(liveMembership('asset.id')))];
+        const zeroContainer = [eb.not(eb.exists(liveMembership('asset.id', entry.ownerId)))];
         if (entry.hiddenSmartFilters.length > 0) {
           zeroContainer.push(eb('asset.id', 'not in', unionSmart(entry.hiddenSmartFilters)));
         }

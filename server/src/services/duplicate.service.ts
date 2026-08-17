@@ -10,6 +10,7 @@ import { AssetDuplicateResult } from 'src/repositories/search.repository';
 import { BaseService } from 'src/services/base.service';
 import { JobItem, JobOf } from 'src/types';
 import { suggestDuplicateKeepAssetIds } from 'src/utils/duplicate';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
 import { isDuplicateDetectionEnabled } from 'src/utils/misc';
 
 type ResolveRequest = {
@@ -70,7 +71,13 @@ export class DuplicateService extends BaseService {
     // Clean up singleton groups (assets that are the only member of their duplicate group)
     await this.duplicateRepository.cleanupSingletonGroups(auth.user.id);
 
-    const duplicates = await this.duplicateRepository.getAll(auth.user.id);
+    const lockVisibility = await this.lockRepository.getOwnerLockVisibility({
+      viewerId: auth.user.id,
+      ownerIds: [auth.user.id],
+      revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
+      isElevated: !!auth.session?.hasElevatedPermission,
+    });
+    const duplicates = await this.duplicateRepository.getAll(auth.user.id, lockVisibility);
     return duplicates.map(({ duplicateId, assets }) => {
       const mappedAssets = assets.map((asset) => mapAsset(asset, { auth }));
       return {

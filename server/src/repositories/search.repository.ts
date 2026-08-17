@@ -6,7 +6,13 @@ import { AssetStatus, AssetType, AssetVisibility, VectorIndex } from 'src/enum';
 import { probes } from 'src/repositories/database.repository';
 import { DB } from 'src/schema';
 import { AssetExifTable } from 'src/schema/tables/asset-exif.table';
-import { anyUuid, OwnerLockVisibility, searchAssetBuilder, withExifInner } from 'src/utils/database';
+import {
+  anyUuid,
+  OwnerLockVisibility,
+  searchAssetBuilder,
+  withExifInner,
+  withLockVisibility,
+} from 'src/utils/database';
 import { paginationHelper } from 'src/utils/pagination';
 import { isValidInteger } from 'src/validation';
 
@@ -407,17 +413,21 @@ export class SearchRepository {
   }
 
   @GenerateSql({ params: [[DummyValue.UUID]] })
-  getAssetsByCity(userIds: string[]) {
+  getAssetsByCity(userIds: string[], lockVisibility?: OwnerLockVisibility[]) {
+    const withLock = <T extends { where: any }>(qb: T): T =>
+      lockVisibility?.length ? (withLockVisibility(qb as never, this.db, lockVisibility) as never as T) : qb;
     return this.db
       .withRecursive('cte', (qb) => {
-        const base = qb
-          .selectFrom('asset_exif')
-          .select(['city', 'assetId'])
-          .innerJoin('asset', 'asset.id', 'asset_exif.assetId')
-          .where('asset.ownerId', '=', anyUuid(userIds))
-          .where('asset.visibility', '=', AssetVisibility.Timeline)
-          .where('asset.type', '=', AssetType.Image)
-          .where('asset.deletedAt', 'is', null)
+        const base = withLock(
+          qb
+            .selectFrom('asset_exif')
+            .select(['city', 'assetId'])
+            .innerJoin('asset', 'asset.id', 'asset_exif.assetId')
+            .where('asset.ownerId', '=', anyUuid(userIds))
+            .where('asset.visibility', '=', AssetVisibility.Timeline)
+            .where('asset.type', '=', AssetType.Image)
+            .where('asset.deletedAt', 'is', null),
+        )
           .orderBy('city')
           .limit(1);
 
@@ -426,15 +436,17 @@ export class SearchRepository {
           .select(['l.city', 'l.assetId'])
           .innerJoinLateral(
             (qb) =>
-              qb
-                .selectFrom('asset_exif')
-                .select(['city', 'assetId'])
-                .innerJoin('asset', 'asset.id', 'asset_exif.assetId')
-                .where('asset.ownerId', '=', anyUuid(userIds))
-                .where('asset.visibility', '=', AssetVisibility.Timeline)
-                .where('asset.type', '=', AssetType.Image)
-                .where('asset.deletedAt', 'is', null)
-                .whereRef('asset_exif.city', '>', 'cte.city')
+              withLock(
+                qb
+                  .selectFrom('asset_exif')
+                  .select(['city', 'assetId'])
+                  .innerJoin('asset', 'asset.id', 'asset_exif.assetId')
+                  .where('asset.ownerId', '=', anyUuid(userIds))
+                  .where('asset.visibility', '=', AssetVisibility.Timeline)
+                  .where('asset.type', '=', AssetType.Image)
+                  .where('asset.deletedAt', 'is', null)
+                  .whereRef('asset_exif.city', '>', 'cte.city'),
+              )
                 .orderBy('city')
                 .limit(1)
                 .as('l'),

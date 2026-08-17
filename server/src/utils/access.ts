@@ -130,13 +130,24 @@ const checkOtherAccess = async (access: AccessRepository, request: OtherAccessRe
         auth.user.id,
         setDifference(ids, isOwner, isAlbum, isPartner),
       );
-      return setUnion(isOwner, isAlbum, isPartner, isSmartAlbum);
+      const combined = setUnion(isOwner, isAlbum, isPartner, isSmartAlbum);
+      // Locked-content exclusion on the FINAL grant set: any path (including membership in
+      // the viewer's own locked album) must not resurrect access to the viewer's hidden
+      // assets outside an elevated session.
+      return auth.session?.hasElevatedPermission
+        ? combined
+        : await access.asset.excludeHiddenForLocker(auth.user.id, combined);
     }
 
     case Permission.AssetShare: {
       const isOwner = await access.asset.checkOwnerAccess(auth.user.id, ids, false);
       const isPartner = await access.asset.checkPartnerAccess(auth.user.id, setDifference(ids, isOwner));
-      return setUnion(isOwner, isPartner);
+      const combined = setUnion(isOwner, isPartner);
+      // An elevated owner may organise their hidden assets (add to a rescue album, file
+      // into the built-in locked album); outside elevation they are unreachable.
+      return auth.session?.hasElevatedPermission
+        ? combined
+        : await access.asset.excludeHiddenForLocker(auth.user.id, combined);
     }
 
     case Permission.AssetView: {
@@ -147,7 +158,13 @@ const checkOtherAccess = async (access: AccessRepository, request: OtherAccessRe
         auth.user.id,
         setDifference(ids, isOwner, isAlbum, isPartner),
       );
-      return setUnion(isOwner, isAlbum, isPartner, isSmartAlbum);
+      const combined = setUnion(isOwner, isAlbum, isPartner, isSmartAlbum);
+      // Locked-content exclusion on the FINAL grant set: any path (including membership in
+      // the viewer's own locked album) must not resurrect access to the viewer's hidden
+      // assets outside an elevated session.
+      return auth.session?.hasElevatedPermission
+        ? combined
+        : await access.asset.excludeHiddenForLocker(auth.user.id, combined);
     }
 
     case Permission.AssetDownload: {
@@ -158,31 +175,55 @@ const checkOtherAccess = async (access: AccessRepository, request: OtherAccessRe
         auth.user.id,
         setDifference(ids, isOwner, isAlbum, isPartner),
       );
-      return setUnion(isOwner, isAlbum, isPartner, isSmartAlbum);
+      const combined = setUnion(isOwner, isAlbum, isPartner, isSmartAlbum);
+      // Locked-content exclusion on the FINAL grant set: any path (including membership in
+      // the viewer's own locked album) must not resurrect access to the viewer's hidden
+      // assets outside an elevated session.
+      return auth.session?.hasElevatedPermission
+        ? combined
+        : await access.asset.excludeHiddenForLocker(auth.user.id, combined);
     }
 
     case Permission.AssetUpdate: {
-      return await access.asset.checkOwnerAccess(auth.user.id, ids, auth.session?.hasElevatedPermission);
+      const isOwner = await access.asset.checkOwnerAccess(auth.user.id, ids, auth.session?.hasElevatedPermission);
+      return auth.session?.hasElevatedPermission
+        ? isOwner
+        : await access.asset.excludeHiddenForLocker(auth.user.id, isOwner);
     }
 
     case Permission.AssetDelete: {
-      return await access.asset.checkOwnerAccess(auth.user.id, ids, auth.session?.hasElevatedPermission);
+      const isOwner = await access.asset.checkOwnerAccess(auth.user.id, ids, auth.session?.hasElevatedPermission);
+      return auth.session?.hasElevatedPermission
+        ? isOwner
+        : await access.asset.excludeHiddenForLocker(auth.user.id, isOwner);
     }
 
     case Permission.AssetCopy: {
-      return await access.asset.checkOwnerAccess(auth.user.id, ids, auth.session?.hasElevatedPermission);
+      const isOwner = await access.asset.checkOwnerAccess(auth.user.id, ids, auth.session?.hasElevatedPermission);
+      return auth.session?.hasElevatedPermission
+        ? isOwner
+        : await access.asset.excludeHiddenForLocker(auth.user.id, isOwner);
     }
 
     case Permission.AssetEditGet: {
-      return await access.asset.checkOwnerAccess(auth.user.id, ids, auth.session?.hasElevatedPermission);
+      const isOwner = await access.asset.checkOwnerAccess(auth.user.id, ids, auth.session?.hasElevatedPermission);
+      return auth.session?.hasElevatedPermission
+        ? isOwner
+        : await access.asset.excludeHiddenForLocker(auth.user.id, isOwner);
     }
 
     case Permission.AssetEditCreate: {
-      return await access.asset.checkOwnerAccess(auth.user.id, ids, auth.session?.hasElevatedPermission);
+      const isOwner = await access.asset.checkOwnerAccess(auth.user.id, ids, auth.session?.hasElevatedPermission);
+      return auth.session?.hasElevatedPermission
+        ? isOwner
+        : await access.asset.excludeHiddenForLocker(auth.user.id, isOwner);
     }
 
     case Permission.AssetEditDelete: {
-      return await access.asset.checkOwnerAccess(auth.user.id, ids, auth.session?.hasElevatedPermission);
+      const isOwner = await access.asset.checkOwnerAccess(auth.user.id, ids, auth.session?.hasElevatedPermission);
+      return auth.session?.hasElevatedPermission
+        ? isOwner
+        : await access.asset.excludeHiddenForLocker(auth.user.id, isOwner);
     }
 
     case Permission.AlbumRead: {

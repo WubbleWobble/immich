@@ -25,7 +25,7 @@ describe(ViewService.name, () => {
       const result = await sut.getUniqueOriginalPaths(authStub.admin);
 
       expect(result).toEqual(mockPaths);
-      expect(mocks.view.getUniqueOriginalPaths).toHaveBeenCalledWith(authStub.admin.user.id);
+      expect(mocks.view.getUniqueOriginalPaths).toHaveBeenCalledWith(authStub.admin.user.id, []);
     });
   });
 

@@ -9,6 +9,8 @@ import {
   getHiddenContainerIdsQuery,
   getOwnerLockVisibility,
   hasAnyLocksQuery,
+  isAlbumHiddenForViewerQuery,
+  isContainerHiddenForViewerQuery,
   LockVisibilityRequest,
   RevealedLocks,
 } from 'src/utils/lock-visibility';
@@ -89,5 +91,13 @@ export class LockRepository {
    */
   getOwnerLockVisibility(request: LockVisibilityRequest): Promise<OwnerLockVisibility[]> {
     return getOwnerLockVisibility(this.db, request);
+  }
+
+  isAlbumHiddenForViewer(viewerId: string, albumId: string): Promise<boolean> {
+    return isAlbumHiddenForViewerQuery(this.db, viewerId, albumId);
+  }
+
+  isContainerHiddenForViewer(viewerId: string, containerId: string): Promise<boolean> {
+    return isContainerHiddenForViewerQuery(this.db, viewerId, containerId);
   }
 }

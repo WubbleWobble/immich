@@ -43,13 +43,18 @@ export class SearchService extends BaseService {
   async getExploreData(auth: AuthDto) {
     const options = { maxFields: 12, minAssetsPerField: 5 };
 
-    const cities = await this.assetRepository.getAssetIdByCity(auth.user.id, options);
+    const exploreLockVisibility = await this.getLockVisibility(auth, [auth.user.id]);
+    const cities = await this.assetRepository.getAssetIdByCity(auth.user.id, options, exploreLockVisibility);
     const cityAssets = await this.assetRepository.getByIdsWithAllRelationsButStacks(
       cities.items.map(({ data }) => data),
     );
     const cityItems = cityAssets.map((asset) => ({ value: asset.exifInfo!.city!, data: mapAsset(asset, { auth }) }));
 
-    const recents = await this.assetRepository.getRecentlyCreatedAssetIds(auth.user.id, options.maxFields);
+    const recents = await this.assetRepository.getRecentlyCreatedAssetIds(
+      auth.user.id,
+      options.maxFields,
+      exploreLockVisibility,
+    );
     const recentAssets = await this.assetRepository.getByIdsWithAllRelationsButStacks(
       recents.items.map((item) => item.data),
     );
@@ -98,6 +103,7 @@ export class SearchService extends BaseService {
     return await this.searchRepository.searchStatistics({
       ...dto,
       userIds,
+      lockVisibility: await this.getLockVisibility(auth, userIds),
     });
   }
 
@@ -121,7 +127,11 @@ export class SearchService extends BaseService {
     }
 
     const userIds = await this.getUserIdsToSearch(auth);
-    const items = await this.searchRepository.searchLargeAssets(dto.size || 250, { ...dto, userIds });
+    const items = await this.searchRepository.searchLargeAssets(dto.size || 250, {
+      ...dto,
+      userIds,
+      lockVisibility: await this.getLockVisibility(auth, userIds),
+    });
     return items.map((item) => mapAsset(item, { auth }));
   }
 
@@ -176,7 +186,7 @@ export class SearchService extends BaseService {
 
   async getAssetsByCity(auth: AuthDto): Promise<AssetResponseDto[]> {
     const userIds = await this.getUserIdsToSearch(auth);
-    const assets = await this.searchRepository.getAssetsByCity(userIds);
+    const assets = await this.searchRepository.getAssetsByCity(userIds, await this.getLockVisibility(auth, userIds));
     return assets.map((asset) => mapAsset(asset));
   }
 

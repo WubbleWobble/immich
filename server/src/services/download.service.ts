@@ -8,6 +8,7 @@ import { toEvaluableSmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
 import { AlbumKind, AlbumUserRole, Permission } from 'src/enum';
 import { ImmichReadStream } from 'src/repositories/storage.repository';
 import { BaseService } from 'src/services/base.service';
+import { LockService } from 'src/services/lock.service';
 import { HumanReadableSize } from 'src/utils/bytes';
 import { getPreferences } from 'src/utils/preferences';
 
@@ -23,6 +24,7 @@ export class DownloadService extends BaseService {
     } else if (dto.albumId) {
       const albumId = dto.albumId;
       await this.requireAccess({ auth, permission: Permission.AlbumDownload, ids: [albumId] });
+      await BaseService.create(LockService, this).assertAlbumVisibleForViewer(auth, albumId);
       // Smart albums stream membership from the filter. A missing/unevaluable filter (e.g.
       // a legacy row whose only fields were sanitized away) downloads NOTHING - explicitly,
       // never via the album_asset path, where legacy/corrupt rows would otherwise surface.

@@ -11,6 +11,8 @@ import { AuthDto } from 'src/dtos/auth.dto';
 import { mapUser } from 'src/dtos/user.dto';
 import { AlbumUserRole } from 'src/enum';
 import { BaseService } from 'src/services/base.service';
+import { LockService } from 'src/services/lock.service';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
 
 // Folder-tree depth cap. Mirrored on the web side at:
 //   web/src/lib/utils/album-folder-utils.ts (buildFolderBreadcrumbPath `maxDepth` default)
@@ -20,25 +22,41 @@ const MAX_DEPTH = 16;
 
 @Injectable()
 export class AlbumContainerService extends BaseService {
+  /** Viewer's effectively-hidden album ids for mosaic exclusion (no reveal outside elevation). */
+  private async getViewerHiddenAlbumIdsForMosaic(auth: AuthDto): Promise<string[]> {
+    if (!(await this.lockRepository.hasAnyLocks(auth.user.id))) {
+      return [];
+    }
+    const isElevated = !!auth.session?.hasElevatedPermission;
+    const revealed = isElevated ? (auth.revealedLocks ?? NO_REVEALED_LOCKS) : NO_REVEALED_LOCKS;
+    return this.lockRepository.getHiddenAlbumIds(auth.user.id, revealed);
+  }
+
   async list(auth: AuthDto): Promise<AlbumContainerResponseDto[]> {
     let containers = await this.albumContainerRepository.getForUser(auth.user.id);
 
     // Locked folders (and their descendants via the closure cascade) vanish from the list
-    // for their locker until revealed in an elevated session. Other users are unaffected.
+    // for their locker until revealed in an elevated session, and locked albums must not
+    // surface in a visible parent folder's thumbnail mosaic. Other users are unaffected.
+    let hiddenAlbumIds: string[] = [];
     if (await this.lockRepository.hasAnyLocks(auth.user.id)) {
       const isElevated = !!auth.session?.hasElevatedPermission;
-      const revealed = isElevated ? (auth.revealedLocks?.containerIds ?? []) : [];
-      const hidden = new Set(await this.lockRepository.getHiddenContainerIds(auth.user.id, revealed));
+      const revealed = isElevated ? (auth.revealedLocks ?? NO_REVEALED_LOCKS) : NO_REVEALED_LOCKS;
+      const hidden = new Set(await this.lockRepository.getHiddenContainerIds(auth.user.id, revealed.containerIds));
       if (hidden.size > 0) {
         containers = containers.filter((container) => !hidden.has(container.id));
       }
+      hiddenAlbumIds = await this.lockRepository.getHiddenAlbumIds(auth.user.id, revealed);
     }
 
     const ids = containers.map((c) => c.id);
     // Privacy: recipients shouldn't see the full share graph; only fetch users for owned containers.
     const ownedIds = containers.filter((c) => c.ownerId === auth.user.id).map((c) => c.id);
     const usersByContainer = await this.fetchUsersByContainer(ownedIds);
-    const thumbnailsByContainer = await this.albumContainerRepository.getThumbnailAssetIdsForContainers(ids);
+    const thumbnailsByContainer = await this.albumContainerRepository.getThumbnailAssetIdsForContainers(
+      ids,
+      hiddenAlbumIds,
+    );
     return containers.map((container) => {
       const isOwner = container.ownerId === auth.user.id;
       return this.mapToResponse(
@@ -50,6 +68,7 @@ export class AlbumContainerService extends BaseService {
   }
 
   async get(auth: AuthDto, id: string): Promise<AlbumContainerResponseDto> {
+    await BaseService.create(LockService, this).assertContainerVisibleForViewer(auth, id);
     const container = await this.albumContainerRepository.getById(id);
     if (!container) {
       throw new NotFoundException('Folder not found');
@@ -61,7 +80,10 @@ export class AlbumContainerService extends BaseService {
         throw new ForbiddenException('Not allowed');
       }
     }
-    const thumbnailsByContainer = await this.albumContainerRepository.getThumbnailAssetIdsForContainers([id]);
+    const thumbnailsByContainer = await this.albumContainerRepository.getThumbnailAssetIdsForContainers(
+      [id],
+      await this.getViewerHiddenAlbumIdsForMosaic(auth),
+    );
     // Privacy: recipients shouldn't see the full share graph, so only the owner gets albumContainerUsers.
     let albumContainerUsers: AlbumContainerUserResponseDto[] | undefined;
     if (isOwner) {
@@ -159,7 +181,10 @@ export class AlbumContainerService extends BaseService {
 
     const updated = await this.albumContainerRepository.getById(id);
     const usersByContainer = await this.fetchUsersByContainer([id]);
-    const thumbnailsByContainer = await this.albumContainerRepository.getThumbnailAssetIdsForContainers([id]);
+    const thumbnailsByContainer = await this.albumContainerRepository.getThumbnailAssetIdsForContainers(
+      [id],
+      await this.getViewerHiddenAlbumIdsForMosaic(auth),
+    );
     return this.mapToResponse(updated!, usersByContainer.get(id) ?? [], thumbnailsByContainer.get(id) ?? []);
   }
 

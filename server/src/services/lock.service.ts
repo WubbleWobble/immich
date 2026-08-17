@@ -45,4 +45,30 @@ export class LockService extends BaseService {
     requireElevatedPermission(auth);
     return this.lockRepository.getLocks(auth.user.id);
   }
+
+  /**
+   * Guard for album-scoped surfaces (album detail, album timeline, album download, album
+   * map): an effectively-hidden album is unreachable for its locker - even by known id -
+   * unless the session is elevated. Shared-link visitors are not the locker and are never
+   * blocked; other users are unaffected by construction (the hidden check is per-viewer).
+   * Indistinguishable from a no-access error so the response does not confirm existence.
+   */
+  async assertAlbumVisibleForViewer(auth: AuthDto, albumId: string): Promise<void> {
+    if (auth.sharedLink || auth.session?.hasElevatedPermission) {
+      return;
+    }
+    if (await this.lockRepository.isAlbumHiddenForViewer(auth.user.id, albumId)) {
+      throw new BadRequestException('Not found or no album.read access');
+    }
+  }
+
+  /** Folder counterpart of assertAlbumVisibleForViewer. */
+  async assertContainerVisibleForViewer(auth: AuthDto, containerId: string): Promise<void> {
+    if (auth.sharedLink || auth.session?.hasElevatedPermission) {
+      return;
+    }
+    if (await this.lockRepository.isContainerHiddenForViewer(auth.user.id, containerId)) {
+      throw new BadRequestException('Not found or no albumContainer.read access');
+    }
+  }
 }

@@ -957,7 +957,11 @@ export class AssetRepository {
   }
 
   @GenerateSql({ params: [DummyValue.UUID, { minAssetsPerField: 5, maxFields: 12 }] })
-  async getAssetIdByCity(ownerId: string, { minAssetsPerField, maxFields }: AssetExploreFieldOptions) {
+  async getAssetIdByCity(
+    ownerId: string,
+    { minAssetsPerField, maxFields }: AssetExploreFieldOptions,
+    lockVisibility?: OwnerLockVisibility[],
+  ) {
     const items = await this.db
       .with('cities', (qb) =>
         qb
@@ -977,6 +981,9 @@ export class AssetRepository {
       .where('visibility', '=', AssetVisibility.Timeline)
       .where('type', '=', AssetType.Image)
       .where('deletedAt', 'is', null)
+      .$if(!!lockVisibility?.length, (qb) =>
+        withLockVisibility(qb, this.db, lockVisibility!).withPlugin(joinDeduplicationPlugin),
+      )
       .limit(maxFields)
       .execute();
 
@@ -984,7 +991,7 @@ export class AssetRepository {
   }
 
   @GenerateSql({ params: [DummyValue.UUID, 12] })
-  async getRecentlyCreatedAssetIds(ownerId: string, maxAssets: number) {
+  async getRecentlyCreatedAssetIds(ownerId: string, maxAssets: number, lockVisibility?: OwnerLockVisibility[]) {
     const items = await this.db
       .selectFrom('asset')
       .select(['id as data', 'createdAt as value'])
@@ -992,6 +999,9 @@ export class AssetRepository {
       .where('asset.visibility', '=', AssetVisibility.Timeline)
       .where('type', '=', AssetType.Image)
       .where('deletedAt', 'is', null)
+      .$if(!!lockVisibility?.length, (qb) =>
+        withLockVisibility(qb, this.db, lockVisibility!).withPlugin(joinDeduplicationPlugin),
+      )
       .orderBy('value', 'desc')
       .limit(maxAssets)
       .execute();

@@ -6,6 +6,7 @@ import { AlbumKind, AlbumUserRole, AssetVisibility, Permission } from 'src/enum'
 import { TimeBucketOptions } from 'src/repositories/asset.repository';
 import { AssetSearchBuilderOptions } from 'src/repositories/search.repository';
 import { BaseService } from 'src/services/base.service';
+import { LockService } from 'src/services/lock.service';
 import { requireElevatedPermission } from 'src/utils/access';
 import { getMyPartnerIds } from 'src/utils/asset.util';
 import { OwnerLockVisibility } from 'src/utils/database';
@@ -146,6 +147,9 @@ export class TimelineService extends BaseService {
 
     if (dto.albumId) {
       await this.requireAccess({ auth, permission: Permission.AlbumRead, ids: [dto.albumId] });
+      // Album-scoped asset queries are not lock-filtered, so the album itself must be
+      // unreachable for its locker outside an elevated session.
+      await BaseService.create(LockService, this).assertAlbumVisibleForViewer(auth, dto.albumId);
     } else {
       dto.userId = dto.userId || auth.user.id;
     }

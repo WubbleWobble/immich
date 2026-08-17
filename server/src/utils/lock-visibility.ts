@@ -158,3 +158,53 @@ export async function getOwnerLockVisibility(
   }
   return entries;
 }
+
+/**
+ * Whether a single album is effectively hidden for `viewerId` (directly locked, or inside
+ * a locked folder subtree). No reveal parameter: callers gate on elevation, and reveal only
+ * exists within elevated sessions.
+ */
+export async function isAlbumHiddenForViewerQuery(db: Kysely<DB>, viewerId: string, albumId: string): Promise<boolean> {
+  const row = await db
+    .selectFrom('album')
+    .select(sql`1`.as('one'))
+    .where('album.id', '=', albumId)
+    .where((eb) =>
+      eb.or([
+        eb.exists(
+          eb
+            .selectFrom('locked_album')
+            .select('locked_album.albumId')
+            .where('locked_album.userId', '=', viewerId)
+            .whereRef('locked_album.albumId', '=', 'album.id'),
+        ),
+        eb(
+          'album.containerId',
+          'in',
+          eb
+            .selectFrom('locked_container')
+            .innerJoin('album_container_closure', 'album_container_closure.id_ancestor', 'locked_container.containerId')
+            .select('album_container_closure.id_descendant')
+            .where('locked_container.userId', '=', viewerId),
+        ),
+      ]),
+    )
+    .executeTakeFirst();
+  return row !== undefined;
+}
+
+/** Whether a single folder is effectively hidden for `viewerId` (locked, or inside a locked subtree). */
+export async function isContainerHiddenForViewerQuery(
+  db: Kysely<DB>,
+  viewerId: string,
+  containerId: string,
+): Promise<boolean> {
+  const row = await db
+    .selectFrom('locked_container')
+    .innerJoin('album_container_closure', 'album_container_closure.id_ancestor', 'locked_container.containerId')
+    .select(sql`1`.as('one'))
+    .where('locked_container.userId', '=', viewerId)
+    .where('album_container_closure.id_descendant', '=', containerId)
+    .executeTakeFirst();
+  return row !== undefined;
+}

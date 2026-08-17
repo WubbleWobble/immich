@@ -4,6 +4,7 @@ import { InjectKysely } from 'nestjs-kysely';
 import { DummyValue, GenerateSql } from 'src/decorators';
 import { AlbumUserRole } from 'src/enum';
 import { DB } from 'src/schema';
+import { anyUuid } from 'src/utils/database';
 
 @Injectable()
 export class AlbumContainerRepository {
@@ -245,8 +246,11 @@ export class AlbumContainerRepository {
       .executeTakeFirstOrThrow();
   }
 
-  @GenerateSql({ params: [[DummyValue.UUID]] })
-  async getThumbnailAssetIdsForContainers(containerIds: string[]): Promise<Map<string, string[]>> {
+  @GenerateSql({ params: [[DummyValue.UUID], [DummyValue.UUID]] })
+  async getThumbnailAssetIdsForContainers(
+    containerIds: string[],
+    excludedAlbumIds: string[] = [],
+  ): Promise<Map<string, string[]>> {
     const result = new Map<string, string[]>();
     if (containerIds.length === 0) {
       return result;
@@ -267,6 +271,9 @@ export class AlbumContainerRepository {
       .where('closure.id_ancestor', 'in', containerIds)
       .where('album.deletedAt', 'is', null)
       .where('asset.deletedAt', 'is', null)
+      // Locked-content exclusion: a visible parent folder must not surface thumbnails from
+      // a locked descendant album.
+      .where((eb) => eb.not(eb('album.id', '=', anyUuid(excludedAlbumIds))))
       .select(['closure.id_ancestor as containerId', 'asset.id as assetId', 'asset.fileCreatedAt as fileCreatedAt'])
       .orderBy('fileCreatedAt', 'desc')
       .execute();

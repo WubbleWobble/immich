@@ -113,6 +113,43 @@ describe(LockService.name, () => {
     });
   });
 
+  describe('assertAlbumVisibleForViewer', () => {
+    it('passes through for elevated sessions and shared-link visitors', async () => {
+      mocks.lock.isAlbumHiddenForViewer.mockResolvedValue(true);
+
+      await expect(sut.assertAlbumVisibleForViewer(elevated(), newUuid())).resolves.toBeUndefined();
+
+      const linkAuth = AuthFactory.from().sharedLink().build();
+      await expect(sut.assertAlbumVisibleForViewer(linkAuth, newUuid())).resolves.toBeUndefined();
+    });
+
+    it('blocks a hidden album for its locker outside an elevated session', async () => {
+      mocks.lock.isAlbumHiddenForViewer.mockResolvedValue(true);
+      await expect(sut.assertAlbumVisibleForViewer(notElevated(), newUuid())).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    });
+
+    it('passes for albums the viewer has not hidden', async () => {
+      mocks.lock.isAlbumHiddenForViewer.mockResolvedValue(false);
+      await expect(sut.assertAlbumVisibleForViewer(notElevated(), newUuid())).resolves.toBeUndefined();
+    });
+  });
+
+  describe('assertContainerVisibleForViewer', () => {
+    it('blocks a hidden folder for its locker outside an elevated session', async () => {
+      mocks.lock.isContainerHiddenForViewer.mockResolvedValue(true);
+      await expect(sut.assertContainerVisibleForViewer(notElevated(), newUuid())).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    });
+
+    it('passes through for elevated sessions', async () => {
+      mocks.lock.isContainerHiddenForViewer.mockResolvedValue(true);
+      await expect(sut.assertContainerVisibleForViewer(elevated(), newUuid())).resolves.toBeUndefined();
+    });
+  });
+
   describe('getLocks', () => {
     it('rejects a non-elevated session (locks must not be enumerable without the PIN)', async () => {
       await expect(sut.getLocks(notElevated())).rejects.toBeInstanceOf(UnauthorizedException);

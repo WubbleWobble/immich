@@ -300,4 +300,80 @@ describe('/albums/:id/lock', () => {
     const ids = await timelineAssetIds(owner.accessToken);
     expect(ids).toContain(freeAsset.id);
   });
+
+  it('an album belonging to a stranger cannot rescue an asset from its owner locks', async () => {
+    // While everything is unlocked, the partner files the owner's shared asset into their
+    // OWN album. That membership is invisible to the owner and must not affect their locks.
+    await utils.createAlbum(partner.accessToken, {
+      albumName: 'Partner Keeps A Copy',
+      assetIds: [ownerAssetA.id],
+    });
+
+    const lockResponse = await request(app)
+      .post(`/albums/${lockedAlbum.id}/lock`)
+      .set('Authorization', `Bearer ${owner.accessToken}`);
+    expect(lockResponse.status).toBe(204);
+
+    const ids = await timelineAssetIds(owner.accessToken);
+    expect(ids).not.toContain(ownerAssetA.id);
+  });
+
+  it('hidden content is unreachable by known id outside an elevated session', async () => {
+    // lockedAlbum is locked again from the previous test. A fresh (non-elevated) session:
+    const fresh = await login({
+      loginCredentialDto: { email: 'lock-owner@immich.cloud', password: 'password-lock-owner' },
+    });
+
+    const assetResponse = await request(app)
+      .get(`/assets/${ownerAssetA.id}`)
+      .set('Authorization', `Bearer ${fresh.accessToken}`);
+    expect(assetResponse.status).toBe(400);
+
+    const albumResponse = await request(app)
+      .get(`/albums/${lockedAlbum.id}`)
+      .set('Authorization', `Bearer ${fresh.accessToken}`);
+    expect(albumResponse.status).toBe(400);
+
+    const bucketsResponse = await request(app)
+      .get(`/timeline/buckets?albumId=${lockedAlbum.id}`)
+      .set('Authorization', `Bearer ${fresh.accessToken}`);
+    expect(bucketsResponse.status).toBe(400);
+
+    // The rescued asset stays reachable even for the fresh session.
+    const rescued = await request(app)
+      .get(`/assets/${ownerAssetB.id}`)
+      .set('Authorization', `Bearer ${fresh.accessToken}`);
+    expect(rescued.status).toBe(200);
+
+    // The original, still-elevated session bypasses all three.
+    const elevatedAsset = await request(app)
+      .get(`/assets/${ownerAssetA.id}`)
+      .set('Authorization', `Bearer ${owner.accessToken}`);
+    expect(elevatedAsset.status).toBe(200);
+    const elevatedAlbum = await request(app)
+      .get(`/albums/${lockedAlbum.id}`)
+      .set('Authorization', `Bearer ${owner.accessToken}`);
+    expect(elevatedAlbum.status).toBe(200);
+  });
+
+  it('rejects the retired visibility=locked write', async () => {
+    const single = await request(app)
+      .put(`/assets/${ownerAssetB.id}`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .send({ visibility: 'locked' });
+    expect(single.status).toBe(400);
+
+    const bulk = await request(app)
+      .put('/assets')
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .send({ ids: [ownerAssetB.id], visibility: 'locked' });
+    expect(bulk.status).toBe(400);
+
+    // The asset remains untouched and in its albums.
+    const info = await request(app)
+      .get(`/assets/${ownerAssetB.id}`)
+      .set('Authorization', `Bearer ${owner.accessToken}`);
+    expect(info.status).toBe(200);
+    expect(info.body.visibility).toBe('timeline');
+  });
 });

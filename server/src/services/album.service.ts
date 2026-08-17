@@ -22,6 +22,7 @@ import {
 import { AlbumKind, AlbumUserRole, Permission } from 'src/enum';
 import { AlbumAssetCount, AlbumInfoOptions } from 'src/repositories/album.repository';
 import { BaseService } from 'src/services/base.service';
+import { LockService } from 'src/services/lock.service';
 import { addAssets, removeAssets } from 'src/utils/asset.util';
 import { asDateString } from 'src/utils/date';
 import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
@@ -149,6 +150,7 @@ export class AlbumService extends BaseService {
 
   async get(auth: AuthDto, id: string): Promise<AlbumResponseDto> {
     await this.requireAccess({ auth, permission: Permission.AlbumRead, ids: [id] });
+    await BaseService.create(LockService, this).assertAlbumVisibleForViewer(auth, id);
     await this.albumRepository.updateThumbnails();
     const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
     const [albumMetadataForIds] = await this.albumRepository.getMetadataForIds([album.id]);
@@ -190,6 +192,7 @@ export class AlbumService extends BaseService {
 
   async getMapMarkers(auth: AuthDto, id: string): Promise<MapMarkerResponseDto[]> {
     await this.requireAccess({ auth, permission: Permission.AlbumRead, ids: [id] });
+    await BaseService.create(LockService, this).assertAlbumVisibleForViewer(auth, id);
 
     if (auth.sharedLink && !auth.sharedLink.showExif) {
       return [];

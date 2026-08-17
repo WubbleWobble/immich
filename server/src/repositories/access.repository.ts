@@ -350,6 +350,42 @@ class AssetAccess {
       .then((assets) => new Set(assets.map((asset) => asset.id)));
   }
 
+  /**
+   * Locked-content exclusion for the FINAL result of an asset permission check: outside an
+   * elevated session, the viewer's own effectively-hidden assets are unreachable even by
+   * known id - and via ANY grant path, including membership in the viewer's own (locked)
+   * albums, which would otherwise resurrect access through the album-share check. Only the
+   * viewer's OWN assets are affected: the per-owner SQL scopes by asset.ownerId, so assets
+   * of other owners (shared albums, partners - already filtered by the partner check) pass
+   * through untouched.
+   */
+  async excludeHiddenForLocker(viewerId: string, assetIds: Set<string>): Promise<Set<string>> {
+    if (assetIds.size === 0) {
+      return assetIds;
+    }
+    const lockVisibility = await getOwnerLockVisibility(this.db, {
+      viewerId,
+      ownerIds: [viewerId],
+      revealed: NO_REVEALED_LOCKS,
+      isElevated: false,
+    });
+    if (lockVisibility.length === 0) {
+      return assetIds;
+    }
+    const visible = await withLockVisibility(
+      this.db
+        .selectFrom('asset')
+        .select('asset.id')
+        .where('asset.id', 'in', [...assetIds]),
+      this.db,
+      lockVisibility,
+    )
+      // Embedded lock-visibility subqueries rely on the root query for join deduplication.
+      .withPlugin(joinDeduplicationPlugin)
+      .execute();
+    return new Set(visible.map((asset) => asset.id));
+  }
+
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID_SET] })
   @ChunkedSet({ paramIndex: 1 })
   async checkPartnerAccess(userId: string, assetIds: Set<string>) {
