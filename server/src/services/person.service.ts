@@ -200,13 +200,14 @@ export class PersonService extends BaseService {
 
     // The face crop is derived from the feature-face asset; if the viewer has locked that
     // asset away, the crop must be unreachable too (the person may otherwise be visible).
+    // faceAssetId points at asset_face, so resolve the face to its asset first.
     if (person.faceAssetId && !auth.sharedLink && !auth.session?.hasElevatedPermission) {
-      const visible = await this.accessRepository.asset.excludeHiddenForLocker(
-        auth.user.id,
-        new Set([person.faceAssetId]),
-      );
-      if (visible.size === 0) {
-        throw new NotFoundException();
+      const face = await this.personRepository.getFaceAssetId(person.faceAssetId);
+      if (face) {
+        const visible = await this.accessRepository.asset.excludeHiddenForLocker(auth.user.id, new Set([face.assetId]));
+        if (visible.size === 0) {
+          throw new NotFoundException();
+        }
       }
     }
 

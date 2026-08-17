@@ -131,16 +131,33 @@ describe(PersonService.name, () => {
   describe('getThumbnail', () => {
     it('should block the face crop when its source asset is locked away (non-elevated session)', async () => {
       const auth = AuthFactory.create();
-      const faceAssetId = newUuid();
-      const person = PersonFactory.create({ thumbnailPath: '/path/to/thumbnail.jpg', faceAssetId });
+      const faceId = newUuid();
+      const assetId = newUuid();
+      const person = PersonFactory.create({ thumbnailPath: '/path/to/thumbnail.jpg', faceAssetId: faceId });
 
       mocks.person.getById.mockResolvedValue(person);
       mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
+      // faceAssetId points at asset_face; the service must resolve it to the face's asset.
+      mocks.person.getFaceAssetId.mockResolvedValue({ assetId });
       mocks.access.asset.excludeHiddenForLocker.mockResolvedValue(new Set());
 
       await expect(sut.getThumbnail(auth, person.id)).rejects.toBeInstanceOf(NotFoundException);
       expect(mocks.storage.createReadStream).not.toHaveBeenCalled();
-      expect(mocks.access.asset.excludeHiddenForLocker).toHaveBeenCalledWith(auth.user.id, new Set([faceAssetId]));
+      expect(mocks.person.getFaceAssetId).toHaveBeenCalledWith(faceId);
+      expect(mocks.access.asset.excludeHiddenForLocker).toHaveBeenCalledWith(auth.user.id, new Set([assetId]));
+    });
+
+    it('should serve the face crop when the resolved asset is visible', async () => {
+      const auth = AuthFactory.create();
+      const assetId = newUuid();
+      const person = PersonFactory.create({ thumbnailPath: '/path/to/thumbnail.jpg', faceAssetId: newUuid() });
+
+      mocks.person.getById.mockResolvedValue(person);
+      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
+      mocks.person.getFaceAssetId.mockResolvedValue({ assetId });
+      mocks.access.asset.excludeHiddenForLocker.mockResolvedValue(new Set([assetId]));
+
+      await expect(sut.getThumbnail(auth, person.id)).resolves.toBeDefined();
     });
 
     it('should serve the face crop in an elevated session without a visibility check', async () => {

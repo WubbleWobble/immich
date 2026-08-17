@@ -7,6 +7,7 @@ import { LoggingRepository } from 'src/repositories/logging.repository';
 import { DB } from 'src/schema';
 import { TagAssetTable } from 'src/schema/tables/tag-asset.table';
 import { TagTable } from 'src/schema/tables/tag.table';
+import { joinDeduplicationPlugin, OwnerLockVisibility, withLockVisibility } from 'src/utils/database';
 
 @Injectable()
 export class TagRepository {
@@ -69,8 +70,27 @@ export class TagRepository {
   }
 
   @GenerateSql({ params: [DummyValue.UUID] })
-  getAll(userId: string) {
-    return this.db.selectFrom('tag').select(columns.tag).where('userId', '=', userId).orderBy('value').execute();
+  getAll(userId: string, lockVisibility?: OwnerLockVisibility[]) {
+    let qb = this.db.selectFrom('tag').select(columns.tag).where('userId', '=', userId);
+    // A tag whose every attached (live) asset is locked away vanishes from the list for
+    // its owner; tags with no live attachments stay (their existence reveals nothing).
+    // Plain branching + db-rooted correlated subqueries: the idiomatic nested $if/exists
+    // lambda shape crashes TS 6.0.3's checker under the build tsconfig.
+    if (lockVisibility?.length) {
+      const liveAttachment = this.db
+        .selectFrom('tag_asset')
+        .select('tag_asset.assetId')
+        .innerJoin('asset', 'asset.id', 'tag_asset.assetId')
+        // Correlated ref to the outer tag row; 'tag' is outside this builder's type scope.
+        .whereRef('tag_asset.tagId', '=', 'tag.id' as never)
+        .where('asset.deletedAt', 'is', null);
+      const visibleAttachment = withLockVisibility(liveAttachment, this.db, lockVisibility);
+      qb = qb
+        .where((eb) => eb.or([eb.not(eb.exists(liveAttachment)), eb.exists(visibleAttachment)]))
+        // Embedded lock-visibility subqueries rely on the root query for join deduplication.
+        .withPlugin(joinDeduplicationPlugin);
+    }
+    return qb.orderBy('value').execute();
   }
 
   @GenerateSql({ params: [{ userId: DummyValue.UUID, color: DummyValue.STRING, value: DummyValue.STRING }] })

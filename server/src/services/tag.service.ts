@@ -18,12 +18,20 @@ import { AlbumService } from 'src/services/album.service';
 import { BaseService } from 'src/services/base.service';
 import { addAssets, removeAssets } from 'src/utils/asset.util';
 import { updateLockedColumns } from 'src/utils/database';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
 import { upsertTags } from 'src/utils/tag';
 
 @Injectable()
 export class TagService extends BaseService {
   async getAll(auth: AuthDto) {
-    const tags = await this.tagRepository.getAll(auth.user.id);
+    // Tags only attach to the viewer's own assets, so the viewer is the only relevant lock owner.
+    const lockVisibility = await this.lockRepository.getOwnerLockVisibility({
+      viewerId: auth.user.id,
+      ownerIds: [auth.user.id],
+      revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
+      isElevated: !!auth.session?.hasElevatedPermission,
+    });
+    const tags = await this.tagRepository.getAll(auth.user.id, lockVisibility);
     return tags.map((tag) => mapTag(tag));
   }
 

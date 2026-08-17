@@ -541,4 +541,111 @@ describe('/albums/:id/lock', () => {
       .set('Authorization', `Bearer ${owner.accessToken}`);
     expect(ownerView.status).toBe(200);
   });
+
+  it('hides a person whose only face is on a locked-away asset from the people list and search', async () => {
+    const faceAsset = await utils.createAsset(owner.accessToken);
+    const faceAlbum = await utils.createAlbum(owner.accessToken, {
+      albumName: 'Face Lock Album',
+      assetIds: [faceAsset.id],
+    });
+    const person = await utils.createPerson(owner.accessToken, { name: 'Locked Face Person' });
+    await utils.createFace({ assetId: faceAsset.id, personId: person.id });
+
+    // Visible while the album is unlocked.
+    const before = await request(app).get('/people').set('Authorization', `Bearer ${owner.accessToken}`);
+    expect(before.body.people.map(({ id }: { id: string }) => id)).toContain(person.id);
+
+    const lockResponse = await request(app)
+      .post(`/albums/${faceAlbum.id}/lock`)
+      .set('Authorization', `Bearer ${owner.accessToken}`);
+    expect(lockResponse.status).toBe(204);
+
+    // Gone from the people list and from person name search for a fresh session.
+    const fresh = await login({
+      loginCredentialDto: { email: 'lock-owner@immich.cloud', password: 'password-lock-owner' },
+    });
+    const list = await request(app).get('/people').set('Authorization', `Bearer ${fresh.accessToken}`);
+    expect(list.body.people.map(({ id }: { id: string }) => id)).not.toContain(person.id);
+
+    const search = await request(app)
+      .get('/search/person?name=Locked Face')
+      .set('Authorization', `Bearer ${fresh.accessToken}`);
+    expect(search.status).toBe(200);
+    expect(search.body.map(({ id }: { id: string }) => id)).not.toContain(person.id);
+
+    // The elevated session with a reveal header sees the person again.
+    const revealed = await request(app)
+      .get('/people')
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .set('x-immich-revealed-albums', faceAlbum.id);
+    expect(revealed.body.people.map(({ id }: { id: string }) => id)).toContain(person.id);
+
+    const unlockResponse = await request(app)
+      .delete(`/albums/${faceAlbum.id}/lock`)
+      .set('Authorization', `Bearer ${owner.accessToken}`);
+    expect(unlockResponse.status).toBe(204);
+  });
+
+  it('hides a tag used only on locked-away assets from the tag list; unused tags stay', async () => {
+    const tagAsset = await utils.createAsset(owner.accessToken);
+    const tagAlbum = await utils.createAlbum(owner.accessToken, {
+      albumName: 'Tag Lock Album',
+      assetIds: [tagAsset.id],
+    });
+    const lockedOnlyTag = await createTag(
+      { tagCreateDto: { name: 'locked-only-tag' } },
+      { headers: asBearerAuth(owner.accessToken) },
+    );
+    const unusedTag = await createTag(
+      { tagCreateDto: { name: 'unused-tag' } },
+      { headers: asBearerAuth(owner.accessToken) },
+    );
+    // Barrier: metadata extraction can transiently wipe the manual tag; re-tag and poll
+    // until the tag is actually searchable (same mechanism as the smart-album test).
+    const deadline = Date.now() + 10_000;
+    while (true) {
+      await tagAssets(
+        { id: lockedOnlyTag.id, bulkIdsDto: { ids: [tagAsset.id] } },
+        { headers: asBearerAuth(owner.accessToken) },
+      );
+      const { body } = await request(app)
+        .post('/search/metadata')
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .send({ tagIds: [lockedOnlyTag.id] });
+      if (body.assets.items.some(({ id }: { id: string }) => id === tagAsset.id)) {
+        break;
+      }
+      if (Date.now() > deadline) {
+        throw new Error('Tagged asset never became searchable');
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+
+    const lockResponse = await request(app)
+      .post(`/albums/${tagAlbum.id}/lock`)
+      .set('Authorization', `Bearer ${owner.accessToken}`);
+    expect(lockResponse.status).toBe(204);
+
+    // The hidden-only tag vanishes for a fresh session; the unused tag stays.
+    const fresh = await login({
+      loginCredentialDto: { email: 'lock-owner@immich.cloud', password: 'password-lock-owner' },
+    });
+    const tags = await request(app).get('/tags').set('Authorization', `Bearer ${fresh.accessToken}`);
+    expect(tags.status).toBe(200);
+    const tagIds = tags.body.map(({ id }: { id: string }) => id);
+    expect(tagIds).not.toContain(lockedOnlyTag.id);
+    expect(tagIds).toContain(unusedTag.id);
+
+    // The elevated session with a reveal header sees it again.
+    const revealed = await request(app)
+      .get('/tags')
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .set('x-immich-revealed-albums', tagAlbum.id);
+    expect(revealed.body.map(({ id }: { id: string }) => id)).toContain(lockedOnlyTag.id);
+
+    const unlockResponse = await request(app)
+      .delete(`/albums/${tagAlbum.id}/lock`)
+      .set('Authorization', `Bearer ${owner.accessToken}`);
+    expect(unlockResponse.status).toBe(204);
+  });
 });
