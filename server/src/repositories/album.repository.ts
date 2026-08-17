@@ -474,22 +474,6 @@ export class AlbumRepository {
   }
 
   /**
-   * Returns the ids of smart albums whose cached thumbnail asset matches `assetId`.
-   * Used by smart-album cache invalidation so deleted thumbnail assets are refreshed.
-   */
-  @GenerateSql({ params: [DummyValue.UUID] })
-  async getSmartAlbumsWithCachedThumbnail(assetId: string): Promise<string[]> {
-    const rows = await this.db
-      .selectFrom('album')
-      .select('album.id')
-      .where('album.kind', '=', sql.lit(AlbumKind.Smart))
-      .where('album.deletedAt', 'is', null)
-      .where('album.cachedThumbnailAssetId', '=', assetId)
-      .execute();
-    return rows.map((r) => r.id);
-  }
-
-  /**
    * Returns the ids of smart albums owned by `ownerId` whose `filter.personIds` JSONB
    * array overlaps any of the given `personIds`. Used to narrowly invalidate caches when
    * persons are merged, without re-running a full per-asset filter check.

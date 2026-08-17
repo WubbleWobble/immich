@@ -45,6 +45,15 @@ export class SmartAlbumFilterDto extends createZodDto(SmartAlbumFilterSchema) {}
 export type SmartAlbumFilter = z.infer<typeof SmartAlbumFilterSchema>;
 
 /**
+ * A filter with no effective criteria (no fields, or only undefined values / empty arrays)
+ * matches the owner's entire timeline. That is almost always an accident - and once the
+ * album is shared, it exposes the whole library - so creation and updates reject it.
+ * Note `null` values are NOT empty (e.g. `tagIds: null` means "untagged").
+ */
+export const isEmptySmartAlbumFilter = (filter: SmartAlbumFilter): boolean =>
+  Object.values(filter).every((value) => value === undefined || (Array.isArray(value) && value.length === 0));
+
+/**
  * Runtime guard for filters loaded from the database. Rows written before the schema
  * restrictions existed may still carry fields the schema no longer accepts:
  * - `visibility: locked`/`hidden` would bypass the elevated-permission requirement

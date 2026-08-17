@@ -185,7 +185,6 @@ describe(AssetService.name, () => {
       mocks.asset.update.mockResolvedValue(getForAsset(asset));
       // No smart albums means the invalidate path short-circuits without throwing.
       mocks.album.getSmartAlbumsForOwner.mockResolvedValue([]);
-      mocks.album.getSmartAlbumsWithCachedThumbnail.mockResolvedValue([]);
 
       await sut.update(authStub.admin, asset.id, { isFavorite: true });
 

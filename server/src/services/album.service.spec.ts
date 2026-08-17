@@ -389,6 +389,20 @@ describe(AlbumService.name, () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
+    it('should reject a smart album with an empty filter', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create(owner);
+
+      // {} matches the owner's whole timeline - reject it and its degenerate forms.
+      for (const filter of [{}, { personIds: [] }] as never[]) {
+        await expect(
+          sut.create(auth, { albumName: 'Smart empty', kind: AlbumKind.Smart, filter }),
+        ).rejects.toBeInstanceOf(BadRequestException);
+      }
+
+      expect(mocks.album.create).not.toHaveBeenCalled();
+    });
+
     it('should reject a smart album shared with an editor', async () => {
       const owner = UserFactory.create();
       const auth = AuthFactory.create(owner);
@@ -726,6 +740,19 @@ describe(AlbumService.name, () => {
       await sut.update(AuthFactory.create(owner), album.id, { albumName: 'new album name' });
 
       expect(mocks.album.markCacheInvalidated).not.toHaveBeenCalled();
+    });
+
+    it('should reject an empty filter update', async () => {
+      const album = AlbumFactory.from().kind(AlbumKind.Smart).filter({ isFavorite: true }).build();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+
+      await expect(sut.update(AuthFactory.create(owner), album.id, { filter: {} })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+
+      expect(mocks.album.update).not.toHaveBeenCalled();
     });
 
     it('should reject a filter update from a shared user, even an editor', async () => {
@@ -2016,51 +2043,57 @@ describe(AlbumService.name, () => {
   //   await expect(sut.removeAssets(auth, albumId, { ids: ['1'] })).rejects.toBeInstanceOf(ForbiddenException);
   // });
 
-  describe('invalidateSmartAlbumsForAsset', () => {
-    it('marks matching smart albums as invalidated', async () => {
+  describe('invalidateSmartAlbumsForAssetsSafe', () => {
+    it('invalidates every smart album of the owner, regardless of filter match', async () => {
+      // Blanket on purpose: a write can REMOVE an asset from an album's matches
+      // (unfavorite, untag, trash), which a post-write match check cannot detect.
       const ownerId = newUuid();
-      const assetId = newUuid();
-      const matchingAlbumId = newUuid();
-      const nonMatchingAlbumId = newUuid();
+      const albumA = newUuid();
+      const albumB = newUuid();
       mocks.album.getSmartAlbumsForOwner.mockResolvedValue([
-        { id: matchingAlbumId, filter: { isFavorite: true }, cachedThumbnailAssetId: null },
-        { id: nonMatchingAlbumId, filter: { rating: 5 }, cachedThumbnailAssetId: null },
+        { id: albumA, filter: { isFavorite: true } },
+        { id: albumB, filter: { rating: 5 } },
       ] as any);
-      mocks.album.getSmartAlbumsWithCachedThumbnail.mockResolvedValue([]);
-      // First album matches (returns 1 item), second doesn't (returns 0).
-      mocks.search.searchMetadata
-        .mockResolvedValueOnce({ items: [{ id: assetId }] as any, hasNextPage: false })
-        .mockResolvedValueOnce({ items: [] as any, hasNextPage: false });
 
-      await sut.invalidateSmartAlbumsForAsset(ownerId, assetId);
+      await sut.invalidateSmartAlbumsForAssetsSafe(ownerId, [newUuid()]);
 
       expect(mocks.album.markCacheInvalidated).toHaveBeenCalledTimes(1);
       const [ids] = mocks.album.markCacheInvalidated.mock.calls[0];
-      expect(ids).toEqual([matchingAlbumId]);
+      expect(ids).toEqual([albumA, albumB]);
+      // No per-album match queries on the write path.
+      expect(mocks.search.searchMetadata).not.toHaveBeenCalled();
     });
 
-    it('also invalidates smart albums whose cached thumbnail is the asset', async () => {
-      const ownerId = newUuid();
-      const assetId = newUuid();
-      const thumbAlbumId = newUuid();
-      mocks.album.getSmartAlbumsForOwner.mockResolvedValue([]);
-      mocks.album.getSmartAlbumsWithCachedThumbnail.mockResolvedValue([thumbAlbumId]);
-
-      await sut.invalidateSmartAlbumsForAsset(ownerId, assetId);
-
-      expect(mocks.album.markCacheInvalidated).toHaveBeenCalledTimes(1);
-      const [ids] = mocks.album.markCacheInvalidated.mock.calls[0];
-      expect(ids).toEqual([thumbAlbumId]);
+    it('does nothing when the asset list is empty', async () => {
+      await sut.invalidateSmartAlbumsForAssetsSafe(newUuid(), []);
+      expect(mocks.album.getSmartAlbumsForOwner).not.toHaveBeenCalled();
+      expect(mocks.album.markCacheInvalidated).not.toHaveBeenCalled();
     });
 
-    it('does nothing when no smart albums match', async () => {
+    it('does nothing when the owner has no smart albums', async () => {
       mocks.album.getSmartAlbumsForOwner.mockResolvedValue([]);
-      mocks.album.getSmartAlbumsWithCachedThumbnail.mockResolvedValue([]);
+      await sut.invalidateSmartAlbumsForAssetsSafe(newUuid(), [newUuid()]);
+      expect(mocks.album.markCacheInvalidated).not.toHaveBeenCalled();
+    });
+  });
 
-      await sut.invalidateSmartAlbumsForAsset(newUuid(), newUuid());
+  describe('invalidateSmartAlbumsForAssetIdsSafe', () => {
+    it('invalidates each distinct owner once', async () => {
+      const owner1 = newUuid();
+      const owner2 = newUuid();
+      const assets = [
+        { id: newUuid(), ownerId: owner1 },
+        { id: newUuid(), ownerId: owner1 },
+        { id: newUuid(), ownerId: owner2 },
+      ];
+      mocks.asset.getByIds.mockResolvedValue(assets as any);
+      mocks.album.getSmartAlbumsForOwner.mockResolvedValue([{ id: newUuid(), filter: { isFavorite: true } }] as any);
 
-      // mark gets called with an empty array; the repository method is a no-op in that case.
-      expect(mocks.album.markCacheInvalidated).toHaveBeenCalledWith([], expect.any(Date));
+      await sut.invalidateSmartAlbumsForAssetIdsSafe(assets.map(({ id }) => id));
+
+      expect(mocks.album.getSmartAlbumsForOwner).toHaveBeenCalledTimes(2);
+      expect(mocks.album.getSmartAlbumsForOwner).toHaveBeenCalledWith(owner1);
+      expect(mocks.album.getSmartAlbumsForOwner).toHaveBeenCalledWith(owner2);
     });
   });
 

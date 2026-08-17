@@ -1,4 +1,8 @@
-import { sanitizeSmartAlbumFilter, SmartAlbumFilterSchema } from 'src/dtos/smart-album-filter.dto';
+import {
+  isEmptySmartAlbumFilter,
+  sanitizeSmartAlbumFilter,
+  SmartAlbumFilterSchema,
+} from 'src/dtos/smart-album-filter.dto';
 import { AssetVisibility } from 'src/enum';
 
 describe('SmartAlbumFilterSchema', () => {
@@ -62,5 +66,20 @@ describe('sanitizeSmartAlbumFilter', () => {
   it('keeps a valid visibility while stripping trash-coupled fields', () => {
     const filter = { visibility: AssetVisibility.Archive, trashedAfter: new Date('2024-01-01T00:00:00Z') };
     expect(sanitizeSmartAlbumFilter(filter)).toEqual({ visibility: AssetVisibility.Archive });
+  });
+});
+
+describe('isEmptySmartAlbumFilter', () => {
+  it('treats no criteria, undefined values, and empty arrays as empty', () => {
+    expect(isEmptySmartAlbumFilter({})).toBe(true);
+    expect(isEmptySmartAlbumFilter({ isFavorite: undefined })).toBe(true);
+    expect(isEmptySmartAlbumFilter({ personIds: [] })).toBe(true);
+  });
+
+  it('treats real criteria as non-empty, including meaningful nulls', () => {
+    expect(isEmptySmartAlbumFilter({ isFavorite: true })).toBe(false);
+    expect(isEmptySmartAlbumFilter({ personIds: ['00000000-0000-4000-8000-000000000000'] })).toBe(false);
+    // tagIds: null means "untagged" - a real criterion.
+    expect(isEmptySmartAlbumFilter({ tagIds: null })).toBe(false);
   });
 });

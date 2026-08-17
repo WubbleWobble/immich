@@ -14,7 +14,7 @@ import {
 import { BulkIdErrorReason, BulkIdResponseDto, BulkIdsDto } from 'src/dtos/asset-ids.response.dto';
 import { AuthDto } from 'src/dtos/auth.dto';
 import { MapMarkerResponseDto } from 'src/dtos/map.dto';
-import { sanitizeSmartAlbumFilter, SmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
+import { isEmptySmartAlbumFilter, sanitizeSmartAlbumFilter, SmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
 import { AlbumKind, AlbumUserRole, Permission } from 'src/enum';
 import { AlbumAssetCount, AlbumInfoOptions } from 'src/repositories/album.repository';
 import { BaseService } from 'src/services/base.service';
@@ -190,6 +190,13 @@ export class AlbumService extends BaseService {
       throw new BadRequestException('Smart albums require a filter');
     }
 
+    // An empty filter matches the owner's entire timeline - almost always an accident
+    // (e.g. a semantic-only search saved as a smart album), and once shared it exposes
+    // the whole library.
+    if (kind === AlbumKind.Smart && dto.filter && isEmptySmartAlbumFilter(dto.filter)) {
+      throw new BadRequestException('Smart album filter must contain at least one criterion');
+    }
+
     if (kind === AlbumKind.Regular && dto.filter) {
       throw new BadRequestException('Filter is only valid for smart albums');
     }
@@ -266,6 +273,10 @@ export class AlbumService extends BaseService {
       const ownerId = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
       if (ownerId !== auth.user.id) {
         throw new BadRequestException('Only the album owner can update a smart album filter');
+      }
+      // An empty filter matches the owner's entire timeline; see create().
+      if (isEmptySmartAlbumFilter(dto.filter)) {
+        throw new BadRequestException('Smart album filter must contain at least one criterion');
       }
     }
 
@@ -566,24 +577,26 @@ export class AlbumService extends BaseService {
   }
 
   /**
-   * Mark smart-album caches as stale for several assets owned by `ownerId`.
+   * Mark smart-album caches as stale after asset writes owned by `ownerId`.
+   *
+   * Invalidation is deliberately blanket (every smart album of the owner) rather than
+   * per-filter: a write can REMOVE an asset from an album's matches (unfavorite, untag,
+   * trash, date/rating edits), and a post-write match check cannot see removals - it would
+   * leave the cached list count/date range stale. A blanket mark is also cheaper on the
+   * write path (one UPDATE instead of one search per smart album), and recompute is a lazy
+   * aggregate on the next Albums-list view.
+   *
    * Safe wrapper: failures are logged but do not throw.
    */
   async invalidateSmartAlbumsForAssetsSafe(ownerId: string, assetIds: readonly string[]): Promise<void> {
-    for (const assetId of assetIds) {
-      try {
-        await this.invalidateSmartAlbumsForAsset(ownerId, assetId);
-      } catch (error: unknown) {
-        this.logger.warn(
-          `Failed to invalidate smart-album caches for asset ${assetId}: ${(error as Error)?.message ?? error}`,
-        );
-      }
+    if (assetIds.length === 0) {
+      return;
     }
+    await this.invalidateAllSmartAlbumsForOwnerSafe(ownerId);
   }
 
   /**
-   * Invalidate the cache for every smart album owned by `ownerId`. Use for coarse-grained
-   * write paths where the affected asset list isn't readily known (e.g. trash bulk restore).
+   * Invalidate the cache for every smart album owned by `ownerId`.
    * Safe wrapper: failures are logged but do not throw.
    */
   async invalidateAllSmartAlbumsForOwnerSafe(ownerId: string): Promise<void> {
@@ -604,8 +617,9 @@ export class AlbumService extends BaseService {
   }
 
   /**
-   * Look up each asset's owner and invalidate that owner's smart-album caches.
-   * Use this when callers only have an assetId (e.g. tag/untag events) and not the owner.
+   * Look up each asset's owner and invalidate that owner's smart-album caches (blanket,
+   * see invalidateSmartAlbumsForAssetsSafe for why). Use this when callers only have
+   * assetIds (e.g. tag/untag events) and not the owner.
    * Safe wrapper: failures are logged but do not throw.
    */
   async invalidateSmartAlbumsForAssetIdsSafe(assetIds: readonly string[]): Promise<void> {
@@ -614,56 +628,13 @@ export class AlbumService extends BaseService {
     }
     try {
       const assets = await this.assetRepository.getByIds([...assetIds]);
-      for (const asset of assets) {
-        try {
-          await this.invalidateSmartAlbumsForAsset(asset.ownerId, asset.id);
-        } catch (error: unknown) {
-          this.logger.warn(
-            `Failed to invalidate smart-album caches for asset ${asset.id}: ${(error as Error)?.message ?? error}`,
-          );
-        }
+      const ownerIds = new Set(assets.map((asset) => asset.ownerId));
+      for (const ownerId of ownerIds) {
+        await this.invalidateAllSmartAlbumsForOwnerSafe(ownerId);
       }
     } catch (error: unknown) {
       this.logger.warn(`Failed to load assets for smart-album invalidation: ${(error as Error)?.message ?? error}`);
     }
-  }
-
-  /**
-   * Mark smart-album caches as stale for any smart album owned by `ownerId` whose filter
-   * matches the given asset (i.e. the asset would appear in that album's results). Also
-   * invalidates any smart album whose cached thumbnail is `assetId`.
-   *
-   * Callers should wrap this in try/catch — invalidation failure must not abort the write.
-   */
-  async invalidateSmartAlbumsForAsset(ownerId: string, assetId: string): Promise<void> {
-    const smartAlbums = await this.albumRepository.getSmartAlbumsForOwner(ownerId);
-    const idsToInvalidate: string[] = [];
-
-    for (const album of smartAlbums) {
-      if (!album.filter) {
-        continue;
-      }
-      // The stored SmartAlbumFilter explicitly omits `id`, but `searchMetadata`'s options
-      // accept it — we add it here to ask "does this single asset match the filter?"
-      const { items } = await this.searchRepository.searchMetadata(
-        { page: 1, size: 1 },
-        { ...sanitizeSmartAlbumFilter(album.filter as SmartAlbumFilter), userIds: [ownerId], id: assetId },
-      );
-      if (items.length > 0) {
-        idsToInvalidate.push(album.id);
-      }
-    }
-
-    // Albums whose current thumbnail IS this asset must also be refreshed (e.g. after a delete
-    // where the asset would otherwise still be referenced).
-    const thumbnailMatches = await this.albumRepository.getSmartAlbumsWithCachedThumbnail(assetId);
-    for (const id of thumbnailMatches) {
-      if (!idsToInvalidate.includes(id)) {
-        idsToInvalidate.push(id);
-      }
-    }
-
-    await this.albumRepository.markCacheInvalidated(idsToInvalidate, new Date());
   }
 
   /**
