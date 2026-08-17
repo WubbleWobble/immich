@@ -4,6 +4,7 @@ import { mapAsset } from 'src/dtos/asset-response.dto';
 import { JobCreateDto } from 'src/dtos/job.dto';
 import { AssetType, AssetVisibility, JobName, JobStatus, ManualJobName } from 'src/enum';
 import { ArgsOf } from 'src/repositories/event.repository';
+import { AlbumService } from 'src/services/album.service';
 import { BaseService } from 'src/services/base.service';
 import { JobItem } from 'src/types';
 import { hexOrBufferToBase64 } from 'src/utils/bytes';
@@ -153,6 +154,11 @@ export class JobService extends BaseService {
         }
 
         await this.jobRepository.queueAll(jobs);
+
+        // Asset has finished its initial post-upload pipeline (EXIF + thumbnail). Smart-album
+        // caches for matching filters need to refresh on next read.
+        await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetsSafe(asset.ownerId, [asset.id]);
+
         if (asset.visibility === AssetVisibility.Timeline || asset.visibility === AssetVisibility.Archive) {
           this.websocketRepository.clientSend('on_upload_success', asset.ownerId, mapAsset(asset));
           if (asset.exifInfo) {

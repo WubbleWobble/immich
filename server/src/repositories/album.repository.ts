@@ -14,7 +14,7 @@ import { InjectKysely } from 'nestjs-kysely';
 import { columns } from 'src/database';
 import { Chunked, ChunkedArray, ChunkedSet, DummyValue, GenerateSql } from 'src/decorators';
 import { AlbumUserCreateDto, MapAlbumDto } from 'src/dtos/album.dto';
-import { AlbumUserRole } from 'src/enum';
+import { AlbumKind, AlbumUserRole } from 'src/enum';
 import { DB } from 'src/schema';
 import { AlbumTable } from 'src/schema/tables/album.table';
 import { AssetExifTable } from 'src/schema/tables/asset-exif.table';
@@ -448,6 +448,163 @@ export class AlbumRepository {
       .groupBy('asset.ownerId')
       .orderBy('assetCount', 'desc')
       .execute();
+  }
+
+  /**
+   * Returns smart albums owned by `ownerId` (with their stored filter).
+   * Used by smart-album cache invalidation.
+   */
+  @GenerateSql({ params: [DummyValue.UUID] })
+  async getSmartAlbumsForOwner(ownerId: string) {
+    return this.db
+      .selectFrom('album')
+      .select(['album.id', 'album.filter', 'album.cachedThumbnailAssetId'])
+      .where('album.kind', '=', sql.lit(AlbumKind.Smart))
+      .where('album.deletedAt', 'is', null)
+      .where((eb) =>
+        eb.exists(
+          eb
+            .selectFrom('album_user')
+            .whereRef('album_user.albumId', '=', 'album.id')
+            .where('album_user.role', '=', sql.lit(AlbumUserRole.Owner))
+            .where('album_user.userId', '=', ownerId),
+        ),
+      )
+      .execute();
+  }
+
+  /**
+   * Returns the ids of smart albums owned by `ownerId` whose `filter.personIds` JSONB
+   * array overlaps any of the given `personIds`. Used to narrowly invalidate caches when
+   * persons are merged, without re-running a full per-asset filter check.
+   */
+  @GenerateSql({ params: [DummyValue.UUID, [DummyValue.UUID]] })
+  async getSmartAlbumsForOwnerByPersonIds(ownerId: string, personIds: string[]): Promise<{ id: string }[]> {
+    if (personIds.length === 0) {
+      return [];
+    }
+    return this.db
+      .selectFrom('album')
+      .select('album.id')
+      .where('album.kind', '=', sql.lit(AlbumKind.Smart))
+      .where('album.deletedAt', 'is', null)
+      .where((eb) =>
+        eb.exists(
+          eb
+            .selectFrom('album_user')
+            .whereRef('album_user.albumId', '=', 'album.id')
+            .where('album_user.role', '=', sql.lit(AlbumUserRole.Owner))
+            .where('album_user.userId', '=', ownerId),
+        ),
+      )
+      .where(sql<boolean>`album.filter -> 'personIds' ?| ${personIds}::text[]`)
+      .execute();
+  }
+
+  /**
+   * Bump `cacheInvalidatedAt` on the given album ids so the next read recomputes the cache.
+   * No-op when `albumIds` is empty.
+   */
+  @GenerateSql({ params: [[DummyValue.UUID], DummyValue.DATE] })
+  async markCacheInvalidated(albumIds: string[], at: Date): Promise<void> {
+    if (albumIds.length === 0) {
+      return;
+    }
+    await this.db.updateTable('album').set({ cacheInvalidatedAt: at }).where('album.id', 'in', albumIds).execute();
+  }
+
+  /**
+   * Bump `cacheInvalidatedAt` on every active smart album whose stored `filter` JSONB
+   * contains a `personIds` key, regardless of owner. Used by system-wide face-reset
+   * jobs (force-detect / force-recognize) where every user's person-filtered smart
+   * album can be affected and the specific person ids are not known.
+   */
+  @GenerateSql({ params: [DummyValue.DATE] })
+  async markAllSmartAlbumsWithPersonFilterInvalidated(invalidatedAt: Date): Promise<void> {
+    await this.db
+      .updateTable('album')
+      .set({ cacheInvalidatedAt: invalidatedAt })
+      .where('album.kind', '=', sql.lit(AlbumKind.Smart))
+      .where('album.deletedAt', 'is', null)
+      .where(sql<boolean>`album.filter ? 'personIds'`)
+      .execute();
+  }
+
+  /**
+   * Splice deleted entity ids out of `filter.<field>` for every smart album that
+   * references any of them. If the array becomes empty the key is removed entirely
+   * (an empty `personIds`/`tagIds` array would still short-circuit the search, but
+   * leaving stale empty keys around is noise). Bumps `cacheInvalidatedAt` on every
+   * affected row so the next read recomputes from the clean filter. Returns the
+   * affected album ids.
+   *
+   * `field` must be one of the JSONB array fields on `SmartAlbumFilter` that store
+   * UUID references (currently `personIds` or `tagIds`).
+   */
+  private async pruneIdsFromSmartAlbumFilters(field: 'personIds' | 'tagIds', deletedIds: string[]): Promise<string[]> {
+    if (deletedIds.length === 0) {
+      return [];
+    }
+    // Cast the deletedIds array into PostgreSQL once; reuse it for the overlap predicate,
+    // the splice subquery, and the empty-vs-non-empty branch.
+    const deletedArr = sql<string[]>`${deletedIds}::text[]`;
+    const sliced = sql<unknown>`
+      (
+        SELECT jsonb_agg(elem)
+        FROM jsonb_array_elements_text(album.filter -> ${field}) AS elem
+        WHERE NOT (elem = ANY(${deletedArr}))
+      )
+    `;
+    const result = await this.db
+      .updateTable('album')
+      .set({
+        filter: sql<any>`
+          CASE
+            WHEN ${sliced} IS NULL OR jsonb_array_length(${sliced}) = 0
+              THEN album.filter - ${field}
+            ELSE jsonb_set(album.filter, ARRAY[${field}], ${sliced})
+          END
+        `,
+        cacheInvalidatedAt: new Date(),
+      })
+      .where('album.kind', '=', sql.lit(AlbumKind.Smart))
+      .where('album.deletedAt', 'is', null)
+      .where(sql<boolean>`album.filter ? ${field}`)
+      .where(sql<boolean>`album.filter -> ${field} ?| ${deletedArr}`)
+      .returning('album.id')
+      .execute();
+    return result.map((r) => r.id);
+  }
+
+  /**
+   * Remove deleted person ids from `filter.personIds` on every referencing smart album.
+   * Returns the list of affected album ids.
+   */
+  @GenerateSql({ params: [[DummyValue.UUID]] })
+  async prunePersonIdsFromSmartAlbums(deletedPersonIds: string[]): Promise<string[]> {
+    return this.pruneIdsFromSmartAlbumFilters('personIds', deletedPersonIds);
+  }
+
+  /**
+   * Remove deleted tag ids from `filter.tagIds` on every referencing smart album.
+   * Returns the list of affected album ids.
+   */
+  @GenerateSql({ params: [[DummyValue.UUID]] })
+  async pruneTagIdsFromSmartAlbums(deletedTagIds: string[]): Promise<string[]> {
+    return this.pruneIdsFromSmartAlbumFilters('tagIds', deletedTagIds);
+  }
+
+  /**
+   * Store freshly computed smart-album list-view metadata on the album row.
+   */
+  async updateCachedMetadata(
+    id: string,
+    values: Pick<
+      Updateable<AlbumTable>,
+      'cachedAssetCount' | 'cachedThumbnailAssetId' | 'cachedStartDate' | 'cachedEndDate' | 'cacheComputedAt'
+    >,
+  ): Promise<void> {
+    await this.db.updateTable('album').set(values).where('album.id', '=', id).execute();
   }
 
   @GenerateSql({ params: [{ sourceAssetId: DummyValue.UUID, targetAssetId: DummyValue.UUID }] })

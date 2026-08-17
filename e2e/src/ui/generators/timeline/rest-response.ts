@@ -3,6 +3,7 @@
  */
 
 import {
+  AlbumKind,
   AlbumUserRole,
   AssetTypeEnum,
   AssetVisibility,
@@ -429,6 +430,8 @@ export function getAlbum(
     startDate: albumAssets.length > 0 ? albumAssets.at(-1)?.fileCreatedAt : undefined,
     endDate: albumAssets.length > 0 ? albumAssets[0].fileCreatedAt : undefined,
     lastModifiedAssetTimestamp: albumAssets.length > 0 ? albumAssets[0].fileCreatedAt : undefined,
+    kind: AlbumKind.Regular,
+    filter: null,
   };
 
   return response;

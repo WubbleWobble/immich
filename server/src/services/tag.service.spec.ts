@@ -176,6 +176,22 @@ describe(TagService.name, () => {
       await sut.remove(authStub.admin, 'tag-1');
       expect(mocks.tag.delete).toHaveBeenCalledWith('tag-1');
     });
+
+    it('prunes the deleted tag id from referencing smart album filters', async () => {
+      mocks.tag.get.mockResolvedValue(tagStub.tag);
+      mocks.tag.delete.mockResolvedValue();
+
+      await sut.remove(authStub.admin, 'tag-1');
+      expect(mocks.album.pruneTagIdsFromSmartAlbums).toHaveBeenCalledWith(['tag-1']);
+    });
+
+    it('does not propagate prune failures', async () => {
+      mocks.tag.get.mockResolvedValue(tagStub.tag);
+      mocks.tag.delete.mockResolvedValue();
+      mocks.album.pruneTagIdsFromSmartAlbums.mockRejectedValueOnce(new Error('boom'));
+
+      await expect(sut.remove(authStub.admin, 'tag-1')).resolves.toBeUndefined();
+    });
   });
 
   describe('bulkTagAssets', () => {
@@ -310,11 +326,27 @@ describe(TagService.name, () => {
 
   describe('handleTagCleanup', () => {
     it('should delete empty tags', async () => {
-      mocks.tag.deleteEmptyTags.mockResolvedValue();
+      mocks.tag.deleteEmptyTags.mockResolvedValue([]);
 
       await expect(sut.handleTagCleanup()).resolves.toBe(JobStatus.Success);
 
       expect(mocks.tag.deleteEmptyTags).toHaveBeenCalled();
+    });
+
+    it('prunes deleted tag ids from referencing smart album filters', async () => {
+      mocks.tag.deleteEmptyTags.mockResolvedValue(['tag-a', 'tag-b']);
+
+      await expect(sut.handleTagCleanup()).resolves.toBe(JobStatus.Success);
+
+      expect(mocks.album.pruneTagIdsFromSmartAlbums).toHaveBeenCalledWith(['tag-a', 'tag-b']);
+    });
+
+    it('skips the prune call when no tags were deleted', async () => {
+      mocks.tag.deleteEmptyTags.mockResolvedValue([]);
+
+      await sut.handleTagCleanup();
+
+      expect(mocks.album.pruneTagIdsFromSmartAlbums).not.toHaveBeenCalled();
     });
   });
 });

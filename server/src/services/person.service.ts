@@ -38,6 +38,7 @@ import { BoundingBox } from 'src/repositories/machine-learning.repository';
 import { UpdateFacesData } from 'src/repositories/person.repository';
 import { AssetFaceTable } from 'src/schema/tables/asset-face.table';
 import { FaceSearchTable } from 'src/schema/tables/face-search.table';
+import { AlbumService } from 'src/services/album.service';
 import { BaseService } from 'src/services/base.service';
 import { JobItem, JobOf } from 'src/types';
 import { getDimensions } from 'src/utils/asset.util';
@@ -84,6 +85,7 @@ export class PersonService extends BaseService {
     const person = await this.findOrFail(personId);
     const result: PersonResponseDto[] = [];
     const changeFeaturePhoto: string[] = [];
+    const affectedAssetIds: string[] = [];
     for (const data of dto.data) {
       const faces = await this.personRepository.getFacesByIds([{ personId: data.personId, assetId: data.assetId }]);
 
@@ -97,6 +99,7 @@ export class PersonService extends BaseService {
         }
 
         await this.personRepository.reassignFace(face.id, personId);
+        affectedAssetIds.push(data.assetId);
       }
 
       result.push(mapPerson(person));
@@ -105,6 +108,10 @@ export class PersonService extends BaseService {
       // Remove duplicates
       await this.createNewFeaturePhoto([...new Set(changeFeaturePhoto)]);
     }
+
+    // Person assignment changes membership of smart albums that filter by personIds.
+    await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetIdsSafe([...new Set(affectedAssetIds)]);
+
     return result;
   }
 
@@ -120,6 +127,11 @@ export class PersonService extends BaseService {
     }
     if (face.person && face.person.faceAssetId === face.id) {
       await this.createNewFeaturePhoto([face.person.id]);
+    }
+
+    // The reassigned face is attached to a specific asset; invalidate that asset's smart-album membership.
+    if (face.assetId) {
+      await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetIdsSafe([face.assetId]);
     }
 
     return await this.findOrFail(personId).then(mapPerson);
@@ -255,8 +267,17 @@ export class PersonService extends BaseService {
   @Chunked()
   private async removeAllPeople(people: { id: string; thumbnailPath: string }[]) {
     await Promise.all(people.map((person) => this.storageRepository.unlink(person.thumbnailPath)));
-    await this.personRepository.delete(people.map((person) => person.id));
+    const deletedIds = people.map((person) => person.id);
+    await this.personRepository.delete(deletedIds);
     this.logger.debug(`Deleted ${people.length} people`);
+
+    // Self-heal smart album filters that still reference the deleted person ids. Any
+    // smart album with a stale id in `filter.personIds` would otherwise stop matching
+    // (AND semantics treat the dangling id as a hard miss). Safe wrapper: a prune
+    // failure must not roll back the person delete.
+    if (deletedIds.length > 0) {
+      await BaseService.create(AlbumService, this).prunePersonIdsFromSmartAlbumsSafe(deletedIds);
+    }
   }
 
   @OnJob({ name: JobName.PersonCleanup, queue: QueueName.BackgroundTask })
@@ -277,6 +298,7 @@ export class PersonService extends BaseService {
       await this.personRepository.deleteFaces({ sourceType: SourceType.MachineLearning });
       await this.handlePersonCleanup();
       await this.personRepository.vacuum({ reindexVectors: true });
+      await BaseService.create(AlbumService, this).invalidateAllSmartAlbumsByPersonFilterSafe();
     }
 
     let jobs: JobItem[] = [];
@@ -427,6 +449,7 @@ export class PersonService extends BaseService {
       await this.personRepository.unassignFaces({ sourceType: SourceType.MachineLearning });
       await this.handlePersonCleanup();
       await this.personRepository.vacuum({ reindexVectors: false });
+      await BaseService.create(AlbumService, this).invalidateAllSmartAlbumsByPersonFilterSafe();
     } else if (waiting) {
       this.logger.debug(
         `Skipping facial recognition queueing because ${waiting} job${waiting > 1 ? 's are' : ' is'} already queued`,
@@ -606,6 +629,14 @@ export class PersonService extends BaseService {
         await this.personRepository.reassignFaces(mergeData);
         await this.removeAllPeople([mergePerson]);
 
+        // Merging shifts smart-album membership only for albums that filter on either the
+        // source or target person id; the JSONB overlap check below is narrower than a
+        // per-asset filter recheck and sufficient for this write path.
+        await BaseService.create(AlbumService, this).invalidateSmartAlbumsForPersonMergeSafe(primaryPerson.ownerId, [
+          mergeId,
+          id,
+        ]);
+
         this.logger.log(`Merged ${mergeName} into ${primaryName}`);
         results.push({ id: mergeId, success: true });
       } catch (error: Error | any) {
@@ -697,11 +728,30 @@ export class PersonService extends BaseService {
     if (!person.faceAssetId) {
       await this.createNewFeaturePhoto([person.id]);
     }
+
+    // Creating a face links a person to this asset; smart albums filtered by personIds may shift.
+    await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetIdsSafe([dto.assetId]);
   }
 
   async deleteFace(auth: AuthDto, id: string, dto: AssetFaceDeleteDto): Promise<void> {
     await this.requireAccess({ auth, permission: Permission.FaceDelete, ids: [id] });
 
-    return dto.force ? this.personRepository.deleteAssetFace(id) : this.personRepository.softDeleteAssetFaces(id);
+    // Look up the face's asset BEFORE deletion so we know what to invalidate.
+    let assetId: string | undefined;
+    try {
+      const face = await this.personRepository.getFaceById(id);
+      assetId = face.assetId;
+    } catch {
+      // face not found / already gone — invalidation will be a no-op
+    }
+
+    const result = dto.force
+      ? this.personRepository.deleteAssetFace(id)
+      : this.personRepository.softDeleteAssetFaces(id);
+    await result;
+
+    if (assetId) {
+      await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetIdsSafe([assetId]);
+    }
   }
 }

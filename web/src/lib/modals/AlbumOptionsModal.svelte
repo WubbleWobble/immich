@@ -10,6 +10,7 @@
     handleUpdateUserAlbumRole,
   } from '$lib/services/album.service';
   import {
+    AlbumKind,
     AlbumUserRole,
     AssetOrder,
     getAlbumInfo,
@@ -120,9 +121,16 @@
                 <Select
                   value={role}
                   options={[
-                    { label: $t('role_editor'), value: AlbumUserRole.Editor },
+                    // Smart albums are read-only and single-owner: viewer is the only
+                    // assignable share role. Owner stays listed on the owner's own
+                    // (disabled) row so its current value still renders.
+                    ...(album.kind === AlbumKind.Smart
+                      ? []
+                      : [{ label: $t('role_editor'), value: AlbumUserRole.Editor }]),
                     { label: $t('role_viewer'), value: AlbumUserRole.Viewer },
-                    { label: $t('owner'), value: AlbumUserRole.Owner },
+                    ...(album.kind !== AlbumKind.Smart || role === AlbumUserRole.Owner
+                      ? [{ label: $t('owner'), value: AlbumUserRole.Owner }]
+                      : []),
                     { label: $t('remove_user'), value: 'none' },
                   ] as SelectOption<AlbumUserRole | 'none'>[]}
                   onChange={(value) => handleRoleSelect(user, value)}

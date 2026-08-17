@@ -1,6 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { BulkIdErrorReason } from 'src/dtos/asset-ids.response.dto';
-import { AlbumUserRole, AssetOrder, UserMetadataKey } from 'src/enum';
+import { AlbumKind, AlbumUserRole, AssetOrder, AssetVisibility, UserMetadataKey } from 'src/enum';
 import { AlbumService } from 'src/services/album.service';
 import { AlbumUserFactory } from 'test/factories/album-user.factory';
 import { AlbumFactory } from 'test/factories/album.factory';
@@ -67,6 +67,188 @@ describe(AlbumService.name, () => {
       expect(result[0].id).toEqual(album.id);
       expect(result[1].id).toEqual(sharedWithUserAlbum.id);
       expect(mocks.album.getAll).toHaveBeenCalledWith(owner.id, { isOwned: undefined, isShared: undefined });
+    });
+
+    it('overlays smart album metadata from search results in the list view', async () => {
+      const smartAlbum = AlbumFactory.from().albumUser().kind(AlbumKind.Smart).filter({ isFavorite: true }).build();
+      const { user: owner } = smartAlbum.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const firstAssetId = newUuid();
+      mocks.album.getAll.mockResolvedValue([getForAlbum(smartAlbum)]);
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        { albumId: smartAlbum.id, assetCount: 0, startDate: null, endDate: null, lastModifiedAssetTimestamp: null },
+      ]);
+      mocks.search.searchStatistics.mockResolvedValue({ total: 2 });
+      mocks.search.searchDateRange.mockResolvedValue({
+        startDate: new Date('2024-10-01T00:00:00Z'),
+        endDate: new Date('2024-12-25T00:00:00Z'),
+      });
+      mocks.search.searchMetadata.mockResolvedValue({
+        items: [
+          {
+            id: firstAssetId,
+            fileCreatedAt: new Date('2024-12-25T00:00:00Z'),
+            localDateTime: new Date('2024-12-25T00:00:00Z'),
+          },
+        ] as any,
+        hasNextPage: false,
+      });
+
+      const result = await sut.getAll(AuthFactory.create(owner), {});
+
+      expect(result).toHaveLength(1);
+      expect(result[0].assetCount).toBe(2);
+      expect(result[0].albumThumbnailAssetId).toBe(firstAssetId);
+      expect(result[0].startDate).toBeDefined();
+      expect(result[0].endDate).toBeDefined();
+      expect(mocks.search.searchStatistics).toHaveBeenCalledWith(
+        expect.objectContaining({ isFavorite: true, userIds: [owner.id] }),
+      );
+      expect(mocks.search.searchMetadata).toHaveBeenCalledWith(
+        { page: 1, size: 1 },
+        expect.objectContaining({ isFavorite: true, userIds: [owner.id] }),
+      );
+      // The freshly computed values are persisted to the album row.
+      expect(mocks.album.updateCachedMetadata).toHaveBeenCalledWith(
+        smartAlbum.id,
+        expect.objectContaining({ cachedAssetCount: 2, cachedThumbnailAssetId: firstAssetId }),
+      );
+    });
+
+    it('presents an unevaluable smart album as empty even when the cache looks fresh', async () => {
+      // The cached broad results may predate the filter becoming unevaluable; freshness
+      // must not resurrect them.
+      const smartAlbum = AlbumFactory.from()
+        .albumUser()
+        .kind(AlbumKind.Smart)
+        .filter({ visibility: AssetVisibility.Locked as never })
+        .build();
+      smartAlbum.cachedAssetCount = 42;
+      smartAlbum.cachedThumbnailAssetId = newUuid();
+      smartAlbum.cacheComputedAt = new Date('2026-05-22T10:00:00Z');
+      smartAlbum.cacheInvalidatedAt = null;
+      const { user: owner } = smartAlbum.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.album.getAll.mockResolvedValue([getForAlbum(smartAlbum)]);
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        { albumId: smartAlbum.id, assetCount: 0, startDate: null, endDate: null, lastModifiedAssetTimestamp: null },
+      ]);
+
+      const result = await sut.getAll(AuthFactory.create(owner), {});
+
+      expect(result[0].assetCount).toBe(0);
+      expect(result[0].albumThumbnailAssetId).toBeNull();
+      expect(mocks.search.searchStatistics).not.toHaveBeenCalled();
+    });
+
+    it('presents an ownerless smart album as empty instead of serving the cache', async () => {
+      // Corrupt-data edge: no owner row means no library to evaluate against, so cached
+      // values (fresh-looking or stale) must not be served.
+      const smartAlbum = AlbumFactory.from().albumUser().kind(AlbumKind.Smart).filter({ isFavorite: true }).build();
+      smartAlbum.albumUsers = smartAlbum.albumUsers.filter(({ role }) => role !== AlbumUserRole.Owner);
+      smartAlbum.cachedAssetCount = 42;
+      smartAlbum.cachedThumbnailAssetId = newUuid();
+      const viewer = smartAlbum.albumUsers[0].user;
+      mocks.album.getAll.mockResolvedValue([getForAlbum(smartAlbum)]);
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        { albumId: smartAlbum.id, assetCount: 0, startDate: null, endDate: null, lastModifiedAssetTimestamp: null },
+      ]);
+
+      const result = await sut.getAll(AuthFactory.create(viewer), {});
+
+      expect(result[0].assetCount).toBe(0);
+      expect(result[0].albumThumbnailAssetId).toBeNull();
+      expect(mocks.search.searchStatistics).not.toHaveBeenCalled();
+    });
+
+    it('serves smart album metadata from the cache when fresh', async () => {
+      const cachedThumbnailAssetId = newUuid();
+      const computedAt = new Date('2026-05-22T10:00:00Z');
+      const smartAlbum = AlbumFactory.from().albumUser().kind(AlbumKind.Smart).filter({ isFavorite: true }).build();
+      smartAlbum.cachedAssetCount = 7;
+      smartAlbum.cachedThumbnailAssetId = cachedThumbnailAssetId;
+      smartAlbum.cachedStartDate = '2024-01-15';
+      smartAlbum.cachedEndDate = '2024-12-25';
+      smartAlbum.cacheComputedAt = computedAt;
+      smartAlbum.cacheInvalidatedAt = null;
+      const { user: owner } = smartAlbum.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.album.getAll.mockResolvedValue([getForAlbum(smartAlbum)]);
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        { albumId: smartAlbum.id, assetCount: 0, startDate: null, endDate: null, lastModifiedAssetTimestamp: null },
+      ]);
+
+      const result = await sut.getAll(AuthFactory.create(owner), {});
+
+      expect(result).toHaveLength(1);
+      expect(result[0].assetCount).toBe(7);
+      expect(result[0].albumThumbnailAssetId).toBe(cachedThumbnailAssetId);
+      // Fresh cache means no search query and no rewrite.
+      expect(mocks.search.searchMetadata).not.toHaveBeenCalled();
+      expect(mocks.album.updateCachedMetadata).not.toHaveBeenCalled();
+    });
+
+    it('recomputes smart album metadata when cache is stale', async () => {
+      const smartAlbum = AlbumFactory.from().albumUser().kind(AlbumKind.Smart).filter({ isFavorite: true }).build();
+      // Older computed timestamp, newer invalidation timestamp -> stale.
+      smartAlbum.cachedAssetCount = 1;
+      smartAlbum.cachedThumbnailAssetId = newUuid();
+      smartAlbum.cacheComputedAt = new Date('2026-05-22T10:00:00Z');
+      smartAlbum.cacheInvalidatedAt = new Date('2026-05-22T11:00:00Z');
+      const { user: owner } = smartAlbum.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const freshAssetId = newUuid();
+      mocks.album.getAll.mockResolvedValue([getForAlbum(smartAlbum)]);
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        { albumId: smartAlbum.id, assetCount: 0, startDate: null, endDate: null, lastModifiedAssetTimestamp: null },
+      ]);
+      mocks.search.searchStatistics.mockResolvedValue({ total: 1 });
+      mocks.search.searchDateRange.mockResolvedValue({
+        startDate: new Date('2024-12-25T00:00:00Z'),
+        endDate: new Date('2024-12-25T00:00:00Z'),
+      });
+      mocks.search.searchMetadata.mockResolvedValue({
+        items: [
+          {
+            id: freshAssetId,
+            fileCreatedAt: new Date('2024-12-25T00:00:00Z'),
+            localDateTime: new Date('2024-12-25T00:00:00Z'),
+          },
+        ] as any,
+        hasNextPage: false,
+      });
+
+      const result = await sut.getAll(AuthFactory.create(owner), {});
+
+      expect(result[0].assetCount).toBe(1);
+      expect(result[0].albumThumbnailAssetId).toBe(freshAssetId);
+      expect(mocks.search.searchMetadata).toHaveBeenCalledTimes(1);
+      expect(mocks.album.updateCachedMetadata).toHaveBeenCalledWith(
+        smartAlbum.id,
+        expect.objectContaining({ cachedAssetCount: 1, cachedThumbnailAssetId: freshAssetId }),
+      );
+    });
+
+    it('recomputes smart album metadata on first read (no computedAt)', async () => {
+      const smartAlbum = AlbumFactory.from().albumUser().kind(AlbumKind.Smart).filter({ isFavorite: true }).build();
+      // cacheComputedAt remains null on a never-read album.
+      expect(smartAlbum.cacheComputedAt).toBeNull();
+      const { user: owner } = smartAlbum.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const assetId = newUuid();
+      mocks.album.getAll.mockResolvedValue([getForAlbum(smartAlbum)]);
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        { albumId: smartAlbum.id, assetCount: 0, startDate: null, endDate: null, lastModifiedAssetTimestamp: null },
+      ]);
+      mocks.search.searchStatistics.mockResolvedValue({ total: 1 });
+      mocks.search.searchDateRange.mockResolvedValue({
+        startDate: new Date('2024-05-01T00:00:00Z'),
+        endDate: new Date('2024-05-01T00:00:00Z'),
+      });
+      mocks.search.searchMetadata.mockResolvedValue({
+        items: [{ id: assetId, fileCreatedAt: new Date('2024-05-01T00:00:00Z'), localDateTime: null }] as any,
+        hasNextPage: false,
+      });
+
+      await sut.getAll(AuthFactory.create(owner), {});
+
+      expect(mocks.search.searchMetadata).toHaveBeenCalledTimes(1);
+      expect(mocks.album.updateCachedMetadata).toHaveBeenCalledTimes(1);
     });
 
     it('gets list of albums that have a specific asset', async () => {
@@ -205,6 +387,130 @@ describe(AlbumService.name, () => {
   });
 
   describe('create', () => {
+    it('should create a smart album with a filter', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create(owner);
+      const personId = newUuid();
+      const album = AlbumFactory.from()
+        .owner(owner)
+        .kind(AlbumKind.Smart)
+        .filter({ personIds: [personId] })
+        .build();
+
+      mocks.album.create.mockResolvedValue(getForAlbum(album));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.user.getMetadata.mockResolvedValue([]);
+
+      const result = await sut.create(auth, {
+        albumName: 'Smart Album',
+        kind: AlbumKind.Smart,
+        filter: { personIds: [personId] },
+      });
+
+      expect(result.kind).toEqual(AlbumKind.Smart);
+      expect(result.filter).toBeDefined();
+      expect(mocks.album.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: AlbumKind.Smart,
+          filter: { personIds: [personId] },
+        }),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it('should reject a smart album payload that includes assetIds', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create(owner);
+
+      await expect(
+        sut.create(auth, {
+          albumName: 'Smart with assets',
+          kind: AlbumKind.Smart,
+          filter: {},
+          assetIds: [newUuid()],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('should reject a smart album with an empty filter', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create(owner);
+
+      // {} matches the owner's whole timeline - reject it, its degenerate forms, and
+      // no-op values the search builder silently ignores.
+      for (const filter of [
+        {},
+        { personIds: [] },
+        { visibility: 'timeline' },
+        { isNotInAlbum: false },
+        { libraryId: null },
+      ] as never[]) {
+        await expect(
+          sut.create(auth, { albumName: 'Smart empty', kind: AlbumKind.Smart, filter }),
+        ).rejects.toBeInstanceOf(BadRequestException);
+      }
+
+      expect(mocks.album.create).not.toHaveBeenCalled();
+    });
+
+    it('should reject a smart album shared with an editor', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create(owner);
+
+      await expect(
+        sut.create(auth, {
+          albumName: 'Smart with editor',
+          kind: AlbumKind.Smart,
+          filter: {},
+          albumUsers: [{ userId: newUuid(), role: AlbumUserRole.Editor }],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(mocks.album.create).not.toHaveBeenCalled();
+    });
+
+    it('should reject a smart album shared with a second owner', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create(owner);
+
+      await expect(
+        sut.create(auth, {
+          albumName: 'Smart with second owner',
+          kind: AlbumKind.Smart,
+          filter: {},
+          albumUsers: [{ userId: newUuid(), role: AlbumUserRole.Owner }],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(mocks.album.create).not.toHaveBeenCalled();
+    });
+
+    it('should reject a regular album that includes a filter', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create(owner);
+
+      await expect(
+        sut.create(auth, {
+          albumName: 'Bogus',
+          filter: { personIds: [newUuid()] },
+        } as any),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('should reject a smart album without a filter', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create(owner);
+
+      await expect(
+        sut.create(auth, {
+          albumName: 'No filter',
+          kind: AlbumKind.Smart,
+        } as any),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
     it('creates album', async () => {
       const assetId = newUuid();
       const albumUser = { userId: newUuid(), role: AlbumUserRole.Editor };
@@ -224,6 +530,7 @@ describe(AlbumService.name, () => {
         albumUsers: [albumUser],
         description: 'description',
         assetIds: [assetId],
+        kind: AlbumKind.Regular,
       });
 
       expect(mocks.album.create).toHaveBeenCalledWith(
@@ -232,6 +539,8 @@ describe(AlbumService.name, () => {
           description: 'description',
           order: album.order,
           albumThumbnailAssetId: assetId,
+          kind: AlbumKind.Regular,
+          filter: null,
         },
         [assetId],
         [
@@ -280,6 +589,7 @@ describe(AlbumService.name, () => {
         albumUsers: [albumUser],
         description: album.description,
         assetIds: [assetId],
+        kind: AlbumKind.Regular,
       });
 
       expect(mocks.album.create).toHaveBeenCalledWith(
@@ -288,6 +598,8 @@ describe(AlbumService.name, () => {
           description: album.description,
           order: 'asc',
           albumThumbnailAssetId: assetId,
+          kind: AlbumKind.Regular,
+          filter: null,
         },
         [assetId],
         [{ userId: owner.id, role: AlbumUserRole.Owner }, albumUser],
@@ -310,6 +622,7 @@ describe(AlbumService.name, () => {
         sut.create(AuthFactory.create(), {
           albumName: 'Empty album',
           albumUsers: [{ userId: 'unknown-user', role: AlbumUserRole.Editor }],
+          kind: AlbumKind.Regular,
         }),
       ).rejects.toBeInstanceOf(BadRequestException);
       expect(mocks.user.get).toHaveBeenCalledWith('unknown-user', {});
@@ -332,6 +645,7 @@ describe(AlbumService.name, () => {
         albumName: album.albumName,
         description: album.description,
         assetIds: [assetId, 'asset-2'],
+        kind: AlbumKind.Regular,
       });
 
       expect(mocks.album.create).toHaveBeenCalledWith(
@@ -340,6 +654,8 @@ describe(AlbumService.name, () => {
           description: album.description,
           order: 'desc',
           albumThumbnailAssetId: assetId,
+          kind: AlbumKind.Regular,
+          filter: null,
         },
         [assetId],
         [{ userId: owner.id, role: AlbumUserRole.Owner }],
@@ -356,6 +672,7 @@ describe(AlbumService.name, () => {
         sut.create(AuthFactory.create(owner), {
           albumName: 'Empty album',
           albumUsers: [{ userId: owner.id, role: AlbumUserRole.Editor }],
+          kind: AlbumKind.Regular,
         }),
       ).rejects.toBeInstanceOf(BadRequestException);
       expect(mocks.album.create).not.toHaveBeenCalled();
@@ -415,6 +732,98 @@ describe(AlbumService.name, () => {
         { id: album.id, albumName: 'new album name' },
         owner.id,
       );
+    });
+
+    it('should reject changing the album kind', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create(owner);
+      const album = AlbumFactory.from().owner(owner).kind(AlbumKind.Regular).build();
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+
+      await expect(sut.update(auth, album.id, { kind: AlbumKind.Smart } as any)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    });
+
+    it('should reject setting a filter on a regular album', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create(owner);
+      const album = AlbumFactory.from().owner(owner).kind(AlbumKind.Regular).build();
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+
+      await expect(sut.update(auth, album.id, { filter: { personIds: [newUuid()] } })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    });
+
+    it('should update the filter on a smart album', async () => {
+      const album = AlbumFactory.from()
+        .kind(AlbumKind.Smart)
+        .filter({ personIds: [newUuid()] })
+        .build();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const auth = AuthFactory.create(owner);
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      const updatedFilter = { tagIds: [newUuid()] };
+      mocks.album.update.mockResolvedValue({ ...getForAlbum(album), filter: updatedFilter });
+
+      const result = await sut.update(auth, album.id, { filter: updatedFilter });
+
+      expect(result.filter).toEqual(updatedFilter);
+      expect(mocks.album.update).toHaveBeenCalledWith(
+        album.id,
+        expect.objectContaining({ filter: updatedFilter }),
+        owner.id,
+      );
+      // A changed filter makes the cached list-view metadata stale.
+      expect(mocks.album.markCacheInvalidated).toHaveBeenCalledWith([album.id], expect.any(Date));
+    });
+
+    it('should not invalidate the cache when the filter is untouched', async () => {
+      const album = AlbumFactory.create();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.album.update.mockResolvedValue(getForAlbum(album));
+
+      await sut.update(AuthFactory.create(owner), album.id, { albumName: 'new album name' });
+
+      expect(mocks.album.markCacheInvalidated).not.toHaveBeenCalled();
+    });
+
+    it('should reject an empty filter update', async () => {
+      const album = AlbumFactory.from().kind(AlbumKind.Smart).filter({ isFavorite: true }).build();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+
+      await expect(sut.update(AuthFactory.create(owner), album.id, { filter: {} })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+
+      expect(mocks.album.update).not.toHaveBeenCalled();
+    });
+
+    it('should reject a filter update from a shared user, even an editor', async () => {
+      const editor = UserFactory.create();
+      const album = AlbumFactory.from()
+        .kind(AlbumKind.Smart)
+        .filter({ isFavorite: true })
+        .albumUser({ userId: editor.id, role: AlbumUserRole.Editor })
+        .build();
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      // AlbumUpdate is granted to shared editors; the filter guard must be stricter.
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set());
+      mocks.access.album.checkSharedAlbumAccess.mockResolvedValue(new Set([album.id]));
+
+      await expect(
+        sut.update(AuthFactory.create(editor), album.id, { filter: { isFavorite: false } }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(mocks.album.update).not.toHaveBeenCalled();
     });
   });
 
@@ -526,6 +935,41 @@ describe(AlbumService.name, () => {
         senderName: owner.name,
       });
     });
+
+    it('should reject adding an editor to a smart album', async () => {
+      const album = AlbumFactory.from().albumUser().kind(AlbumKind.Smart).filter({ isFavorite: true }).build();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const user = UserFactory.create();
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+
+      await expect(
+        sut.addUsers(AuthFactory.create(owner), album.id, {
+          albumUsers: [{ userId: user.id, role: AlbumUserRole.Editor }],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(mocks.albumUser.create).not.toHaveBeenCalled();
+    });
+
+    it('should default the role to viewer when adding a user to a smart album', async () => {
+      const album = AlbumFactory.from().albumUser().kind(AlbumKind.Smart).filter({ isFavorite: true }).build();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const user = UserFactory.create();
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.user.get.mockResolvedValue(user);
+      mocks.albumUser.create.mockResolvedValue(AlbumUserFactory.from().album(album).user(user).build());
+
+      await sut.addUsers(AuthFactory.create(owner), album.id, { albumUsers: [{ userId: user.id }] });
+
+      // Without the explicit role the DB default is editor, which a smart album must not allow.
+      expect(mocks.albumUser.create).toHaveBeenCalledWith({
+        userId: user.id,
+        albumId: album.id,
+        role: AlbumUserRole.Viewer,
+      });
+    });
   });
 
   describe('removeUser', () => {
@@ -622,6 +1066,7 @@ describe(AlbumService.name, () => {
       const album = AlbumFactory.from().albumUser({ userId: user.id }).build();
       const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
       mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
       mocks.albumUser.update.mockResolvedValue();
 
       await sut.updateUser(AuthFactory.create(owner), album.id, user.id, { role: AlbumUserRole.Viewer });
@@ -630,6 +1075,79 @@ describe(AlbumService.name, () => {
         { albumId: album.id, userId: user.id },
         { role: AlbumUserRole.Viewer },
       );
+    });
+
+    it('should reject promoting a smart album share to editor', async () => {
+      const user = UserFactory.create();
+      const album = AlbumFactory.from()
+        .albumUser({ userId: user.id, role: AlbumUserRole.Viewer })
+        .kind(AlbumKind.Smart)
+        .filter({ isFavorite: true })
+        .build();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+
+      await expect(
+        sut.updateUser(AuthFactory.create(owner), album.id, user.id, { role: AlbumUserRole.Editor }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(mocks.albumUser.update).not.toHaveBeenCalled();
+    });
+
+    it('should reject demoting the smart album owner to viewer', async () => {
+      // Demoting the sole owner would leave the smart album with no library to evaluate
+      // its filter against.
+      const album = AlbumFactory.from().albumUser().kind(AlbumKind.Smart).filter({ isFavorite: true }).build();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+
+      await expect(
+        sut.updateUser(AuthFactory.create(owner), album.id, owner.id, { role: AlbumUserRole.Viewer }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(mocks.albumUser.update).not.toHaveBeenCalled();
+    });
+
+    it('should allow updating a smart album share to viewer', async () => {
+      const user = UserFactory.create();
+      const album = AlbumFactory.from()
+        .albumUser({ userId: user.id, role: AlbumUserRole.Viewer })
+        .kind(AlbumKind.Smart)
+        .filter({ isFavorite: true })
+        .build();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.albumUser.update.mockResolvedValue();
+
+      await sut.updateUser(AuthFactory.create(owner), album.id, user.id, { role: AlbumUserRole.Viewer });
+
+      expect(mocks.albumUser.update).toHaveBeenCalledWith(
+        { albumId: album.id, userId: user.id },
+        { role: AlbumUserRole.Viewer },
+      );
+    });
+
+    it('should reject promoting a smart album share to owner', async () => {
+      // A second owner would break the single-owner assumption smart-album evaluation
+      // relies on when resolving whose library the filter runs against.
+      const user = UserFactory.create();
+      const album = AlbumFactory.from()
+        .albumUser({ userId: user.id, role: AlbumUserRole.Viewer })
+        .kind(AlbumKind.Smart)
+        .filter({ isFavorite: true })
+        .build();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+
+      await expect(
+        sut.updateUser(AuthFactory.create(owner), album.id, user.id, { role: AlbumUserRole.Owner }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(mocks.albumUser.update).not.toHaveBeenCalled();
     });
   });
 
@@ -711,6 +1229,188 @@ describe(AlbumService.name, () => {
         new Set(['album-123']),
         AlbumUserRole.Viewer,
       );
+    });
+
+    it('returns search results for smart album when fetching by id', async () => {
+      const personId = newUuid();
+      const album = AlbumFactory.from()
+        .kind(AlbumKind.Smart)
+        .filter({ personIds: [personId] })
+        .build();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const auth = AuthFactory.create(owner);
+      const asset = AssetFactory.create({ ownerId: owner.id });
+
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        {
+          albumId: album.id,
+          assetCount: 1,
+          startDate: new Date('1970-01-01'),
+          endDate: new Date('1970-01-01'),
+          lastModifiedAssetTimestamp: new Date('1970-01-01'),
+        },
+      ]);
+      mocks.search.searchStatistics.mockResolvedValue({ total: 1 });
+      mocks.search.searchDateRange.mockResolvedValue({ startDate: null, endDate: null });
+      mocks.search.searchMetadata.mockResolvedValue({
+        items: [asset],
+        hasNextPage: false,
+      } as any);
+
+      const result = await sut.get(auth, album.id);
+
+      expect(mocks.search.searchStatistics).toHaveBeenCalledWith(
+        expect.objectContaining({ userIds: [owner.id], personIds: [personId] }),
+      );
+      expect(mocks.search.searchMetadata).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ userIds: [owner.id], personIds: [personId] }),
+      );
+      expect(result.assetCount).toBe(1);
+    });
+
+    it('returns most recent matching asset as thumbnail for smart album', async () => {
+      const album = AlbumFactory.from()
+        .kind(AlbumKind.Smart)
+        .filter({ personIds: [newUuid()] })
+        .build();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const auth = AuthFactory.create(owner);
+      const recent = AssetFactory.create({ ownerId: owner.id });
+
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        {
+          albumId: album.id,
+          assetCount: 1,
+          startDate: new Date('1970-01-01'),
+          endDate: new Date('1970-01-01'),
+          lastModifiedAssetTimestamp: new Date('1970-01-01'),
+        },
+      ]);
+      mocks.search.searchStatistics.mockResolvedValue({ total: 1 });
+      mocks.search.searchDateRange.mockResolvedValue({ startDate: null, endDate: null });
+      mocks.search.searchMetadata.mockResolvedValue({ items: [recent], hasNextPage: false } as any);
+
+      const result = await sut.get(auth, album.id);
+      expect(result.albumThumbnailAssetId).toEqual(recent.id);
+    });
+
+    it('fails closed when a legacy filter has no effective criteria after sanitization', async () => {
+      // A row whose only field was stripped (visibility: locked) must report zero assets,
+      // not the owner's entire timeline.
+      const album = AlbumFactory.from()
+        .kind(AlbumKind.Smart)
+        .filter({ visibility: AssetVisibility.Locked as never })
+        .build();
+      album.cachedAssetCount = 42;
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const auth = AuthFactory.create(owner);
+
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        { albumId: album.id, assetCount: 0, startDate: null, endDate: null, lastModifiedAssetTimestamp: null },
+      ]);
+
+      const result = await sut.get(auth, album.id);
+
+      expect(result.assetCount).toBe(0);
+      expect(result.albumThumbnailAssetId).toBeNull();
+      // No search queries run for an unevaluable filter.
+      expect(mocks.search.searchStatistics).not.toHaveBeenCalled();
+      expect(mocks.search.searchMetadata).not.toHaveBeenCalled();
+      // The zeroed metadata is persisted so the list view stops serving stale numbers.
+      expect(mocks.album.updateCachedMetadata).toHaveBeenCalledWith(
+        album.id,
+        expect.objectContaining({ cachedAssetCount: 0, cachedThumbnailAssetId: null }),
+      );
+    });
+
+    it('presents a smart album without a filter as empty instead of serving the cache', async () => {
+      const album = AlbumFactory.from().albumUser().kind(AlbumKind.Smart).filter(null).build();
+      album.cachedAssetCount = 42;
+      album.cachedThumbnailAssetId = newUuid();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        { albumId: album.id, assetCount: 0, startDate: null, endDate: null, lastModifiedAssetTimestamp: null },
+      ]);
+
+      const result = await sut.get(AuthFactory.create(owner), album.id);
+
+      expect(result.assetCount).toBe(0);
+      expect(result.albumThumbnailAssetId).toBeNull();
+      expect(mocks.search.searchStatistics).not.toHaveBeenCalled();
+    });
+
+    it('recomputes smart album cache on get() even when cache is fresh by timestamp', async () => {
+      // Regression: AlbumService.get used to gate recompute on isSmartAlbumCacheStale.
+      // We removed that gate so that single-album views self-heal any stale state we missed
+      // via an unhooked write path. This test ensures the gate doesn't come back.
+      const computedAt = new Date('2030-01-01T00:00:00Z');
+      const invalidatedAt = new Date('2025-01-01T00:00:00Z'); // older than computed: "fresh" per the removed staleness check
+      const album = AlbumFactory.from().kind(AlbumKind.Smart).filter({ isFavorite: true }).build();
+      album.cachedAssetCount = 7;
+      album.cacheComputedAt = computedAt;
+      album.cacheInvalidatedAt = invalidatedAt;
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const auth = AuthFactory.create(owner);
+
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        { albumId: album.id, assetCount: 0, startDate: null, endDate: null, lastModifiedAssetTimestamp: null },
+      ]);
+      mocks.search.searchStatistics.mockResolvedValue({ total: 0 });
+      mocks.search.searchDateRange.mockResolvedValue({ startDate: null, endDate: null });
+      mocks.search.searchMetadata.mockResolvedValue({ items: [], hasNextPage: false } as any);
+
+      await sut.get(auth, album.id);
+
+      // Even though the cache looks fresh (computed > invalidated), we still run a fresh search.
+      expect(mocks.search.searchStatistics).toHaveBeenCalledWith(
+        expect.objectContaining({ isFavorite: true, userIds: [owner.id] }),
+      );
+      expect(mocks.search.searchMetadata).toHaveBeenCalledWith(
+        { page: 1, size: 1 },
+        expect.objectContaining({ isFavorite: true, userIds: [owner.id] }),
+      );
+    });
+  });
+
+  describe('getMapMarkers', () => {
+    it('should resolve markers from the filter for a smart album', async () => {
+      const album = AlbumFactory.from().kind(AlbumKind.Smart).filter({ isFavorite: true }).build();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const marker = { id: newUuid(), lat: 1, lon: 2, city: null, state: null, country: null };
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.map.getMapMarkersForSearch.mockResolvedValue([marker]);
+
+      await expect(sut.getMapMarkers(AuthFactory.create(owner), album.id)).resolves.toEqual([marker]);
+
+      expect(mocks.map.getMapMarkersForSearch).toHaveBeenCalledWith(
+        expect.objectContaining({ isFavorite: true, userIds: [owner.id] }),
+      );
+      expect(mocks.map.getAlbumMapMarkers).not.toHaveBeenCalled();
+    });
+
+    it('should use album_asset markers for a regular album', async () => {
+      const album = AlbumFactory.create();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.map.getAlbumMapMarkers.mockResolvedValue([]);
+
+      await expect(sut.getMapMarkers(AuthFactory.create(owner), album.id)).resolves.toEqual([]);
+
+      expect(mocks.map.getAlbumMapMarkers).toHaveBeenCalledWith(album.id);
+      expect(mocks.map.getMapMarkersForSearch).not.toHaveBeenCalled();
     });
   });
 
@@ -898,6 +1598,16 @@ describe(AlbumService.name, () => {
       ).rejects.toBeInstanceOf(BadRequestException);
 
       expect(mocks.access.album.checkSharedLinkAccess).toHaveBeenCalled();
+    });
+
+    it('should reject adding assets to a smart album', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create(owner);
+      const album = AlbumFactory.from().owner(owner).kind(AlbumKind.Smart).filter({}).build();
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+
+      await expect(sut.addAssets(auth, album.id, { ids: [newUuid()] })).rejects.toBeInstanceOf(BadRequestException);
     });
   });
 
@@ -1240,6 +1950,48 @@ describe(AlbumService.name, () => {
       );
     });
 
+    it('should skip smart albums', async () => {
+      const smartAlbum = AlbumFactory.from().albumUser().kind(AlbumKind.Smart).filter({ isFavorite: true }).build();
+      const { user: owner } = smartAlbum.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const regularAlbum = AlbumFactory.create();
+      const asset = AssetFactory.create();
+      mocks.access.album.checkOwnerAccess.mockResolvedValueOnce(new Set([smartAlbum.id, regularAlbum.id]));
+      mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set([asset.id]));
+      mocks.album.getById
+        .mockResolvedValueOnce(getForAlbum(smartAlbum))
+        .mockResolvedValueOnce(getForAlbum(regularAlbum));
+      mocks.album.getAssetIds.mockResolvedValue(new Set());
+
+      await expect(
+        sut.addAssetsToAlbums(AuthFactory.create(owner), {
+          albumIds: [smartAlbum.id, regularAlbum.id],
+          assetIds: [asset.id],
+        }),
+      ).resolves.toEqual({ success: true, error: undefined });
+
+      // Only the regular album receives the asset.
+      expect(mocks.album.addAssetIdsToAlbums).toHaveBeenCalledWith([{ albumId: regularAlbum.id, assetId: asset.id }]);
+    });
+
+    it('should return NO_PERMISSION when every target album is smart', async () => {
+      const smartAlbum = AlbumFactory.from().albumUser().kind(AlbumKind.Smart).filter({ isFavorite: true }).build();
+      const { user: owner } = smartAlbum.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const asset = AssetFactory.create();
+      mocks.access.album.checkOwnerAccess.mockResolvedValueOnce(new Set([smartAlbum.id]));
+      mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set([asset.id]));
+      mocks.album.getById.mockResolvedValueOnce(getForAlbum(smartAlbum));
+
+      await expect(
+        sut.addAssetsToAlbums(AuthFactory.create(owner), {
+          albumIds: [smartAlbum.id],
+          assetIds: [asset.id],
+        }),
+      ).resolves.toEqual({ success: false, error: BulkIdErrorReason.NO_PERMISSION });
+
+      expect(mocks.album.addAssetIdsToAlbums).not.toHaveBeenCalled();
+      expect(mocks.album.update).not.toHaveBeenCalled();
+    });
+
     it('should not allow unauthorized access to the albums', async () => {
       const user = UserFactory.create();
       const album1 = AlbumFactory.create();
@@ -1344,6 +2096,16 @@ describe(AlbumService.name, () => {
 
       expect(mocks.album.updateThumbnails).toHaveBeenCalled();
     });
+
+    it('should reject removing assets from a smart album', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create(owner);
+      const album = AlbumFactory.from().owner(owner).kind(AlbumKind.Smart).filter({}).build();
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+
+      await expect(sut.removeAssets(auth, album.id, { ids: [newUuid()] })).rejects.toBeInstanceOf(BadRequestException);
+    });
   });
 
   // // it('removes assets from shared album (shared with auth user)', async () => {
@@ -1381,4 +2143,160 @@ describe(AlbumService.name, () => {
 
   //   await expect(sut.removeAssets(auth, albumId, { ids: ['1'] })).rejects.toBeInstanceOf(ForbiddenException);
   // });
+
+  describe('invalidateSmartAlbumsForAssetsSafe', () => {
+    it('invalidates every smart album of the owner, regardless of filter match', async () => {
+      // Blanket on purpose: a write can REMOVE an asset from an album's matches
+      // (unfavorite, untag, trash), which a post-write match check cannot detect.
+      const ownerId = newUuid();
+      const albumA = newUuid();
+      const albumB = newUuid();
+      mocks.album.getSmartAlbumsForOwner.mockResolvedValue([
+        { id: albumA, filter: { isFavorite: true } },
+        { id: albumB, filter: { rating: 5 } },
+      ] as any);
+
+      await sut.invalidateSmartAlbumsForAssetsSafe(ownerId, [newUuid()]);
+
+      expect(mocks.album.markCacheInvalidated).toHaveBeenCalledTimes(1);
+      const [ids] = mocks.album.markCacheInvalidated.mock.calls[0];
+      expect(ids).toEqual([albumA, albumB]);
+      // No per-album match queries on the write path.
+      expect(mocks.search.searchMetadata).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when the asset list is empty', async () => {
+      await sut.invalidateSmartAlbumsForAssetsSafe(newUuid(), []);
+      expect(mocks.album.getSmartAlbumsForOwner).not.toHaveBeenCalled();
+      expect(mocks.album.markCacheInvalidated).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when the owner has no smart albums', async () => {
+      mocks.album.getSmartAlbumsForOwner.mockResolvedValue([]);
+      await sut.invalidateSmartAlbumsForAssetsSafe(newUuid(), [newUuid()]);
+      expect(mocks.album.markCacheInvalidated).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('invalidateSmartAlbumsForAssetIdsSafe', () => {
+    it('invalidates each distinct owner once', async () => {
+      const owner1 = newUuid();
+      const owner2 = newUuid();
+      const assets = [
+        { id: newUuid(), ownerId: owner1 },
+        { id: newUuid(), ownerId: owner1 },
+        { id: newUuid(), ownerId: owner2 },
+      ];
+      mocks.asset.getByIds.mockResolvedValue(assets as any);
+      mocks.album.getSmartAlbumsForOwner.mockResolvedValue([{ id: newUuid(), filter: { isFavorite: true } }] as any);
+
+      await sut.invalidateSmartAlbumsForAssetIdsSafe(assets.map(({ id }) => id));
+
+      expect(mocks.album.getSmartAlbumsForOwner).toHaveBeenCalledTimes(2);
+      expect(mocks.album.getSmartAlbumsForOwner).toHaveBeenCalledWith(owner1);
+      expect(mocks.album.getSmartAlbumsForOwner).toHaveBeenCalledWith(owner2);
+    });
+  });
+
+  describe('invalidateSmartAlbumsForPersonMerge', () => {
+    it('bumps cacheInvalidatedAt on smart albums that filter on either merged person id', async () => {
+      const ownerId = newUuid();
+      const sourceId = newUuid();
+      const targetId = newUuid();
+      const matchingAlbumId = newUuid();
+      mocks.album.getSmartAlbumsForOwnerByPersonIds.mockResolvedValue([{ id: matchingAlbumId }]);
+
+      await sut.invalidateSmartAlbumsForPersonMerge(ownerId, [sourceId, targetId]);
+
+      expect(mocks.album.getSmartAlbumsForOwnerByPersonIds).toHaveBeenCalledWith(ownerId, [sourceId, targetId]);
+      expect(mocks.album.markCacheInvalidated).toHaveBeenCalledWith([matchingAlbumId], expect.any(Date));
+    });
+
+    it('is a no-op when no smart albums reference the merged persons', async () => {
+      mocks.album.getSmartAlbumsForOwnerByPersonIds.mockResolvedValue([]);
+
+      await sut.invalidateSmartAlbumsForPersonMerge(newUuid(), [newUuid(), newUuid()]);
+
+      expect(mocks.album.markCacheInvalidated).not.toHaveBeenCalled();
+    });
+
+    it('is a no-op when no person ids are supplied', async () => {
+      await sut.invalidateSmartAlbumsForPersonMerge(newUuid(), []);
+
+      expect(mocks.album.getSmartAlbumsForOwnerByPersonIds).not.toHaveBeenCalled();
+      expect(mocks.album.markCacheInvalidated).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('invalidateAllSmartAlbumsByPersonFilter', () => {
+    it('delegates to the repository to bump cache for all person-filtered smart albums', async () => {
+      await sut.invalidateAllSmartAlbumsByPersonFilter();
+
+      expect(mocks.album.markAllSmartAlbumsWithPersonFilterInvalidated).toHaveBeenCalledTimes(1);
+      expect(mocks.album.markAllSmartAlbumsWithPersonFilterInvalidated).toHaveBeenCalledWith(expect.any(Date));
+    });
+
+    it('safe variant swallows repository errors and logs', async () => {
+      mocks.album.markAllSmartAlbumsWithPersonFilterInvalidated.mockRejectedValueOnce(new Error('boom'));
+
+      await expect(sut.invalidateAllSmartAlbumsByPersonFilterSafe()).resolves.toBeUndefined();
+    });
+  });
+
+  describe('prunePersonIdsFromSmartAlbums', () => {
+    it('delegates to the repository and is a no-op when no ids are supplied', async () => {
+      await sut.prunePersonIdsFromSmartAlbums([]);
+      expect(mocks.album.prunePersonIdsFromSmartAlbums).not.toHaveBeenCalled();
+    });
+
+    it('calls the repository with the deleted person ids', async () => {
+      const ids = [newUuid(), newUuid()];
+      mocks.album.prunePersonIdsFromSmartAlbums.mockResolvedValue([newUuid()]);
+
+      await sut.prunePersonIdsFromSmartAlbums(ids);
+
+      expect(mocks.album.prunePersonIdsFromSmartAlbums).toHaveBeenCalledWith(ids);
+    });
+
+    it('returns silently when no albums were affected', async () => {
+      mocks.album.prunePersonIdsFromSmartAlbums.mockResolvedValue([]);
+      await expect(sut.prunePersonIdsFromSmartAlbums([newUuid()])).resolves.toBeUndefined();
+    });
+
+    it('safe variant swallows repository errors', async () => {
+      mocks.album.prunePersonIdsFromSmartAlbums.mockRejectedValueOnce(new Error('boom'));
+      await expect(sut.prunePersonIdsFromSmartAlbumsSafe([newUuid()])).resolves.toBeUndefined();
+    });
+
+    it('safe variant is a no-op when no ids are supplied', async () => {
+      await sut.prunePersonIdsFromSmartAlbumsSafe([]);
+      expect(mocks.album.prunePersonIdsFromSmartAlbums).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('pruneTagIdsFromSmartAlbums', () => {
+    it('delegates to the repository and is a no-op when no ids are supplied', async () => {
+      await sut.pruneTagIdsFromSmartAlbums([]);
+      expect(mocks.album.pruneTagIdsFromSmartAlbums).not.toHaveBeenCalled();
+    });
+
+    it('calls the repository with the deleted tag ids', async () => {
+      const ids = [newUuid()];
+      mocks.album.pruneTagIdsFromSmartAlbums.mockResolvedValue([newUuid()]);
+
+      await sut.pruneTagIdsFromSmartAlbums(ids);
+
+      expect(mocks.album.pruneTagIdsFromSmartAlbums).toHaveBeenCalledWith(ids);
+    });
+
+    it('safe variant swallows repository errors', async () => {
+      mocks.album.pruneTagIdsFromSmartAlbums.mockRejectedValueOnce(new Error('boom'));
+      await expect(sut.pruneTagIdsFromSmartAlbumsSafe([newUuid()])).resolves.toBeUndefined();
+    });
+
+    it('safe variant is a no-op when no ids are supplied', async () => {
+      await sut.pruneTagIdsFromSmartAlbumsSafe([]);
+      expect(mocks.album.pruneTagIdsFromSmartAlbums).not.toHaveBeenCalled();
+    });
+  });
 });

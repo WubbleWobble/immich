@@ -223,6 +223,25 @@ export class SearchRepository {
 
   @GenerateSql({
     params: [
+      {
+        takenAfter: DummyValue.DATE,
+        lensModel: DummyValue.STRING,
+        isFavorite: true,
+        userIds: [DummyValue.UUID],
+      },
+    ],
+  })
+  searchDateRange(options: AssetSearchOptions) {
+    return searchAssetBuilder(this.db, options)
+      .select((qb) => [
+        qb.fn.min(sql<Date | null>`coalesce(asset."localDateTime", asset."fileCreatedAt")`).as('startDate'),
+        qb.fn.max(sql<Date | null>`coalesce(asset."localDateTime", asset."fileCreatedAt")`).as('endDate'),
+      ])
+      .executeTakeFirstOrThrow();
+  }
+
+  @GenerateSql({
+    params: [
       100,
       {
         takenAfter: DummyValue.DATE,

@@ -15511,6 +15511,14 @@
         ],
         "type": "object"
       },
+      "AlbumKind": {
+        "description": "Album kind",
+        "enum": [
+          "regular",
+          "smart"
+        ],
+        "type": "string"
+      },
       "AlbumResponseDto": {
         "properties": {
           "albumName": {
@@ -15556,6 +15564,15 @@
             "format": "date-time",
             "type": "string"
           },
+          "filter": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SmartAlbumFilter"
+              }
+            ],
+            "description": "Filter for smart albums",
+            "nullable": true
+          },
           "hasSharedLink": {
             "description": "Has shared link",
             "type": "boolean"
@@ -15567,6 +15584,9 @@
           "isActivityEnabled": {
             "description": "Activity feed enabled",
             "type": "boolean"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AlbumKind"
           },
           "lastModifiedAssetTimestamp": {
             "description": "Last modified asset timestamp",
@@ -15598,9 +15618,11 @@
           "assetCount",
           "createdAt",
           "description",
+          "filter",
           "hasSharedLink",
           "id",
           "isActivityEnabled",
+          "kind",
           "shared",
           "updatedAt"
         ],
@@ -17324,6 +17346,15 @@
           "description": {
             "description": "Album description",
             "type": "string"
+          },
+          "filter": {
+            "$ref": "#/components/schemas/SmartAlbumFilter",
+            "description": "Filter for smart albums"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AlbumKind",
+            "default": "regular",
+            "description": "Album kind"
           }
         },
         "required": [
@@ -21824,6 +21855,180 @@
         ],
         "type": "object"
       },
+      "SmartAlbumFilter": {
+        "additionalProperties": false,
+        "properties": {
+          "albumIds": {
+            "description": "Filter by album IDs",
+            "items": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "city": {
+            "description": "Filter by city name",
+            "nullable": true,
+            "type": "string"
+          },
+          "country": {
+            "description": "Filter by country name",
+            "nullable": true,
+            "type": "string"
+          },
+          "createdAfter": {
+            "description": "Filter by creation date (after)",
+            "example": "2024-01-01T00:00:00.000Z",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+            "type": "string"
+          },
+          "createdBefore": {
+            "description": "Filter by creation date (before)",
+            "example": "2024-01-01T00:00:00.000Z",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+            "type": "string"
+          },
+          "description": {
+            "description": "Filter by description text",
+            "type": "string"
+          },
+          "isEncoded": {
+            "description": "Filter by encoded status",
+            "type": "boolean"
+          },
+          "isFavorite": {
+            "description": "Filter by favorite status",
+            "type": "boolean"
+          },
+          "isMotion": {
+            "description": "Filter by motion photo status",
+            "type": "boolean"
+          },
+          "isNotInAlbum": {
+            "description": "Filter assets not in any album",
+            "type": "boolean"
+          },
+          "lensModel": {
+            "description": "Filter by lens model",
+            "nullable": true,
+            "type": "string"
+          },
+          "libraryId": {
+            "description": "Library ID to filter by",
+            "format": "uuid",
+            "nullable": true,
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "make": {
+            "description": "Filter by camera make",
+            "nullable": true,
+            "type": "string"
+          },
+          "model": {
+            "description": "Filter by camera model",
+            "nullable": true,
+            "type": "string"
+          },
+          "ocr": {
+            "description": "Filter by OCR text content",
+            "type": "string"
+          },
+          "originalFileName": {
+            "description": "Filter by original file name",
+            "type": "string"
+          },
+          "personIds": {
+            "description": "Filter by person IDs",
+            "items": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "rating": {
+            "description": "Filter by rating [1-5], or null for unrated",
+            "maximum": 5,
+            "minimum": -1,
+            "nullable": true,
+            "type": "integer",
+            "x-immich-history": [
+              {
+                "version": "v1",
+                "state": "Added"
+              },
+              {
+                "version": "v2",
+                "state": "Stable"
+              },
+              {
+                "version": "v2.6.0",
+                "state": "Updated",
+                "description": "Using -1 as a rating is deprecated and will be removed in the next major version."
+              }
+            ],
+            "x-immich-state": "Stable"
+          },
+          "state": {
+            "description": "Filter by state/province name",
+            "nullable": true,
+            "type": "string"
+          },
+          "tagIds": {
+            "description": "Filter by tag IDs",
+            "items": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "takenAfter": {
+            "description": "Filter by taken date (after)",
+            "example": "2024-01-01T00:00:00.000Z",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+            "type": "string"
+          },
+          "takenBefore": {
+            "description": "Filter by taken date (before)",
+            "example": "2024-01-01T00:00:00.000Z",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/components/schemas/AssetTypeEnum"
+          },
+          "updatedAfter": {
+            "description": "Filter by update date (after)",
+            "example": "2024-01-01T00:00:00.000Z",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+            "type": "string"
+          },
+          "updatedBefore": {
+            "description": "Filter by update date (before)",
+            "example": "2024-01-01T00:00:00.000Z",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+            "type": "string"
+          },
+          "visibility": {
+            "enum": [
+              "timeline",
+              "archive"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "SmartSearchDto": {
         "properties": {
           "albumIds": {
@@ -25316,6 +25521,10 @@
           "description": {
             "description": "Album description",
             "type": "string"
+          },
+          "filter": {
+            "$ref": "#/components/schemas/SmartAlbumFilter",
+            "description": "Updated filter (smart albums only)"
           },
           "isActivityEnabled": {
             "description": "Enable activity feed",

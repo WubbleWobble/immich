@@ -18,6 +18,7 @@ import { LockableProperty, Stack } from 'src/database';
 import { Chunked, ChunkedArray, DummyValue, GenerateSql } from 'src/decorators';
 import { AuthDto } from 'src/dtos/auth.dto';
 import { AssetFileType, AssetOrder, AssetOrderBy, AssetStatus, AssetType, AssetVisibility } from 'src/enum';
+import { AssetSearchBuilderOptions } from 'src/repositories/search.repository';
 import { DB } from 'src/schema';
 import { AssetAudioTable, AssetKeyframeTable, AssetVideoTable } from 'src/schema/tables/asset-av.table';
 import { AssetExifTable } from 'src/schema/tables/asset-exif.table';
@@ -29,7 +30,9 @@ import {
   anyUuid,
   asUuid,
   hasPeople,
+  joinDeduplicationPlugin,
   removeUndefinedKeys,
+  searchAssetIdSubquery,
   truncatedDate,
   unnest,
   withDefaultVisibility,
@@ -75,6 +78,7 @@ interface AssetBuilderOptions {
   isTrashed?: boolean;
   isDuplicate?: boolean;
   albumId?: string;
+  assetIds?: string[];
   tagId?: string;
   personId?: string;
   userIds?: string[];
@@ -90,6 +94,12 @@ interface AssetBuilderOptions {
 export interface TimeBucketOptions extends AssetBuilderOptions {
   order?: AssetOrder;
   orderBy?: AssetOrderBy;
+  /**
+   * Restrict to assets matching this search filter (smart-album membership), applied as an
+   * `asset.id IN (searchAssetBuilder ... select id)` subquery so every other option in this
+   * request still composes with it.
+   */
+  assetFilter?: AssetSearchBuilderOptions;
 }
 
 export interface TimeBucketItem {
@@ -708,56 +718,64 @@ export class AssetRepository {
 
   @GenerateSql({ params: [{}] })
   async getTimeBuckets(options: TimeBucketOptions): Promise<TimeBucketItem[]> {
-    return this.db
-      .with('asset', (qb) =>
-        qb
-          .selectFrom('asset')
-          .select(truncatedDate<Date>(options.orderBy).as('timeBucket'))
-          .$if(!!options.isTrashed, (qb) => qb.where('asset.status', '!=', AssetStatus.Deleted))
-          .where('asset.deletedAt', options.isTrashed ? 'is not' : 'is', null)
-          .$if(!!options.bbox, (qb) => {
-            const bbox = options.bbox!;
-            const circle = getBoundingCircle(bbox);
+    return (
+      this.db
+        .with('asset', (qb) =>
+          qb
+            .selectFrom('asset')
+            .select(truncatedDate<Date>(options.orderBy).as('timeBucket'))
+            .$if(!!options.isTrashed, (qb) => qb.where('asset.status', '!=', AssetStatus.Deleted))
+            .where('asset.deletedAt', options.isTrashed ? 'is not' : 'is', null)
+            .$if(!!options.bbox, (qb) => {
+              const bbox = options.bbox!;
+              const circle = getBoundingCircle(bbox);
 
-            const withBoundingCircle = qb
-              .innerJoin('asset_exif', 'asset.id', 'asset_exif.assetId')
-              .where(
-                sql`earth_box(ll_to_earth_public(${circle.centerLatitude}, ${circle.centerLongitude}), ${circle.radius})`,
-                '@>',
-                sql`ll_to_earth_public(asset_exif.latitude, asset_exif.longitude)`,
-              );
+              const withBoundingCircle = qb
+                .innerJoin('asset_exif', 'asset.id', 'asset_exif.assetId')
+                .where(
+                  sql`earth_box(ll_to_earth_public(${circle.centerLatitude}, ${circle.centerLongitude}), ${circle.radius})`,
+                  '@>',
+                  sql`ll_to_earth_public(asset_exif.latitude, asset_exif.longitude)`,
+                );
 
-            return withBoundingBox(withBoundingCircle, bbox);
-          })
-          .$if(options.visibility === undefined, withDefaultVisibility)
-          .$if(!!options.visibility, (qb) => qb.where('asset.visibility', '=', options.visibility!))
-          .$if(!!options.albumId, (qb) =>
-            qb
-              .innerJoin('album_asset', 'asset.id', 'album_asset.assetId')
-              .where('album_asset.albumId', '=', asUuid(options.albumId!)),
-          )
-          .$if(!!options.personId, (qb) => hasPeople(qb, [options.personId!]))
-          .$if(!!options.withStacked, (qb) =>
-            qb
-              .leftJoin('stack', (join) =>
-                join.onRef('stack.id', '=', 'asset.stackId').onRef('stack.primaryAssetId', '=', 'asset.id'),
-              )
-              .where((eb) => eb.or([eb('asset.stackId', 'is', null), eb(eb.table('stack'), 'is not', null)])),
-          )
-          .$if(!!options.userIds, (qb) => qb.where('asset.ownerId', '=', anyUuid(options.userIds!)))
-          .$if(options.isFavorite !== undefined, (qb) => qb.where('asset.isFavorite', '=', options.isFavorite!))
-          .$if(!!options.assetType, (qb) => qb.where('asset.type', '=', options.assetType!))
-          .$if(options.isDuplicate !== undefined, (qb) =>
-            qb.where('asset.duplicateId', options.isDuplicate ? 'is not' : 'is', null),
-          )
-          .$if(!!options.tagId, (qb) => withTagId(qb, options.tagId!)),
-      )
-      .selectFrom('asset')
-      .select(sql<string>`("timeBucket" AT TIME ZONE 'UTC')::date::text`.as('timeBucket'))
-      .select((eb) => eb.fn.countAll<number>().as('count'))
-      .groupBy('timeBucket')
-      .orderBy('timeBucket', options.order ?? 'desc')
-      .execute() as any as Promise<TimeBucketItem[]>;
+              return withBoundingBox(withBoundingCircle, bbox);
+            })
+            .$if(options.visibility === undefined, withDefaultVisibility)
+            .$if(!!options.visibility, (qb) => qb.where('asset.visibility', '=', options.visibility!))
+            .$if(!!options.albumId, (qb) =>
+              qb
+                .innerJoin('album_asset', 'asset.id', 'album_asset.assetId')
+                .where('album_asset.albumId', '=', asUuid(options.albumId!)),
+            )
+            .$if(!!options.assetIds, (qb) => qb.where('asset.id', '=', anyUuid(options.assetIds!)))
+            .$if(!!options.assetFilter, (qb) =>
+              qb.where('asset.id', 'in', searchAssetIdSubquery(this.db, options.assetFilter!)),
+            )
+            .$if(!!options.personId, (qb) => hasPeople(qb, [options.personId!]))
+            .$if(!!options.withStacked, (qb) =>
+              qb
+                .leftJoin('stack', (join) =>
+                  join.onRef('stack.id', '=', 'asset.stackId').onRef('stack.primaryAssetId', '=', 'asset.id'),
+                )
+                .where((eb) => eb.or([eb('asset.stackId', 'is', null), eb(eb.table('stack'), 'is not', null)])),
+            )
+            .$if(!!options.userIds, (qb) => qb.where('asset.ownerId', '=', anyUuid(options.userIds!)))
+            .$if(options.isFavorite !== undefined, (qb) => qb.where('asset.isFavorite', '=', options.isFavorite!))
+            .$if(!!options.assetType, (qb) => qb.where('asset.type', '=', options.assetType!))
+            .$if(options.isDuplicate !== undefined, (qb) =>
+              qb.where('asset.duplicateId', options.isDuplicate ? 'is not' : 'is', null),
+            )
+            .$if(!!options.tagId, (qb) => withTagId(qb, options.tagId!)),
+        )
+        .selectFrom('asset')
+        .select(sql<string>`("timeBucket" AT TIME ZONE 'UTC')::date::text`.as('timeBucket'))
+        .select((eb) => eb.fn.countAll<number>().as('count'))
+        .groupBy('timeBucket')
+        .orderBy('timeBucket', options.order ?? 'desc')
+        // An embedded assetFilter subquery relies on the root query to deduplicate its joins.
+        .$if(!!options.assetFilter, (qb) => qb.withPlugin(joinDeduplicationPlugin))
+        .execute() as any as Promise<TimeBucketItem[]>
+    );
   }
 
   @GenerateSql({
@@ -827,6 +845,10 @@ export class AssetRepository {
                   .where('album_asset.albumId', '=', asUuid(options.albumId!)),
               ),
             ),
+          )
+          .$if(!!options.assetIds, (qb) => qb.where('asset.id', '=', anyUuid(options.assetIds!)))
+          .$if(!!options.assetFilter, (qb) =>
+            qb.where('asset.id', 'in', searchAssetIdSubquery(this.db, options.assetFilter!)),
           )
           .$if(!!options.personId, (qb) => hasPeople(qb, [options.personId!]))
           .$if(!!options.userIds, (qb) => qb.where('asset.ownerId', '=', anyUuid(options.userIds!)))
@@ -905,7 +927,9 @@ export class AssetRepository {
           ),
       )
       .selectFrom('agg')
-      .select(sql<string>`to_json(agg)::text`.as('assets'));
+      .select(sql<string>`to_json(agg)::text`.as('assets'))
+      // An embedded assetFilter subquery relies on the root query to deduplicate its joins.
+      .$if(!!options.assetFilter, (qb) => qb.withPlugin(joinDeduplicationPlugin));
 
     return query.executeTakeFirstOrThrow();
   }

@@ -2,6 +2,7 @@
   import Dropdown from '$lib/elements/Dropdown.svelte';
   import GroupTab from '$lib/elements/GroupTab.svelte';
   import SearchBar from '$lib/elements/SearchBar.svelte';
+  import NewSmartAlbumModal from '$lib/modals/NewSmartAlbumModal.svelte';
   import {
     AlbumFilter,
     AlbumGroupBy,
@@ -23,10 +24,11 @@
     groupOptionsMetadata,
     sortOptionsMetadata,
   } from '$lib/utils/album-utils';
-  import { Button, IconButton, Text } from '@immich/ui';
+  import { Button, IconButton, modalManager, Text } from '@immich/ui';
   import {
     mdiArrowDownThin,
     mdiArrowUpThin,
+    mdiAutoFix,
     mdiFolderArrowDownOutline,
     mdiFolderArrowUpOutline,
     mdiFolderRemoveOutline,
@@ -72,6 +74,8 @@
       $albumViewSettings.sortOrder = defaultOrder;
     }
   };
+
+  const openNewSmartAlbum = () => modalManager.show(NewSmartAlbumModal, {});
 
   const handleChangeListMode = () => {
     $albumViewSettings.view =
@@ -136,6 +140,17 @@
   color="secondary"
 >
   <p class="hidden md:block">{$t('create_album')}</p>
+</Button>
+
+<!-- Create Smart Album -->
+<Button
+  leadingIcon={mdiAutoFix}
+  onclick={openNewSmartAlbum}
+  size="small"
+  variant="ghost"
+  color="secondary"
+>
+  <p class="hidden md:block">{$t('smart_album_new')}</p>
 </Button>
 
 <!-- Sort Albums -->

@@ -7,6 +7,8 @@
   import ControlAppBar from '$lib/components/shared-components/ControlAppBar.svelte';
   import GalleryViewer from '$lib/components/shared-components/gallery-viewer/GalleryViewer.svelte';
   import SearchBar from '$lib/components/shared-components/search-bar/SearchBar.svelte';
+  import { metadataSearchToSmartAlbumFilter } from '$lib/components/album-page/SmartAlbumFilterForm.svelte';
+  import SaveSmartAlbumModal from '$lib/modals/SaveSmartAlbumModal.svelte';
   import ArchiveAction from '$lib/components/timeline/actions/ArchiveAction.svelte';
   import ChangeDate from '$lib/components/timeline/actions/ChangeDateAction.svelte';
   import ChangeDescription from '$lib/components/timeline/actions/ChangeDescriptionAction.svelte';
@@ -41,8 +43,16 @@
     searchSmart,
     type SmartSearchDto,
   } from '@immich/sdk';
-  import { ActionButton, CommandPaletteDefaultProvider, Icon, IconButton, LoadingSpinner } from '@immich/ui';
-  import { mdiArrowLeft, mdiClose, mdiDotsVertical, mdiImageOffOutline, mdiSelectAll } from '@mdi/js';
+  import {
+    ActionButton,
+    Button,
+    CommandPaletteDefaultProvider,
+    Icon,
+    IconButton,
+    LoadingSpinner,
+    modalManager,
+  } from '@immich/ui';
+  import { mdiArrowLeft, mdiAutoFix, mdiClose, mdiDotsVertical, mdiImageOffOutline, mdiSelectAll } from '@mdi/js';
   import { tick, untrack } from 'svelte';
   import { t } from 'svelte-i18n';
 
@@ -241,6 +251,18 @@
     delete terms[key];
     void goto(Route.search(terms));
   }
+
+  const openSaveAsSmartAlbum = () =>
+    modalManager.show(SaveSmartAlbumModal, {
+      initialFilter: terms as unknown as Record<string, unknown>,
+      initialName: terms.query ?? '',
+    });
+
+  // A smart album can only store metadata criteria; a pure semantic-query search converts
+  // to an empty filter, which would match the whole library. Hide the action in that case.
+  const canSaveAsSmartAlbum = $derived(
+    Object.keys(metadataSearchToSmartAlbumFilter(terms as unknown as Record<string, unknown>)).length > 0,
+  );
 </script>
 
 <svelte:window bind:scrollY />
@@ -249,6 +271,13 @@
 
 {#if searchTermKeys.length > 0}
   <section id="search-chips" class="mx-auto mt-24 w-full max-w-7xl px-4 sm:px-8 lg:px-12">
+    {#if canSaveAsSmartAlbum}
+      <div class="mb-3 flex w-full place-content-end">
+        <Button size="small" variant="ghost" color="secondary" leadingIcon={mdiAutoFix} onclick={openSaveAsSmartAlbum}>
+          {$t('smart_album_save_as')}
+        </Button>
+      </div>
+    {/if}
     <div class="flex w-full flex-wrap place-content-center place-items-center gap-2.5 sm:gap-3">
       {#each searchTermKeys as searchKey (searchKey)}
         {@const value = terms[searchKey]}

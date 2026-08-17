@@ -67,6 +67,13 @@ export enum AlbumUserRole {
 
 export const AlbumUserRoleSchema = z.enum(AlbumUserRole).describe('Album user role').meta({ id: 'AlbumUserRole' });
 
+export enum AlbumKind {
+  Regular = 'regular',
+  Smart = 'smart',
+}
+
+export const AlbumKindSchema = z.enum(AlbumKind).describe('Album kind').meta({ id: 'AlbumKind' });
+
 export enum AssetOrder {
   Asc = 'asc',
   Desc = 'desc',

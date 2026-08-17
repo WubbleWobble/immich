@@ -2,9 +2,10 @@ import { Injectable } from '@nestjs/common';
 import { Kysely, NotNull, sql } from 'kysely';
 import { InjectKysely } from 'nestjs-kysely';
 import { ChunkedSet, DummyValue, GenerateSql } from 'src/decorators';
-import { AlbumUserRole, AssetVisibility } from 'src/enum';
+import { SmartAlbumFilter, toEvaluableSmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
+import { AlbumKind, AlbumUserRole, AssetVisibility } from 'src/enum';
 import { DB } from 'src/schema';
-import { asUuid } from 'src/utils/database';
+import { asUuid, searchAssetBuilder } from 'src/utils/database';
 
 class ActivityAccess {
   constructor(private db: Kysely<DB>) {}
@@ -177,6 +178,96 @@ class AssetAccess {
         }
         return allowedIds;
       });
+  }
+
+  /**
+   * Membership in a smart album is computed, not stored in `album_asset`, so `checkAlbumAccess`
+   * cannot see it. For each smart album shared with `userId`, evaluate its filter (scoped to the
+   * album owner's library) against the candidate asset ids. Motion parts of matched live photos
+   * are granted the same way `checkAlbumAccess` grants them.
+   */
+  async checkSmartAlbumAccess(userId: string, assetIds: Set<string>) {
+    if (assetIds.size === 0) {
+      return new Set<string>();
+    }
+
+    const albums = await this.db
+      .selectFrom('album')
+      .innerJoin('album_user as viewer', (join) =>
+        join.onRef('viewer.albumId', '=', 'album.id').on('viewer.userId', '=', userId),
+      )
+      .innerJoin('user', (join) => join.onRef('user.id', '=', 'viewer.userId').on('user.deletedAt', 'is', null))
+      .innerJoin('album_user as owner', (join) =>
+        join.onRef('owner.albumId', '=', 'album.id').on('owner.role', '=', sql.lit(AlbumUserRole.Owner)),
+      )
+      .select(['album.filter', 'owner.userId as ownerId'])
+      .where('album.kind', '=', AlbumKind.Smart)
+      .where('album.filter', 'is not', null)
+      .where('album.deletedAt', 'is', null)
+      .execute();
+
+    return this.matchSmartAlbumAssets(albums, assetIds);
+  }
+
+  /**
+   * Shared-link counterpart of `checkSmartAlbumAccess`: a link to a smart album grants access to
+   * whatever the album's filter currently matches in the owner's library.
+   */
+  async checkSharedLinkSmartAlbumAccess(sharedLinkId: string, assetIds: Set<string>) {
+    if (assetIds.size === 0) {
+      return new Set<string>();
+    }
+
+    const albums = await this.db
+      .selectFrom('shared_link')
+      .innerJoin('album', 'album.id', 'shared_link.albumId')
+      .innerJoin('album_user as owner', (join) =>
+        join.onRef('owner.albumId', '=', 'album.id').on('owner.role', '=', sql.lit(AlbumUserRole.Owner)),
+      )
+      .select(['album.filter', 'owner.userId as ownerId'])
+      .where('shared_link.id', '=', sharedLinkId)
+      .where('album.kind', '=', AlbumKind.Smart)
+      .where('album.filter', 'is not', null)
+      .where('album.deletedAt', 'is', null)
+      .execute();
+
+    return this.matchSmartAlbumAssets(albums, assetIds);
+  }
+
+  private async matchSmartAlbumAssets(
+    albums: { filter: SmartAlbumFilter | null; ownerId: string }[],
+    assetIds: Set<string>,
+  ) {
+    const remaining = new Set(assetIds);
+    const allowedIds = new Set<string>();
+    for (const album of albums) {
+      if (remaining.size === 0) {
+        break;
+      }
+      // Fail closed: a filter without effective criteria (e.g. a legacy row whose only
+      // fields were sanitized away) grants access to nothing, not everything.
+      const filter = album.filter ? toEvaluableSmartAlbumFilter(album.filter) : null;
+      if (!filter) {
+        continue;
+      }
+      const candidateIds = [...remaining];
+      const matches = await searchAssetBuilder(this.db, {
+        ...filter,
+        userIds: [album.ownerId],
+      })
+        .select(['asset.id', 'asset.livePhotoVideoId'])
+        .where((eb) => eb.or([eb('asset.id', 'in', candidateIds), eb('asset.livePhotoVideoId', 'in', candidateIds)]))
+        .execute();
+      for (const match of matches) {
+        for (const id of [match.id, match.livePhotoVideoId]) {
+          if (id && remaining.has(id)) {
+            allowedIds.add(id);
+            remaining.delete(id);
+          }
+        }
+      }
+    }
+    return allowedIds;
   }
 
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID_SET] })

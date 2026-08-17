@@ -1,13 +1,21 @@
 import {
   addAssetsToAlbum,
+  addUsersToAlbum,
+  AlbumKind,
   AlbumResponseDto,
   AlbumUserRole,
   AssetMediaResponseDto,
   AssetOrder,
+  createTag,
   deleteUserAdmin,
   getAlbumInfo,
+  getAllAlbums,
+  getAssetInfo,
+  getTimeBuckets,
   LoginResponseDto,
+  searchAssets,
   SharedLinkType,
+  tagAssets,
 } from '@immich/sdk';
 import { createUserDto } from 'src/fixtures';
 import { errorDto } from 'src/responses';
@@ -501,7 +509,19 @@ describe('/albums', () => {
         assetCount: 0,
         isActivityEnabled: true,
         order: AssetOrder.Desc,
+        kind: AlbumKind.Regular,
+        filter: null,
       });
+    });
+
+    it('should reject a smart album with an empty filter', async () => {
+      // An empty filter matches the owner's whole timeline - dangerous once shared.
+      const { status, body } = await request(app)
+        .post('/albums')
+        .send({ albumName: 'Empty smart album', kind: AlbumKind.Smart, filter: {} })
+        .set('Authorization', `Bearer ${user1.accessToken}`);
+      expect(status).toBe(400);
+      expect(body).toEqual(errorDto.badRequest('Smart album filter must contain at least one criterion'));
     });
 
     it('should not be able to share album with owner', async () => {
@@ -794,6 +814,163 @@ describe('/albums', () => {
 
       expect(status).toBe(400);
       expect(body).toEqual(errorDto.badRequest('Not found or no album.share access'));
+    });
+  });
+
+  describe('smart album lifecycle with share', () => {
+    it('shares a smart album with a viewer, then promotes them to editor', async () => {
+      // Two dedicated users so we don't disturb the rest of this suite's shared state.
+      const owner = await utils.userSetup(admin.accessToken, {
+        email: 'smart-owner@immich.cloud',
+        name: 'Smart Owner',
+        password: 'password-smart-owner',
+      });
+      const recipient = await utils.userSetup(admin.accessToken, {
+        email: 'smart-recipient@immich.cloud',
+        name: 'Smart Recipient',
+        password: 'password-smart-recipient',
+      });
+
+      // Owner uploads one asset and tags it; the tag becomes the smart-album filter.
+      // Metadata extraction REPLACES an asset's tags from EXIF/sidecar data
+      // (MetadataService.applyTagList), so a manual tag applied while extraction is still
+      // pending gets wiped. Wait for upload processing to finish before tagging - queue
+      // polling races the event handler that enqueues the job, so use the websocket signal.
+      const ownerWebsocket = await utils.connectWebsocket(owner.accessToken);
+      const ownerAsset = await utils.createAsset(owner.accessToken);
+      await utils.waitForWebsocketEvent({ event: 'assetUpload', id: ownerAsset.id });
+      utils.disconnectWebsocket(ownerWebsocket);
+      const tag = await createTag(
+        { tagCreateDto: { name: 'smart-album-tag' } },
+        { headers: asBearerAuth(owner.accessToken) },
+      );
+      const tagResults = await tagAssets(
+        { id: tag.id, bulkIdsDto: { ids: [ownerAsset.id] } },
+        { headers: asBearerAuth(owner.accessToken) },
+      );
+      expect(tagResults).toEqual([{ id: ownerAsset.id, success: true }]);
+
+      // Barrier: metadata extraction can transiently wipe the manual tag (applyTagList
+      // replaces tags from EXIF/sidecar; the sidecar round-trip restores it). Wait until the
+      // tag is actually searchable - the same visibility the smart album evaluates.
+      const deadline = Date.now() + 10_000;
+      while (true) {
+        const { assets: searchHits } = await searchAssets(
+          { metadataSearchDto: { tagIds: [tag.id] } },
+          { headers: asBearerAuth(owner.accessToken) },
+        );
+        if (searchHits.items.some(({ id }) => id === ownerAsset.id)) {
+          break;
+        }
+        if (Date.now() > deadline) {
+          throw new Error('Tagged asset never became searchable');
+        }
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+
+      // Owner creates a smart album whose filter matches the tagged asset.
+      const smartAlbum = await utils.createAlbum(owner.accessToken, {
+        albumName: 'Smart Album Lifecycle',
+        kind: AlbumKind.Smart,
+        filter: { tagIds: [tag.id] },
+      });
+
+      expect(smartAlbum).toEqual(
+        expect.objectContaining({
+          kind: AlbumKind.Smart,
+          filter: expect.objectContaining({ tagIds: [tag.id] }),
+        }),
+      );
+
+      // Owner-side fetch by id should warm the smart-album cache and report the matching asset.
+      const ownerAlbumInfo = await getAlbumInfo({ id: smartAlbum.id }, { headers: asBearerAuth(owner.accessToken) });
+      expect(ownerAlbumInfo.kind).toBe(AlbumKind.Smart);
+      expect(ownerAlbumInfo.filter).toEqual(expect.objectContaining({ tagIds: [tag.id] }));
+      expect(ownerAlbumInfo.assetCount).toBeGreaterThanOrEqual(1);
+      expect(ownerAlbumInfo.albumThumbnailAssetId).toBe(ownerAsset.id);
+
+      // Share with the recipient as a Viewer.
+      await addUsersToAlbum(
+        {
+          id: smartAlbum.id,
+          addUsersDto: { albumUsers: [{ userId: recipient.userId, role: AlbumUserRole.Viewer }] },
+        },
+        { headers: asBearerAuth(owner.accessToken) },
+      );
+
+      // Recipient (Viewer) sees the smart album in its album list with the smart-album metadata.
+      const recipientAlbums = await getAllAlbums({}, { headers: asBearerAuth(recipient.accessToken) });
+      const sharedSmartAlbum = recipientAlbums.find((a) => a.id === smartAlbum.id);
+      expect(sharedSmartAlbum).toBeDefined();
+      expect(sharedSmartAlbum).toEqual(
+        expect.objectContaining({
+          kind: AlbumKind.Smart,
+          assetCount: ownerAlbumInfo.assetCount,
+          albumThumbnailAssetId: ownerAsset.id,
+        }),
+      );
+
+      // Recipient fetching by id sees the filter (smart-album filter is exposed to shared users).
+      const recipientAlbumInfo = await getAlbumInfo(
+        { id: smartAlbum.id },
+        { headers: asBearerAuth(recipient.accessToken) },
+      );
+      expect(recipientAlbumInfo.filter).toEqual(expect.objectContaining({ tagIds: [tag.id] }));
+
+      // Recipient can pull timeline buckets scoped to the smart album.
+      const recipientBuckets = await getTimeBuckets(
+        { albumId: smartAlbum.id },
+        { headers: asBearerAuth(recipient.accessToken) },
+      );
+      expect(recipientBuckets.length).toBeGreaterThan(0);
+      expect(recipientBuckets.reduce((sum, b) => sum + b.count, 0)).toBeGreaterThanOrEqual(1);
+
+      // Smart-album membership feeds the asset access checks: the recipient can read the
+      // owner's matched asset (thumbnails/detail/download all route through this permission).
+      const recipientAssetInfo = await getAssetInfo(
+        { id: ownerAsset.id },
+        { headers: asBearerAuth(recipient.accessToken) },
+      );
+      expect(recipientAssetInfo.id).toBe(ownerAsset.id);
+
+      // Recipient is still a Viewer: PUT /albums/:id/assets is rejected by access control
+      // before the smart-album kind check has a chance to run.
+      const recipientAsset = await utils.createAsset(recipient.accessToken);
+      const viewerAttempt = await request(app)
+        .put(`/albums/${smartAlbum.id}/assets`)
+        .set('Authorization', `Bearer ${recipient.accessToken}`)
+        .send({ ids: [recipientAsset.id] });
+      expect(viewerAttempt.status).toBe(400);
+      expect(viewerAttempt.body).toEqual(errorDto.badRequest('Not found or no albumAsset.create access'));
+
+      // Viewer is the only sharable smart-album role: promoting the recipient to Editor
+      // (filter mutation) or Owner (breaks the single-owner evaluation assumption) is rejected.
+      for (const role of [AlbumUserRole.Editor, AlbumUserRole.Owner]) {
+        const promoteAttempt = await request(app)
+          .put(`/albums/${smartAlbum.id}/user/${recipient.userId}`)
+          .set('Authorization', `Bearer ${owner.accessToken}`)
+          .send({ role });
+        expect(promoteAttempt.status).toBe(400);
+        expect(promoteAttempt.body).toEqual(errorDto.badRequest('Smart albums only support the viewer role'));
+      }
+
+      // A public shared link on the smart album grants asset access through the same
+      // filter-membership check as logged-in sharees.
+      const sharedLink = await utils.createSharedLink(owner.accessToken, {
+        type: SharedLinkType.Album,
+        albumId: smartAlbum.id,
+      });
+      const linkAssetInfo = await request(app).get(`/assets/${ownerAsset.id}`).query({ key: sharedLink.key });
+      expect(linkAssetInfo.status).toBe(200);
+      expect(linkAssetInfo.body.id).toBe(ownerAsset.id);
+
+      // Even the owner cannot add assets directly - smart albums are read-only.
+      const ownerAttempt = await request(app)
+        .put(`/albums/${smartAlbum.id}/assets`)
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .send({ ids: [ownerAsset.id] });
+      expect(ownerAttempt.status).toBe(400);
+      expect(ownerAttempt.body).toEqual(errorDto.badRequest('Cannot add assets to a smart album'));
     });
   });
 });

@@ -37,6 +37,7 @@
   import { TimelineManager } from '$lib/managers/timeline-manager/timeline-manager.svelte';
   import type { TimelineAsset } from '$lib/managers/timeline-manager/types';
   import AlbumOptionsModal from '$lib/modals/AlbumOptionsModal.svelte';
+  import EditSmartAlbumFilterModal from '$lib/modals/EditSmartAlbumFilterModal.svelte';
   import { Route } from '$lib/route';
   import {
     getAlbumActions,
@@ -50,7 +51,14 @@
   import { handlePromiseError } from '$lib/utils';
   import { handleError } from '$lib/utils/handle-error';
   import { isAlbumsRoute, navigate, type AssetGridRouteSearchParams } from '$lib/utils/navigation';
-  import { AlbumUserRole, AssetVisibility, getAlbumInfo, updateAlbumInfo, type AlbumResponseDto } from '@immich/sdk';
+  import {
+    AlbumKind,
+    AlbumUserRole,
+    AssetVisibility,
+    getAlbumInfo,
+    updateAlbumInfo,
+    type AlbumResponseDto,
+  } from '@immich/sdk';
   import {
     ActionButton,
     CommandPaletteDefaultProvider,
@@ -63,6 +71,7 @@
     mdiAccountEye,
     mdiAccountEyeOutline,
     mdiArrowLeft,
+    mdiAutoFix,
     mdiCogOutline,
     mdiDeleteOutline,
     mdiDotsHorizontal,
@@ -242,6 +251,14 @@
   onDestroy(() => activityManager.reset());
 
   const isOwned = $derived(album.albumUsers[0].user.id === authManager.user.id);
+  const isSmart = $derived(album.kind === AlbumKind.Smart);
+
+  const handleEditFilter = async () => {
+    const updated = await modalManager.show(EditSmartAlbumFilterModal, { album });
+    if (updated) {
+      await refreshAlbum();
+    }
+  };
 
   let showActivityStatus = $derived(
     album.albumUsers.length > 1 &&
@@ -335,7 +352,7 @@
   onAlbumUserDelete={refreshAlbum}
   {onAlbumUpdate}
 />
-<CommandPaletteDefaultProvider name={$t('album')} actions={[AddAssets, Upload, Close]} />
+<CommandPaletteDefaultProvider name={$t('album')} actions={isSmart ? [Close] : [AddAssets, Upload, Close]} />
 
 <div class="flex overflow-hidden" use:scrollMemoryClearer={{ routeStartsWith: Route.albums() }}>
   <div class="relative w-full shrink">
@@ -415,10 +432,11 @@
                 {isOwned}
                 bind:description={() => album.description, (description) => (album = { ...album, description })}
               />
+
             </section>
           {/if}
 
-          {#if album.assetCount === 0}
+          {#if album.assetCount === 0 && !isSmart}
             <section id="empty-album" class="mt-50 flex place-content-center place-items-center">
               <div class="w-75">
                 <p class="text-xs uppercase dark:text-immich-dark-fg">{$t('add_photos')}</p>
@@ -489,7 +507,7 @@
             <TagAction menuItem />
           {/if}
 
-          {#if isOwned || assetMultiSelectManager.isAllUserOwned}
+          {#if (isOwned || assetMultiSelectManager.isAllUserOwned) && !isSmart}
             <RemoveFromAlbum menuItem bind:album onRemove={handleRemoveAssets} />
           {/if}
           {#if assetMultiSelectManager.isAllUserOwned}
@@ -503,7 +521,7 @@
           {#snippet trailing()}
             <ActionButton action={Cast} />
 
-            {#if isEditor}
+            {#if isEditor && !isSmart}
               <IconButton
                 variant="ghost"
                 shape="round"
@@ -571,6 +589,14 @@
                     icon={mdiCogOutline}
                     text={$t('options')}
                     onClick={() => modalManager.show(AlbumOptionsModal, { album })}
+                  />
+                {/if}
+
+                {#if isOwned && isSmart}
+                  <MenuOption
+                    icon={mdiAutoFix}
+                    text={$t('smart_album_edit_filter')}
+                    onClick={handleEditFilter}
                   />
                 {/if}
 

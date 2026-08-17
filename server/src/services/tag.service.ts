@@ -14,6 +14,7 @@ import {
 } from 'src/dtos/tag.dto';
 import { JobName, JobStatus, Permission, QueueName } from 'src/enum';
 import { TagAssetTable } from 'src/schema/tables/tag-asset.table';
+import { AlbumService } from 'src/services/album.service';
 import { BaseService } from 'src/services/base.service';
 import { addAssets, removeAssets } from 'src/utils/asset.util';
 import { updateLockedColumns } from 'src/utils/database';
@@ -74,6 +75,11 @@ export class TagService extends BaseService {
     // TODO sync tag changes for affected assets
 
     await this.tagRepository.delete(id);
+
+    // Self-heal smart album filters that still reference the deleted tag id. With AND
+    // semantics across tagIds, a dangling reference would otherwise make the album match
+    // nothing. Safe wrapper: failure here must not abort the tag delete from the user's POV.
+    await BaseService.create(AlbumService, this).pruneTagIdsFromSmartAlbumsSafe([id]);
   }
 
   async bulkTagAssets(auth: AuthDto, dto: TagBulkAssetsDto): Promise<TagBulkAssetsResponseDto> {
@@ -90,10 +96,14 @@ export class TagService extends BaseService {
     }
 
     const results = await this.tagRepository.upsertAssetIds(items);
-    for (const assetId of new Set(results.map((item) => item.assetId))) {
+    const affectedAssetIds = [...new Set(results.map((item) => item.assetId))];
+    for (const assetId of affectedAssetIds) {
       await this.updateTags(assetId);
       await this.eventRepository.emit('AssetTag', { assetId });
     }
+
+    // Tag membership shifts can change smart-album results that filter by tagIds.
+    await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetIdsSafe(affectedAssetIds);
 
     return { count: results.length };
   }
@@ -107,12 +117,16 @@ export class TagService extends BaseService {
       { parentId: id, assetIds: dto.ids },
     );
 
+    const taggedAssetIds: string[] = [];
     for (const { id: assetId, success } of results) {
       if (success) {
         await this.updateTags(assetId);
         await this.eventRepository.emit('AssetTag', { assetId });
+        taggedAssetIds.push(assetId);
       }
     }
+
+    await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetIdsSafe(taggedAssetIds);
 
     return results;
   }
@@ -126,19 +140,27 @@ export class TagService extends BaseService {
       { parentId: id, assetIds: dto.ids, canAlwaysRemove: Permission.TagDelete },
     );
 
+    const untaggedAssetIds: string[] = [];
     for (const { id: assetId, success } of results) {
       if (success) {
         await this.updateTags(assetId);
         await this.eventRepository.emit('AssetUntag', { assetId });
+        untaggedAssetIds.push(assetId);
       }
     }
+
+    await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetIdsSafe(untaggedAssetIds);
 
     return results;
   }
 
   @OnJob({ name: JobName.TagCleanup, queue: QueueName.BackgroundTask })
   async handleTagCleanup() {
-    await this.tagRepository.deleteEmptyTags();
+    const deletedIds = await this.tagRepository.deleteEmptyTags();
+    if (deletedIds.length > 0) {
+      // Self-heal any smart album filters that still reference the cleaned-up tag ids.
+      await BaseService.create(AlbumService, this).pruneTagIdsFromSmartAlbumsSafe(deletedIds);
+    }
     return JobStatus.Success;
   }
 

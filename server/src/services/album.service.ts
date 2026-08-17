@@ -14,12 +14,57 @@ import {
 import { BulkIdErrorReason, BulkIdResponseDto, BulkIdsDto } from 'src/dtos/asset-ids.response.dto';
 import { AuthDto } from 'src/dtos/auth.dto';
 import { MapMarkerResponseDto } from 'src/dtos/map.dto';
-import { AlbumUserRole, Permission } from 'src/enum';
+import {
+  isEmptySmartAlbumFilter,
+  SmartAlbumFilter,
+  toEvaluableSmartAlbumFilter,
+} from 'src/dtos/smart-album-filter.dto';
+import { AlbumKind, AlbumUserRole, Permission } from 'src/enum';
 import { AlbumAssetCount, AlbumInfoOptions } from 'src/repositories/album.repository';
 import { BaseService } from 'src/services/base.service';
 import { addAssets, removeAssets } from 'src/utils/asset.util';
 import { asDateString } from 'src/utils/date';
 import { getPreferences } from 'src/utils/preferences';
+
+interface SmartAlbumCachedMetadata {
+  cachedAssetCount: number;
+  cachedThumbnailAssetId: string | null;
+  cachedStartDate: string | null;
+  cachedEndDate: string | null;
+  cacheComputedAt: Date;
+}
+
+const toDateOnly = (d: Date) => d.toISOString().slice(0, 10);
+
+// Display metadata for a smart album that must present as empty (missing or unevaluable
+// filter). Served instead of the cache, whose values may predate the filter becoming
+// unevaluable and still describe broad results.
+const emptySmartAlbumDisplayMetadata = {
+  cachedAssetCount: 0,
+  cachedThumbnailAssetId: null,
+  cachedStartDate: null,
+  cachedEndDate: null,
+};
+
+const isSmartAlbumCacheStale = (album: {
+  cacheComputedAt?: Date | string | null;
+  cacheInvalidatedAt?: Date | string | null;
+}) => {
+  if (album.cacheComputedAt == null) {
+    return true;
+  }
+  if (album.cacheInvalidatedAt == null) {
+    return false;
+  }
+  // After hydration from a JSON-shallow context, timestamps may be strings.
+  const computed =
+    album.cacheComputedAt instanceof Date ? album.cacheComputedAt.getTime() : Date.parse(album.cacheComputedAt);
+  const invalidated =
+    album.cacheInvalidatedAt instanceof Date
+      ? album.cacheInvalidatedAt.getTime()
+      : Date.parse(album.cacheInvalidatedAt);
+  return invalidated > computed;
+};
 
 @Injectable()
 export class AlbumService extends BaseService {
@@ -59,15 +104,41 @@ export class AlbumService extends BaseService {
       albumMetadata[metadata.albumId] = metadata;
     }
 
-    return albums.map((album) => ({
-      ...mapAlbum(album),
-      sharedLinks: undefined,
-      startDate: asDateString(albumMetadata[album.id]?.startDate ?? undefined),
-      endDate: asDateString(albumMetadata[album.id]?.endDate ?? undefined),
-      assetCount: albumMetadata[album.id]?.assetCount ?? 0,
-      // lastModifiedAssetTimestamp is only used in mobile app, please remove if not need
-      lastModifiedAssetTimestamp: asDateString(albumMetadata[album.id]?.lastModifiedAssetTimestamp ?? undefined),
-    }));
+    // For smart albums, serve the list-view metadata (count, thumbnail, date range) from the
+    // per-album cache stored on the album row. Recompute only when the cache is stale or missing.
+    // See `invalidateSmartAlbumsForAssetsSafe` for the invalidation side.
+    for (const album of albums) {
+      if (album.kind !== AlbumKind.Smart) {
+        continue;
+      }
+      // A missing/unevaluable filter or no resolvable owner (corrupt data) presents as
+      // empty regardless of cache freshness: the cached values may predate the album
+      // becoming unevaluable and still describe broad results.
+      const albumOwnerId = album.albumUsers?.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
+      if (!albumOwnerId || !album.filter || !toEvaluableSmartAlbumFilter(album.filter)) {
+        Object.assign(album, emptySmartAlbumDisplayMetadata);
+        continue;
+      }
+      if (!isSmartAlbumCacheStale(album)) {
+        continue;
+      }
+      const fresh = await this.recomputeSmartAlbumCache(album.id, albumOwnerId, album.filter);
+      Object.assign(album, fresh);
+    }
+
+    return albums.map((album) => {
+      const isSmart = album.kind === AlbumKind.Smart;
+      return {
+        ...mapAlbum(album),
+        sharedLinks: undefined,
+        albumThumbnailAssetId: isSmart ? (album.cachedThumbnailAssetId ?? null) : album.albumThumbnailAssetId,
+        startDate: asDateString((isSmart ? album.cachedStartDate : albumMetadata[album.id]?.startDate) ?? undefined),
+        endDate: asDateString((isSmart ? album.cachedEndDate : albumMetadata[album.id]?.endDate) ?? undefined),
+        assetCount: isSmart ? (album.cachedAssetCount ?? 0) : (albumMetadata[album.id]?.assetCount ?? 0),
+        // lastModifiedAssetTimestamp is only used in mobile app, please remove if not need
+        lastModifiedAssetTimestamp: asDateString(albumMetadata[album.id]?.lastModifiedAssetTimestamp ?? undefined),
+      };
+    });
   }
 
   async get(auth: AuthDto, id: string): Promise<AlbumResponseDto> {
@@ -80,11 +151,32 @@ export class AlbumService extends BaseService {
     const hasSharedLink = album.sharedLinks && album.sharedLinks.length > 0;
     const isShared = hasSharedUsers || hasSharedLink;
 
+    // Single-album views always recompute. The cache exists primarily to keep the Albums *list*
+    // page fast (no N searches per page); for a single-album view, the cost of one search query
+    // is negligible and the freshness guarantee is worth more than the saving. Side-effect: this
+    // self-heals any stale-cache state we missed via an unhooked write path.
+    if (album.kind === AlbumKind.Smart) {
+      const ownerId = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
+      if (album.filter && ownerId) {
+        // recomputeSmartAlbumCache itself fails closed (persists zeros) for an
+        // unevaluable filter.
+        const fresh = await this.recomputeSmartAlbumCache(album.id, ownerId, album.filter);
+        Object.assign(album, fresh);
+      } else {
+        // No filter / no resolvable owner: present as empty rather than serve whatever
+        // the cache last recorded.
+        Object.assign(album, emptySmartAlbumDisplayMetadata);
+      }
+    }
+
+    const isSmart = album.kind === AlbumKind.Smart;
+
     return {
       ...mapAlbum(album),
-      startDate: asDateString(albumMetadataForIds?.startDate ?? undefined),
-      endDate: asDateString(albumMetadataForIds?.endDate ?? undefined),
-      assetCount: albumMetadataForIds?.assetCount ?? 0,
+      albumThumbnailAssetId: isSmart ? (album.cachedThumbnailAssetId ?? null) : album.albumThumbnailAssetId,
+      startDate: asDateString((isSmart ? album.cachedStartDate : albumMetadataForIds?.startDate) ?? undefined),
+      endDate: asDateString((isSmart ? album.cachedEndDate : albumMetadataForIds?.endDate) ?? undefined),
+      assetCount: isSmart ? (album.cachedAssetCount ?? 0) : (albumMetadataForIds?.assetCount ?? 0),
       lastModifiedAssetTimestamp: asDateString(albumMetadataForIds?.lastModifiedAssetTimestamp ?? undefined),
       contributorCounts: isShared ? await this.albumRepository.getContributorCounts(album.id) : undefined,
     };
@@ -97,11 +189,55 @@ export class AlbumService extends BaseService {
       return [];
     }
 
+    // Smart albums resolve markers from the filter. A missing/unevaluable filter (e.g. a
+    // legacy row whose only fields were sanitized away) has no markers - explicitly, never
+    // via the album_asset path, where legacy/corrupt rows would otherwise surface.
+    const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
+    if (album.kind === AlbumKind.Smart) {
+      const ownerId = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
+      const filter = album.filter && ownerId ? toEvaluableSmartAlbumFilter(album.filter) : null;
+      if (!ownerId || !filter) {
+        return [];
+      }
+      return this.mapRepository.getMapMarkersForSearch({
+        ...filter,
+        userIds: [ownerId],
+      });
+    }
+
     return this.mapRepository.getAlbumMapMarkers(id);
   }
 
   async create(auth: AuthDto, dto: CreateAlbumDto): Promise<AlbumResponseDto> {
     const albumUsers = dto.albumUsers || [];
+    const kind = dto.kind ?? AlbumKind.Regular;
+    const filter = kind === AlbumKind.Smart ? (dto.filter ?? null) : null;
+
+    if (kind === AlbumKind.Smart && !dto.filter) {
+      throw new BadRequestException('Smart albums require a filter');
+    }
+
+    // An empty filter matches the owner's entire timeline - almost always an accident
+    // (e.g. a semantic-only search saved as a smart album), and once shared it exposes
+    // the whole library.
+    if (kind === AlbumKind.Smart && dto.filter && isEmptySmartAlbumFilter(dto.filter)) {
+      throw new BadRequestException('Smart album filter must contain at least one criterion');
+    }
+
+    if (kind === AlbumKind.Regular && dto.filter) {
+      throw new BadRequestException('Filter is only valid for smart albums');
+    }
+
+    if (kind === AlbumKind.Smart && dto.assetIds && dto.assetIds.length > 0) {
+      throw new BadRequestException('Smart albums cannot be created with initial assetIds');
+    }
+
+    // Smart albums are read-only and single-owner, so shares collapse to Viewer. An Editor
+    // could broaden the filter and browse the owner's whole library; a second Owner breaks
+    // the single-owner assumption used to resolve whose library the filter runs against.
+    if (kind === AlbumKind.Smart && albumUsers.some(({ role }) => role !== AlbumUserRole.Viewer)) {
+      throw new BadRequestException('Smart albums only support the viewer role');
+    }
 
     for (const { userId } of albumUsers) {
       const exists = await this.userRepository.get(userId, {});
@@ -130,6 +266,8 @@ export class AlbumService extends BaseService {
         description: dto.description,
         albumThumbnailAssetId: assetIds[0] || null,
         order: getPreferences(userMetadata).albums.defaultAssetOrder,
+        kind,
+        filter,
       },
       assetIds,
       [{ userId: auth.user.id, role: AlbumUserRole.Owner }, ...albumUsers],
@@ -148,6 +286,27 @@ export class AlbumService extends BaseService {
 
     const album = await this.findOrFail(id, auth.user.id, { withAssets: true });
 
+    if ('kind' in dto && dto.kind !== undefined && dto.kind !== album.kind) {
+      throw new BadRequestException('Album kind is immutable');
+    }
+
+    if (dto.filter !== undefined && album.kind !== AlbumKind.Smart) {
+      throw new BadRequestException('Filter can only be set on smart albums');
+    }
+
+    // Filter mutation is owner-only. Smart-album reads always evaluate against the owner's
+    // library, so anyone else who can broaden the filter can browse the owner's assets.
+    if (dto.filter !== undefined) {
+      const ownerId = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
+      if (ownerId !== auth.user.id) {
+        throw new BadRequestException('Only the album owner can update a smart album filter');
+      }
+      // An empty filter matches the owner's entire timeline; see create().
+      if (isEmptySmartAlbumFilter(dto.filter)) {
+        throw new BadRequestException('Smart album filter must contain at least one criterion');
+      }
+    }
+
     if (dto.albumThumbnailAssetId) {
       const results = await this.albumRepository.getAssetIds(id, [dto.albumThumbnailAssetId]);
       if (results.size === 0) {
@@ -163,9 +322,16 @@ export class AlbumService extends BaseService {
         albumThumbnailAssetId: dto.albumThumbnailAssetId,
         isActivityEnabled: dto.isActivityEnabled,
         order: dto.order,
+        ...(dto.filter === undefined ? {} : { filter: dto.filter }),
       },
       auth.user.id,
     );
+
+    if (dto.filter !== undefined) {
+      // The list view serves cached metadata; a changed filter means the cached count,
+      // thumbnail, and date range no longer describe the album.
+      await this.albumRepository.markCacheInvalidated([album.id], new Date());
+    }
 
     return mapAlbum({ ...updatedAlbum, assets: album.assets });
   }
@@ -178,6 +344,10 @@ export class AlbumService extends BaseService {
   async addAssets(auth: AuthDto, id: string, dto: BulkIdsDto): Promise<BulkIdResponseDto[]> {
     const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
     await this.requireAccess({ auth, permission: Permission.AlbumAssetCreate, ids: [id] });
+
+    if (album.kind === AlbumKind.Smart) {
+      throw new BadRequestException('Cannot add assets to a smart album');
+    }
 
     const results = await addAssets(
       auth,
@@ -229,15 +399,28 @@ export class AlbumService extends BaseService {
       return results;
     }
 
+    // Smart albums are read-only; the bulk path must enforce the same guard as addAssets().
+    const targetAlbums = [];
+    for (const albumId of allowedAlbumIds) {
+      const album = await this.findOrFail(albumId, auth.user.id, { withAssets: false });
+      if (album.kind !== AlbumKind.Smart) {
+        targetAlbums.push(album);
+      }
+    }
+    if (targetAlbums.length === 0) {
+      results.error = BulkIdErrorReason.NO_PERMISSION;
+      return results;
+    }
+
     const albumAssetValues: { albumId: string; assetId: string }[] = [];
     const events: { id: string; recipients: string[] }[] = [];
-    for (const albumId of allowedAlbumIds) {
+    for (const album of targetAlbums) {
+      const albumId = album.id;
       const existingAssetIds = await this.albumRepository.getAssetIds(albumId, [...allowedAssetIds]);
       const notPresentAssetIds = [...allowedAssetIds].filter((id) => !existingAssetIds.has(id));
       if (notPresentAssetIds.length === 0) {
         continue;
       }
-      const album = await this.findOrFail(albumId, auth.user.id, { withAssets: false });
       results.error = undefined;
       results.success = true;
 
@@ -271,6 +454,11 @@ export class AlbumService extends BaseService {
     await this.requireAccess({ auth, permission: Permission.AlbumAssetDelete, ids: [id] });
 
     const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
+
+    if (album.kind === AlbumKind.Smart) {
+      throw new BadRequestException('Cannot remove assets from a smart album');
+    }
+
     const results = await removeAssets(
       auth,
       { access: this.accessRepository, bulk: this.albumRepository },
@@ -290,10 +478,20 @@ export class AlbumService extends BaseService {
 
     const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
 
+    const isSmart = album.kind === AlbumKind.Smart;
+
     for (const { userId, role } of albumUsers) {
       if (role === AlbumUserRole.Owner) {
         throw new BadRequestException('Cannot add another owner');
       }
+
+      // Smart albums are read-only, so shares collapse to Owner + Viewer (an Editor could
+      // broaden the filter). Without an explicit role the DB default is Editor, so a smart
+      // album must default to Viewer instead.
+      if (isSmart && role === AlbumUserRole.Editor) {
+        throw new BadRequestException('Smart albums only support the viewer role');
+      }
+      const effectiveRole = role ?? (isSmart ? AlbumUserRole.Viewer : undefined);
 
       const exists = album.albumUsers.find(({ user: { id } }) => id === userId);
       if (exists) {
@@ -306,7 +504,7 @@ export class AlbumService extends BaseService {
         throw new BadRequestException('Invalid user');
       }
 
-      await this.albumUserRepository.create({ userId, albumId: id, role });
+      await this.albumUserRepository.create({ userId, albumId: id, role: effectiveRole });
       await this.eventRepository.emit('AlbumInvite', { id, userId, senderName: auth.user.name });
     }
 
@@ -342,6 +540,23 @@ export class AlbumService extends BaseService {
 
   async updateUser(auth: AuthDto, id: string, userId: string, dto: UpdateAlbumUserDto): Promise<void> {
     await this.requireAccess({ auth, permission: Permission.AlbumShare, ids: [id] });
+
+    const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
+    if (album.kind === AlbumKind.Smart) {
+      // Viewer is the only sharable role on a smart album: an Editor could broaden the filter,
+      // and a second Owner breaks the single-owner assumption every smart-album evaluation
+      // path relies on when resolving whose library the filter runs against.
+      if (dto.role !== AlbumUserRole.Viewer) {
+        throw new BadRequestException('Smart albums only support the viewer role');
+      }
+      // ... and by the same assumption, the owner row itself is immutable: demoting the sole
+      // owner to viewer would leave the album with no library to evaluate against.
+      const target = album.albumUsers.find(({ user: { id: albumUserId } }) => albumUserId === userId);
+      if (target?.role === AlbumUserRole.Owner) {
+        throw new BadRequestException('Cannot change the role of the smart album owner');
+      }
+    }
+
     await this.albumUserRepository.update({ albumId: id, userId }, { role: dto.role });
   }
 
@@ -351,5 +566,238 @@ export class AlbumService extends BaseService {
       throw new BadRequestException('Album not found');
     }
     return album;
+  }
+
+  /**
+   * Recompute smart-album list-view metadata against the live search index and persist
+   * the result on the album row. Returns the freshly computed values.
+   */
+  private async recomputeSmartAlbumCache(
+    albumId: string,
+    ownerId: string,
+    filter: SmartAlbumFilter,
+  ): Promise<SmartAlbumCachedMetadata> {
+    // Fail closed: an unevaluable filter (e.g. a legacy row whose only fields were
+    // sanitized away) matches nothing, not the owner's entire timeline.
+    const evaluable = toEvaluableSmartAlbumFilter(filter);
+    if (!evaluable) {
+      const empty: SmartAlbumCachedMetadata = {
+        cachedAssetCount: 0,
+        cachedThumbnailAssetId: null,
+        cachedStartDate: null,
+        cachedEndDate: null,
+        cacheComputedAt: new Date(),
+      };
+      await this.albumRepository.updateCachedMetadata(albumId, empty);
+      return empty;
+    }
+
+    const options = { ...evaluable, userIds: [ownerId] };
+    // Count and date range are aggregates so albums beyond any page size stay accurate;
+    // only the thumbnail needs an actual row (most recent match).
+    const [{ total }, range, { items }] = await Promise.all([
+      this.searchRepository.searchStatistics(options),
+      this.searchRepository.searchDateRange(options),
+      this.searchRepository.searchMetadata({ page: 1, size: 1 }, options),
+    ]);
+    const toDateOnlyOrNull = (raw: Date | string | null) => {
+      if (raw == null) {
+        return null;
+      }
+      const date = raw instanceof Date ? raw : new Date(raw);
+      return Number.isNaN(date.getTime()) ? null : toDateOnly(date);
+    };
+    const fresh: SmartAlbumCachedMetadata = {
+      cachedAssetCount: Number(total),
+      cachedThumbnailAssetId: items[0]?.id ?? null,
+      cachedStartDate: toDateOnlyOrNull(range.startDate),
+      cachedEndDate: toDateOnlyOrNull(range.endDate),
+      cacheComputedAt: new Date(),
+    };
+    await this.albumRepository.updateCachedMetadata(albumId, fresh);
+    return fresh;
+  }
+
+  /**
+   * Mark smart-album caches as stale after asset writes owned by `ownerId`.
+   *
+   * Invalidation is deliberately blanket (every smart album of the owner) rather than
+   * per-filter: a write can REMOVE an asset from an album's matches (unfavorite, untag,
+   * trash, date/rating edits), and a post-write match check cannot see removals - it would
+   * leave the cached list count/date range stale. A blanket mark is also cheaper on the
+   * write path (one UPDATE instead of one search per smart album), and recompute is a lazy
+   * aggregate on the next Albums-list view.
+   *
+   * Safe wrapper: failures are logged but do not throw.
+   */
+  async invalidateSmartAlbumsForAssetsSafe(ownerId: string, assetIds: readonly string[]): Promise<void> {
+    if (assetIds.length === 0) {
+      return;
+    }
+    await this.invalidateAllSmartAlbumsForOwnerSafe(ownerId);
+  }
+
+  /**
+   * Invalidate the cache for every smart album owned by `ownerId`.
+   * Safe wrapper: failures are logged but do not throw.
+   */
+  async invalidateAllSmartAlbumsForOwnerSafe(ownerId: string): Promise<void> {
+    try {
+      const smartAlbums = await this.albumRepository.getSmartAlbumsForOwner(ownerId);
+      if (smartAlbums.length === 0) {
+        return;
+      }
+      await this.albumRepository.markCacheInvalidated(
+        smartAlbums.map((a) => a.id),
+        new Date(),
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Failed to invalidate smart-album caches for owner ${ownerId}: ${(error as Error)?.message ?? error}`,
+      );
+    }
+  }
+
+  /**
+   * Look up each asset's owner and invalidate that owner's smart-album caches (blanket,
+   * see invalidateSmartAlbumsForAssetsSafe for why). Use this when callers only have
+   * assetIds (e.g. tag/untag events) and not the owner.
+   * Safe wrapper: failures are logged but do not throw.
+   */
+  async invalidateSmartAlbumsForAssetIdsSafe(assetIds: readonly string[]): Promise<void> {
+    if (assetIds.length === 0) {
+      return;
+    }
+    try {
+      const assets = await this.assetRepository.getByIds([...assetIds]);
+      const ownerIds = new Set(assets.map((asset) => asset.ownerId));
+      for (const ownerId of ownerIds) {
+        await this.invalidateAllSmartAlbumsForOwnerSafe(ownerId);
+      }
+    } catch (error: unknown) {
+      this.logger.warn(`Failed to load assets for smart-album invalidation: ${(error as Error)?.message ?? error}`);
+    }
+  }
+
+  /**
+   * Mark smart-album caches as stale for any smart album owned by `ownerId` whose stored
+   * `filter.personIds` references ANY of the given person ids. Use this on a person-merge
+   * write path with `[sourceId, targetId]` — the narrow JSONB overlap check is cheaper than
+   * a full per-asset filter recheck and is sufficient because merging only shifts membership
+   * for albums that already pin on one of those two persons.
+   */
+  async invalidateSmartAlbumsForPersonMerge(ownerId: string, personIds: string[]): Promise<void> {
+    if (personIds.length === 0) {
+      return;
+    }
+    const albums = (await this.albumRepository.getSmartAlbumsForOwnerByPersonIds(ownerId, personIds)) ?? [];
+    if (albums.length === 0) {
+      return;
+    }
+    await this.albumRepository.markCacheInvalidated(
+      albums.map((a) => a.id),
+      new Date(),
+    );
+  }
+
+  /**
+   * Safe wrapper around `invalidateSmartAlbumsForPersonMerge`: failures are logged but not
+   * propagated, so a cache-invalidation failure cannot abort the merge.
+   */
+  async invalidateSmartAlbumsForPersonMergeSafe(ownerId: string, personIds: string[]): Promise<void> {
+    try {
+      await this.invalidateSmartAlbumsForPersonMerge(ownerId, personIds);
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Failed to invalidate smart-album caches for person merge (owner ${ownerId}): ${(error as Error)?.message ?? error}`,
+      );
+    }
+  }
+
+  /**
+   * Invalidate the cache for every active smart album that pins on `personIds`, across
+   * ALL owners. Used by system-wide face-reset jobs (force-detect / force-recognize)
+   * which wipe person-asset assignments globally, so any user's person-filtered smart
+   * album may have shifted membership.
+   */
+  async invalidateAllSmartAlbumsByPersonFilter(): Promise<void> {
+    await this.albumRepository.markAllSmartAlbumsWithPersonFilterInvalidated(new Date());
+  }
+
+  /**
+   * Safe wrapper around `invalidateAllSmartAlbumsByPersonFilter`: failures are logged
+   * but not propagated, so a cache-invalidation failure cannot abort the underlying job.
+   */
+  async invalidateAllSmartAlbumsByPersonFilterSafe(): Promise<void> {
+    try {
+      await this.invalidateAllSmartAlbumsByPersonFilter();
+    } catch (error: unknown) {
+      this.logger.error(
+        `Failed to invalidate smart albums for system-wide face wipe: ${(error as Error)?.message ?? error}`,
+      );
+    }
+  }
+
+  /**
+   * Splice the given deleted person ids out of `filter.personIds` on every smart album
+   * that references any of them, and bump `cacheInvalidatedAt` so the album is recomputed
+   * from the now-clean filter. With AND semantics across personIds, a dangling reference
+   * makes the album match nothing; pruning self-heals filters on person delete.
+   */
+  async prunePersonIdsFromSmartAlbums(deletedPersonIds: string[]): Promise<void> {
+    if (deletedPersonIds.length === 0) {
+      return;
+    }
+    const affected = await this.albumRepository.prunePersonIdsFromSmartAlbums(deletedPersonIds);
+    if (affected.length > 0) {
+      this.logger.debug(
+        `Pruned ${deletedPersonIds.length} deleted person id(s) from ${affected.length} smart album filter(s)`,
+      );
+    }
+  }
+
+  /**
+   * Safe wrapper around `prunePersonIdsFromSmartAlbums`: failures are logged but not
+   * propagated, so a smart-album filter cleanup failure cannot abort the person delete.
+   */
+  async prunePersonIdsFromSmartAlbumsSafe(deletedPersonIds: string[]): Promise<void> {
+    try {
+      await this.prunePersonIdsFromSmartAlbums(deletedPersonIds);
+    } catch (error: unknown) {
+      this.logger.error(
+        `Failed to prune deleted person ids from smart album filters: ${(error as Error)?.message ?? error}`,
+      );
+    }
+  }
+
+  /**
+   * Splice the given deleted tag ids out of `filter.tagIds` on every smart album that
+   * references any of them, and bump `cacheInvalidatedAt` so the album is recomputed
+   * from the now-clean filter.
+   */
+  async pruneTagIdsFromSmartAlbums(deletedTagIds: string[]): Promise<void> {
+    if (deletedTagIds.length === 0) {
+      return;
+    }
+    const affected = await this.albumRepository.pruneTagIdsFromSmartAlbums(deletedTagIds);
+    if (affected.length > 0) {
+      this.logger.debug(
+        `Pruned ${deletedTagIds.length} deleted tag id(s) from ${affected.length} smart album filter(s)`,
+      );
+    }
+  }
+
+  /**
+   * Safe wrapper around `pruneTagIdsFromSmartAlbums`: failures are logged but not
+   * propagated, so a smart-album filter cleanup failure cannot abort the tag delete.
+   */
+  async pruneTagIdsFromSmartAlbumsSafe(deletedTagIds: string[]): Promise<void> {
+    try {
+      await this.pruneTagIdsFromSmartAlbums(deletedTagIds);
+    } catch (error: unknown) {
+      this.logger.error(
+        `Failed to prune deleted tag ids from smart album filters: ${(error as Error)?.message ?? error}`,
+      );
+    }
   }
 }

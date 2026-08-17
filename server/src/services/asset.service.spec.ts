@@ -178,6 +178,19 @@ describe(AssetService.name, () => {
       expect(mocks.asset.update).toHaveBeenCalledWith({ id: asset.id, isFavorite: true });
     });
 
+    it('should invalidate smart-album caches after updating an asset', async () => {
+      const asset = AssetFactory.create();
+      mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set([asset.id]));
+      mocks.asset.getById.mockResolvedValue(getForAsset(asset));
+      mocks.asset.update.mockResolvedValue(getForAsset(asset));
+      // No smart albums means the invalidate path short-circuits without throwing.
+      mocks.album.getSmartAlbumsForOwner.mockResolvedValue([]);
+
+      await sut.update(authStub.admin, asset.id, { isFavorite: true });
+
+      expect(mocks.album.getSmartAlbumsForOwner).toHaveBeenCalledWith(asset.ownerId);
+    });
+
     it('should update the exif description', async () => {
       const asset = AssetFactory.create();
       mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set([asset.id]));
