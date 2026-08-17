@@ -1,16 +1,17 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { AuthDto } from 'src/dtos/auth.dto';
-import { SmartAlbumFilter, toEvaluableSmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
+import { toEvaluableSmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
 import { TimeBucketAssetDto, TimeBucketDto, TimeBucketsResponseDto } from 'src/dtos/time-bucket.dto';
 import { AlbumKind, AlbumUserRole, AssetVisibility, Permission } from 'src/enum';
 import { TimeBucketOptions } from 'src/repositories/asset.repository';
+import { AssetSearchBuilderOptions } from 'src/repositories/search.repository';
 import { BaseService } from 'src/services/base.service';
 import { requireElevatedPermission } from 'src/utils/access';
 import { getMyPartnerIds } from 'src/utils/asset.util';
 
 interface SmartAlbumContext {
-  filter: SmartAlbumFilter;
-  ownerId: string;
+  /** Owner-scoped membership filter, or null when the album must present as empty. */
+  assetFilter: AssetSearchBuilderOptions | null;
 }
 
 @Injectable()
@@ -25,10 +26,13 @@ export class TimelineService extends BaseService {
     // own visibility (timeline by default), so it intersects correctly with the request's.
     const smart = await this.loadSmartAlbumContext(dto.albumId);
     if (smart) {
+      if (!smart.assetFilter) {
+        return [];
+      }
       return await this.assetRepository.getTimeBuckets({
         ...timeBucketOptions,
         albumId: undefined,
-        assetFilter: { ...smart.filter, userIds: [smart.ownerId] },
+        assetFilter: smart.assetFilter,
       });
     }
 
@@ -42,12 +46,14 @@ export class TimelineService extends BaseService {
 
     const smart = await this.loadSmartAlbumContext(dto.albumId);
     if (smart) {
+      // An empty-presenting smart album still needs the repository's empty-bucket JSON
+      // shape; assetIds: [] matches nothing while keeping the payload authoritative.
       const bucket = await this.assetRepository.getTimeBucket(
         dto.timeBucket,
         {
           ...timeBucketOptions,
           albumId: undefined,
-          assetFilter: { ...smart.filter, userIds: [smart.ownerId] },
+          ...(smart.assetFilter ? { assetFilter: smart.assetFilter } : { assetIds: [] }),
         },
         auth,
       );
@@ -64,21 +70,16 @@ export class TimelineService extends BaseService {
       return null;
     }
     const album = await this.albumRepository.getById(albumId, { withAssets: false });
-    if (!album || album.kind !== AlbumKind.Smart || !album.filter) {
+    if (!album || album.kind !== AlbumKind.Smart) {
       return null;
     }
+    // Fail closed: a smart album with a missing/unevaluable filter (e.g. a legacy row whose
+    // only fields were sanitized away) or no resolvable owner presents as EMPTY. It must not
+    // fall through to the album_asset path - smart albums are supposed to have no rows
+    // there, but legacy/corrupt rows would otherwise become visible.
     const ownerId = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
-    if (!ownerId) {
-      return null;
-    }
-    const filter = toEvaluableSmartAlbumFilter(album.filter);
-    if (!filter) {
-      // Fail closed: a filter left without effective criteria (e.g. a legacy row whose only
-      // fields were sanitized away) must match nothing. Returning null routes the request
-      // through the regular album path, whose album_asset join is empty for a smart album.
-      return null;
-    }
-    return { filter, ownerId };
+    const filter = album.filter && ownerId ? toEvaluableSmartAlbumFilter(album.filter) : null;
+    return { assetFilter: filter && ownerId ? { ...filter, userIds: [ownerId] } : null };
   }
 
   private async buildTimeBucketOptions(auth: AuthDto, dto: TimeBucketDto): Promise<TimeBucketOptions> {

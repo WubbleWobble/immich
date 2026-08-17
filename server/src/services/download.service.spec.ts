@@ -1,7 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { Readable } from 'node:stream';
 import { DownloadResponseDto } from 'src/dtos/download.dto';
-import { AlbumKind, AlbumUserRole } from 'src/enum';
+import { AlbumKind, AlbumUserRole, AssetVisibility } from 'src/enum';
 import { DownloadService } from 'src/services/download.service';
 import { AlbumFactory } from 'test/factories/album.factory';
 import { AssetFactory } from 'test/factories/asset.factory';
@@ -279,6 +279,29 @@ describe(DownloadService.name, () => {
         expect.objectContaining({ isFavorite: true, userIds: [owner.id] }),
       );
       expect(mocks.downloadRepository.downloadAlbumId).not.toHaveBeenCalled();
+    });
+
+    it('should download nothing for a smart album with an unevaluable filter', async () => {
+      // Explicitly empty - never the album_asset path, where legacy/corrupt rows would
+      // otherwise surface.
+      const smartAlbum = AlbumFactory.from()
+        .kind(AlbumKind.Smart)
+        .filter({ visibility: AssetVisibility.Locked as never })
+        .build();
+
+      mocks.user.getMetadata.mockResolvedValue([]);
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([smartAlbum.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
+      mocks.downloadRepository.downloadAssetIds.mockReturnValue(makeStream([]));
+
+      await expect(sut.getDownloadInfo(authStub.admin, { albumId: smartAlbum.id })).resolves.toEqual({
+        totalSize: 0,
+        archives: [],
+      });
+
+      expect(mocks.downloadRepository.downloadAssetIds).toHaveBeenCalledWith([]);
+      expect(mocks.downloadRepository.downloadAlbumId).not.toHaveBeenCalled();
+      expect(mocks.downloadRepository.downloadSearchResults).not.toHaveBeenCalled();
     });
 
     it('should return a list of archives (userId)', async () => {

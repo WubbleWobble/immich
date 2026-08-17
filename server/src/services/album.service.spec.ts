@@ -114,6 +114,31 @@ describe(AlbumService.name, () => {
       );
     });
 
+    it('presents an unevaluable smart album as empty even when the cache looks fresh', async () => {
+      // The cached broad results may predate the filter becoming unevaluable; freshness
+      // must not resurrect them.
+      const smartAlbum = AlbumFactory.from()
+        .albumUser()
+        .kind(AlbumKind.Smart)
+        .filter({ visibility: AssetVisibility.Locked as never })
+        .build();
+      smartAlbum.cachedAssetCount = 42;
+      smartAlbum.cachedThumbnailAssetId = newUuid();
+      smartAlbum.cacheComputedAt = new Date('2026-05-22T10:00:00Z');
+      smartAlbum.cacheInvalidatedAt = null;
+      const { user: owner } = smartAlbum.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.album.getAll.mockResolvedValue([getForAlbum(smartAlbum)]);
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        { albumId: smartAlbum.id, assetCount: 0, startDate: null, endDate: null, lastModifiedAssetTimestamp: null },
+      ]);
+
+      const result = await sut.getAll(AuthFactory.create(owner), {});
+
+      expect(result[0].assetCount).toBe(0);
+      expect(result[0].albumThumbnailAssetId).toBeNull();
+      expect(mocks.search.searchStatistics).not.toHaveBeenCalled();
+    });
+
     it('serves smart album metadata from the cache when fresh', async () => {
       const cachedThumbnailAssetId = newUuid();
       const computedAt = new Date('2026-05-22T10:00:00Z');
@@ -1283,6 +1308,24 @@ describe(AlbumService.name, () => {
         album.id,
         expect.objectContaining({ cachedAssetCount: 0, cachedThumbnailAssetId: null }),
       );
+    });
+
+    it('presents a smart album without a filter as empty instead of serving the cache', async () => {
+      const album = AlbumFactory.from().albumUser().kind(AlbumKind.Smart).filter(null).build();
+      album.cachedAssetCount = 42;
+      album.cachedThumbnailAssetId = newUuid();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        { albumId: album.id, assetCount: 0, startDate: null, endDate: null, lastModifiedAssetTimestamp: null },
+      ]);
+
+      const result = await sut.get(AuthFactory.create(owner), album.id);
+
+      expect(result.assetCount).toBe(0);
+      expect(result.albumThumbnailAssetId).toBeNull();
+      expect(mocks.search.searchStatistics).not.toHaveBeenCalled();
     });
 
     it('recomputes smart album cache on get() even when cache is fresh by timestamp', async () => {

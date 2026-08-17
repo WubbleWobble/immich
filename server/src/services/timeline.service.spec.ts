@@ -327,23 +327,42 @@ describe(TimelineService.name, () => {
     });
 
     it('should fail closed when the legacy filter has no effective criteria left', async () => {
-      // Only field is stripped at evaluation time -> the album must match nothing. The
-      // service falls back to the regular album path, whose album_asset join is empty
-      // for a smart album.
+      // Only field is stripped at evaluation time -> the album presents as EMPTY, without
+      // touching the album_asset path (legacy/corrupt rows there must not surface).
       const smartAlbum = AlbumFactory.from({ id: 'smart-album-id' })
         .kind(AlbumKind.Smart)
         .filter({ visibility: AssetVisibility.Locked as never })
         .build();
       mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['smart-album-id']));
       mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
-      mocks.asset.getTimeBuckets.mockResolvedValue([]);
 
       const result = await sut.getTimeBuckets(authStub.admin, { albumId: 'smart-album-id' });
 
       expect(result).toEqual([]);
-      const options = mocks.asset.getTimeBuckets.mock.calls.at(-1)![0];
+      expect(mocks.asset.getTimeBuckets).not.toHaveBeenCalled();
+    });
+
+    it('getTimeBucket should present an unevaluable smart album as an empty bucket', async () => {
+      const smartAlbum = AlbumFactory.from({ id: 'smart-album-id' })
+        .kind(AlbumKind.Smart)
+        .filter({ visibility: AssetVisibility.Locked as never })
+        .build();
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['smart-album-id']));
+      mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
+      mocks.asset.getTimeBucket.mockResolvedValue({ assets: '{"id":[]}' });
+
+      const result = await sut.getTimeBucket(authStub.admin, {
+        albumId: 'smart-album-id',
+        timeBucket: '2024-12-01',
+      });
+
+      expect(JSON.parse(result)).toEqual(expect.objectContaining({ id: [] }));
+      // The repository produces the authoritative empty payload: match nothing via
+      // assetIds: [], never via the album_asset join.
+      const options = mocks.asset.getTimeBucket.mock.calls.at(-1)![1];
+      expect(options.assetIds).toEqual([]);
       expect(options).not.toHaveProperty('assetFilter');
-      expect(options.albumId).toBe('smart-album-id');
+      expect(options.albumId).toBeUndefined();
     });
 
     it('should strip trash filters from a legacy stored filter', async () => {

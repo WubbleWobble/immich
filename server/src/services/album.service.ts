@@ -36,6 +36,16 @@ interface SmartAlbumCachedMetadata {
 
 const toDateOnly = (d: Date) => d.toISOString().slice(0, 10);
 
+// Display metadata for a smart album that must present as empty (missing or unevaluable
+// filter). Served instead of the cache, whose values may predate the filter becoming
+// unevaluable and still describe broad results.
+const emptySmartAlbumDisplayMetadata = {
+  cachedAssetCount: 0,
+  cachedThumbnailAssetId: null,
+  cachedStartDate: null,
+  cachedEndDate: null,
+};
+
 const isSmartAlbumCacheStale = (album: {
   cacheComputedAt?: Date | string | null;
   cacheInvalidatedAt?: Date | string | null;
@@ -96,9 +106,16 @@ export class AlbumService extends BaseService {
 
     // For smart albums, serve the list-view metadata (count, thumbnail, date range) from the
     // per-album cache stored on the album row. Recompute only when the cache is stale or missing.
-    // See `invalidateSmartAlbumsForAsset` for the invalidation side.
+    // See `invalidateSmartAlbumsForAssetsSafe` for the invalidation side.
     for (const album of albums) {
-      if (album.kind !== AlbumKind.Smart || !album.filter) {
+      if (album.kind !== AlbumKind.Smart) {
+        continue;
+      }
+      // A missing/unevaluable filter presents as empty regardless of cache freshness: the
+      // cached values may predate the filter becoming unevaluable and still describe broad
+      // results.
+      if (!album.filter || !toEvaluableSmartAlbumFilter(album.filter)) {
+        Object.assign(album, emptySmartAlbumDisplayMetadata);
         continue;
       }
       if (!isSmartAlbumCacheStale(album)) {
@@ -141,11 +158,17 @@ export class AlbumService extends BaseService {
     // page fast (no N searches per page); for a single-album view, the cost of one search query
     // is negligible and the freshness guarantee is worth more than the saving. Side-effect: this
     // self-heals any stale-cache state we missed via an unhooked write path.
-    if (album.kind === AlbumKind.Smart && album.filter) {
+    if (album.kind === AlbumKind.Smart) {
       const ownerId = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
-      if (ownerId) {
+      if (album.filter && ownerId) {
+        // recomputeSmartAlbumCache itself fails closed (persists zeros) for an
+        // unevaluable filter.
         const fresh = await this.recomputeSmartAlbumCache(album.id, ownerId, album.filter);
         Object.assign(album, fresh);
+      } else {
+        // No filter / no resolvable owner: present as empty rather than serve whatever
+        // the cache last recorded.
+        Object.assign(album, emptySmartAlbumDisplayMetadata);
       }
     }
 
@@ -169,13 +192,13 @@ export class AlbumService extends BaseService {
       return [];
     }
 
-    // Smart albums have no album_asset rows; resolve markers from the filter instead.
+    // Smart albums resolve markers from the filter. A missing/unevaluable filter (e.g. a
+    // legacy row whose only fields were sanitized away) has no markers - explicitly, never
+    // via the album_asset path, where legacy/corrupt rows would otherwise surface.
     const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
-    if (album.kind === AlbumKind.Smart && album.filter) {
+    if (album.kind === AlbumKind.Smart) {
       const ownerId = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
-      // Fail closed: an unevaluable filter (e.g. a legacy row whose only fields were
-      // sanitized away) has no markers, not the whole library's.
-      const filter = toEvaluableSmartAlbumFilter(album.filter);
+      const filter = album.filter && ownerId ? toEvaluableSmartAlbumFilter(album.filter) : null;
       if (!ownerId || !filter) {
         return [];
       }

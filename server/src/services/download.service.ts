@@ -23,17 +23,20 @@ export class DownloadService extends BaseService {
     } else if (dto.albumId) {
       const albumId = dto.albumId;
       await this.requireAccess({ auth, permission: Permission.AlbumDownload, ids: [albumId] });
-      // Smart albums have no album_asset rows; stream membership from the filter instead.
-      // An unevaluable filter (e.g. a legacy row whose only fields were sanitized away)
-      // falls through to the empty album_asset join - it must download nothing, not the
-      // owner's entire timeline.
+      // Smart albums stream membership from the filter. A missing/unevaluable filter (e.g.
+      // a legacy row whose only fields were sanitized away) downloads NOTHING - explicitly,
+      // never via the album_asset path, where legacy/corrupt rows would otherwise surface.
       const album = await this.albumRepository.getById(albumId, { withAssets: false });
-      const ownerId = album?.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
-      const filter = album?.kind === AlbumKind.Smart && album.filter ? toEvaluableSmartAlbumFilter(album.filter) : null;
-      assets =
-        album?.kind === AlbumKind.Smart && filter && ownerId
-          ? this.downloadRepository.downloadSearchResults({ ...filter, userIds: [ownerId] })
-          : this.downloadRepository.downloadAlbumId(albumId);
+      if (album?.kind === AlbumKind.Smart) {
+        const ownerId = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
+        const filter = album.filter && ownerId ? toEvaluableSmartAlbumFilter(album.filter) : null;
+        assets =
+          filter && ownerId
+            ? this.downloadRepository.downloadSearchResults({ ...filter, userIds: [ownerId] })
+            : this.downloadRepository.downloadAssetIds([]);
+      } else {
+        assets = this.downloadRepository.downloadAlbumId(albumId);
+      }
     } else if (dto.userId) {
       const userId = dto.userId;
       await this.requireAccess({ auth, permission: Permission.TimelineDownload, ids: [userId] });
