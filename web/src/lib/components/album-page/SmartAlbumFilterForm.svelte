@@ -53,6 +53,52 @@
   }
 
   /**
+   * The SmartAlbumFilter fields the visual form can represent and (re)produces on submit.
+   * Everything else in a filter must be carried through untouched (see
+   * carriedSmartAlbumFilterFields) or it would be silently dropped on save.
+   */
+  export const FORM_MANAGED_FILTER_KEYS = [
+    'country',
+    'state',
+    'city',
+    'make',
+    'model',
+    'lensModel',
+    'takenAfter',
+    'takenBefore',
+    'visibility',
+    'isFavorite',
+    'isNotInAlbum',
+    'personIds',
+    'tagIds',
+    'type',
+    'rating',
+  ] as const satisfies readonly (keyof SmartAlbumFilter)[];
+
+  /**
+   * Criteria in `filter` the form cannot edit (e.g. description, OCR text, created/updated
+   * dates, library). Callers must merge these back into the submit payload, otherwise
+   * editing a filter would silently broaden it by dropping them.
+   */
+  export function carriedSmartAlbumFilterFields(
+    filter: SmartAlbumFilter | null | undefined,
+  ): Partial<SmartAlbumFilter> {
+    return Object.fromEntries(
+      Object.entries(filter ?? {}).filter(
+        ([key, value]) => !(FORM_MANAGED_FILTER_KEYS as readonly string[]).includes(key) && value !== undefined,
+      ),
+    ) as Partial<SmartAlbumFilter>;
+  }
+
+  /**
+   * An "empty" filter (no criteria, or only empty arrays) matches the owner's entire
+   * timeline - almost certainly an accident, and dangerous once shared.
+   */
+  export function isEmptySmartAlbumFilter(filter: Partial<SmartAlbumFilter>): boolean {
+    return Object.values(filter).every((value) => value === undefined || (Array.isArray(value) && value.length === 0));
+  }
+
+  /**
    * Convert SearchFilter back into a SmartAlbumFilter for persistence.
    * Empty/falsy fields are omitted so the saved filter stays minimal.
    */

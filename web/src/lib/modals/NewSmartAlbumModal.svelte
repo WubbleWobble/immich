@@ -1,6 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import SmartAlbumFilterForm, {
+    isEmptySmartAlbumFilter,
     searchFilterToSmartAlbumFilter,
     smartAlbumFilterToSearchFilter,
   } from '$lib/components/album-page/SmartAlbumFilterForm.svelte';
@@ -21,10 +22,16 @@
 
   let name = $state('');
   let filter: SearchFilter = $state(smartAlbumFilterToSearchFilter(undefined));
+  let errorMessage = $state('');
 
   const onSubmit = async () => {
     const trimmedName = name.trim();
     if (!trimmedName) {
+      return;
+    }
+    const payload = searchFilterToSmartAlbumFilter(filter);
+    if (isEmptySmartAlbumFilter(payload)) {
+      errorMessage = $t('smart_album_filter_empty_error');
       return;
     }
     try {
@@ -32,7 +39,7 @@
         createAlbumDto: {
           albumName: trimmedName,
           kind: AlbumKind.Smart,
-          filter: searchFilterToSmartAlbumFilter(filter),
+          filter: payload,
         },
       });
       eventManager.emit('AlbumCreate', album);
@@ -44,15 +51,11 @@
   };
 </script>
 
-<FormModal
-  icon={mdiAutoFix}
-  title={$t('smart_album_new')}
-  submitText={$t('create')}
-  size="giant"
-  {onClose}
-  {onSubmit}
->
+<FormModal icon={mdiAutoFix} title={$t('smart_album_new')} submitText={$t('create')} size="giant" {onClose} {onSubmit}>
   {#snippet children({ formId })}
+    {#if errorMessage}
+      <p class="mb-3 rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">{errorMessage}</p>
+    {/if}
     <SmartAlbumFilterForm {formId} bind:name bind:filter />
   {/snippet}
 </FormModal>
