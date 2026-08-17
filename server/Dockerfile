@@ -62,7 +62,10 @@ COPY ./mise.toml ./mise.toml
 COPY ./packages/plugin-core/mise.toml ./packages/plugin-core/
 ENV MISE_TRUSTED_CONFIG_PATHS=/app/mise.toml
 ENV MISE_DATA_DIR=/buildcache/mise
-ENV MISE_DISABLE_TOOLS=flutter
+# mise matches disabled tools by their full name as declared in mise.toml
+# ("aqua:flutter/flutter"); the bare "flutter" alias alone does not match, which
+# made every cold plugins build download the ~1GB Flutter SDK it never uses.
+ENV MISE_DISABLE_TOOLS=flutter,aqua:flutter/flutter
 RUN --mount=type=cache,id=mise-tools-${TARGETPLATFORM},target=/buildcache/mise \
   mise install
 
