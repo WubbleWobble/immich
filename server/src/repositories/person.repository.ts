@@ -249,13 +249,13 @@ export class PersonRepository {
       .execute();
   }
 
-  @GenerateSql({ params: [DummyValue.UUID] })
   /** The asset behind a feature face; faceAssetId on person is a FK to asset_face, not asset. */
   @GenerateSql({ params: [DummyValue.UUID] })
   getFaceAssetId(id: string): Promise<{ assetId: string } | undefined> {
     return this.db.selectFrom('asset_face').select('assetId').where('id', '=', id).executeTakeFirst();
   }
 
+  @GenerateSql({ params: [DummyValue.UUID] })
   getFaceById(id: string) {
     // TODO return null instead of find or fail
     return this.db
