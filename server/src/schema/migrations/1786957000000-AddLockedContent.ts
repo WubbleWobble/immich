@@ -33,10 +33,14 @@ export async function up(db: Kysely<any>): Promise<void> {
   // that still have visibility=locked assets and no migrated built-in album get one new
   // album, ownership row, membership rows, and lock row; their locked assets flip to
   // timeline. Users without locked assets are untouched.
+  //
+  // NOTE: 'locked' comparisons go through ::text - on a fresh install all pending migrations
+  // share one transaction, and Postgres forbids referencing an enum value added by
+  // ALTER TYPE ADD VALUE (which is how 'locked' entered the enum) in that same transaction.
   await sql`WITH users_needing AS (
   SELECT DISTINCT a."ownerId" AS user_id
   FROM "asset" a
-  WHERE a."visibility" = 'locked'
+  WHERE a."visibility"::text = 'locked'
     AND NOT EXISTS (
       SELECT 1
       FROM "locked_album" la
@@ -60,14 +64,14 @@ ins_assets AS (
   INSERT INTO "album_asset" ("albumId", "assetId")
   SELECT c.album_id, a."id"
   FROM albums_to_create c
-  JOIN "asset" a ON a."ownerId" = c.user_id AND a."visibility" = 'locked'
+  JOIN "asset" a ON a."ownerId" = c.user_id AND a."visibility"::text = 'locked'
 ),
 ins_lock AS (
   INSERT INTO "locked_album" ("userId", "albumId")
   SELECT user_id, album_id FROM albums_to_create
 )
 UPDATE "asset" SET "visibility" = 'timeline'
-WHERE "visibility" = 'locked'
+WHERE "visibility"::text = 'locked'
   AND "ownerId" IN (SELECT user_id FROM albums_to_create);`.execute(db);
 }
 
