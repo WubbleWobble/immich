@@ -764,6 +764,35 @@ describe(AlbumService.name, () => {
   });
 
   describe('update', () => {
+    it('should block updating an album the viewer has locked away (non-elevated session)', async () => {
+      const album = AlbumFactory.create();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.lock.isAlbumHiddenForViewer.mockResolvedValue(true);
+
+      await expect(
+        sut.update(AuthFactory.create(owner), album.id, { albumName: 'new name' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(mocks.album.update).not.toHaveBeenCalled();
+    });
+
+    it('should allow updating a locked album in an elevated session', async () => {
+      const album = AlbumFactory.create();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const auth = AuthFactory.from(owner).session({ hasElevatedPermission: true }).build();
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.lock.isAlbumHiddenForViewer.mockResolvedValue(true);
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.album.update.mockResolvedValue(getForAlbum(album));
+
+      await sut.update(auth, album.id, { albumName: 'new name' });
+
+      expect(mocks.album.update).toHaveBeenCalled();
+      // Elevated sessions never consult the hidden state at all.
+      expect(mocks.lock.isAlbumHiddenForViewer).not.toHaveBeenCalled();
+    });
+
     it('should prevent updating an album that does not exist', async () => {
       mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set());
       mocks.album.getById.mockResolvedValue(void 0);
@@ -977,6 +1006,17 @@ describe(AlbumService.name, () => {
   });
 
   describe('delete', () => {
+    it('should block deleting an album the viewer has locked away (non-elevated session)', async () => {
+      const album = AlbumFactory.create();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.lock.isAlbumHiddenForViewer.mockResolvedValue(true);
+
+      await expect(sut.delete(AuthFactory.create(owner), album.id)).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(mocks.album.delete).not.toHaveBeenCalled();
+    });
+
     it('should require permissions', async () => {
       const album = AlbumFactory.create();
       const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
@@ -1591,6 +1631,20 @@ describe(AlbumService.name, () => {
   });
 
   describe('addAssets', () => {
+    it('should block adding assets to an album the viewer has locked away (non-elevated session)', async () => {
+      const album = AlbumFactory.create();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.lock.isAlbumHiddenForViewer.mockResolvedValue(true);
+
+      await expect(
+        sut.addAssets(AuthFactory.create(owner), album.id, { ids: [newUuid()] }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(mocks.album.addAssetIds).not.toHaveBeenCalled();
+    });
+
     it('should allow the owner to add assets', async () => {
       const owner = UserFactory.create({ isAdmin: true });
       const album = AlbumFactory.from().owner(owner).build();

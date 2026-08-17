@@ -4,7 +4,13 @@ import { InjectKysely } from 'nestjs-kysely';
 import { AssetVisibility } from 'src/enum';
 import { AssetSearchOptions } from 'src/repositories/search.repository';
 import { DB } from 'src/schema';
-import { anyUuid, joinDeduplicationPlugin, searchAssetIdSubquery } from 'src/utils/database';
+import {
+  anyUuid,
+  joinDeduplicationPlugin,
+  OwnerLockVisibility,
+  searchAssetIdSubquery,
+  withLockVisibility,
+} from 'src/utils/database';
 
 const builder = (db: Kysely<DB>) =>
   db
@@ -45,10 +51,14 @@ export class DownloadRepository {
     );
   }
 
-  downloadUserId(userId: string) {
+  downloadUserId(userId: string, lockVisibility?: OwnerLockVisibility[]) {
     return builder(this.db)
       .where('asset.ownerId', '=', userId)
       .where('asset.visibility', '!=', AssetVisibility.Hidden)
+      .$if(!!lockVisibility?.length, (qb) =>
+        // Embedded lock-visibility subqueries rely on the root query for join deduplication.
+        withLockVisibility(qb, this.db, lockVisibility!).withPlugin(joinDeduplicationPlugin),
+      )
       .stream();
   }
 }

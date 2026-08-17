@@ -20,6 +20,19 @@ describe(ActivityService.name, () => {
   });
 
   describe('getAll', () => {
+    it('should block activity on an album the viewer has locked away (non-elevated session)', async () => {
+      const [albumId, assetId, userId] = newUuids();
+
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([albumId]));
+      mocks.lock.isAlbumHiddenForViewer.mockResolvedValue(true);
+
+      await expect(sut.getAll(AuthFactory.create({ id: userId }), { assetId, albumId })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+
+      expect(mocks.activity.search).not.toHaveBeenCalled();
+    });
+
     it('should get all', async () => {
       const [albumId, assetId, userId] = newUuids();
 

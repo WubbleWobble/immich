@@ -32,7 +32,7 @@ import { AuthRequest } from 'src/middleware/auth.guard';
 import { BaseService } from 'src/services/base.service';
 import { UploadFile, UploadRequest } from 'src/types';
 import { requireUploadAccess } from 'src/utils/access';
-import { asUploadRequest, onBeforeLink } from 'src/utils/asset.util';
+import { asUploadRequest, onBeforeLink, rejectLegacyLockedVisibility } from 'src/utils/asset.util';
 import { isAssetChecksumConstraint } from 'src/utils/database';
 import { getFilenameExtension, getFileNameWithoutExtension, ImmichFileResponse } from 'src/utils/file';
 import { mimeTypes } from 'src/utils/mime-types';
@@ -131,6 +131,7 @@ export class AssetMediaService extends BaseService {
     sidecarFile?: UploadFile,
   ): Promise<AssetMediaResponseDto> {
     try {
+      rejectLegacyLockedVisibility(dto.visibility);
       await this.requireAccess({
         auth,
         permission: Permission.AssetUpload,
@@ -333,13 +334,7 @@ export class AssetMediaService extends BaseService {
       type: mimeTypes.assetType(file.originalPath),
       isFavorite: dto.isFavorite,
       duration: dto.duration || null,
-      // The per-asset locked mechanism is replaced by locked albums; a legacy client
-      // uploading straight to the locked folder gets a normal timeline asset instead of
-      // silently creating post-migration visibility=locked rows.
-      visibility:
-        dto.visibility === AssetVisibility.Locked
-          ? AssetVisibility.Timeline
-          : (dto.visibility ?? AssetVisibility.Timeline),
+      visibility: dto.visibility ?? AssetVisibility.Timeline,
       livePhotoVideoId: dto.livePhotoVideoId,
       originalFileName: dto.filename || file.originalName,
     });

@@ -8,6 +8,7 @@ import { MemoryCreateDto, MemoryResponseDto, MemorySearchDto, MemoryUpdateDto, m
 import { DatabaseLock, JobName, MemoryType, Permission, QueueName, SystemMetadataKey } from 'src/enum';
 import { BaseService } from 'src/services/base.service';
 import { addAssets, removeAssets } from 'src/utils/asset.util';
+import { OwnerLockVisibility } from 'src/utils/database';
 import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
 
 const DAYS = 3;
@@ -79,8 +80,18 @@ export class MemoryService extends BaseService {
     await this.memoryRepository.cleanup();
   }
 
+  /** Memories only contain the viewer's own assets, so the only relevant lock owner is the viewer. */
+  private getViewerLockVisibility(auth: AuthDto) {
+    return this.lockRepository.getOwnerLockVisibility({
+      viewerId: auth.user.id,
+      ownerIds: [auth.user.id],
+      revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
+      isElevated: !!auth.session?.hasElevatedPermission,
+    });
+  }
+
   async search(auth: AuthDto, dto: MemorySearchDto) {
-    const memories = await this.memoryRepository.search(auth.user.id, dto);
+    const memories = await this.memoryRepository.search(auth.user.id, dto, await this.getViewerLockVisibility(auth));
     return memories
       .filter((memory: Memory) => memory.assets && memory.assets.length > 0)
       .map((memory: Memory) => mapMemory(memory, auth));
@@ -92,7 +103,7 @@ export class MemoryService extends BaseService {
 
   async get(auth: AuthDto, id: string): Promise<MemoryResponseDto> {
     await this.requireAccess({ auth, permission: Permission.MemoryRead, ids: [id] });
-    const memory = await this.findOrFail(id);
+    const memory = await this.findOrFail(id, await this.getViewerLockVisibility(auth));
     return mapMemory(memory, auth);
   }
 
@@ -125,11 +136,16 @@ export class MemoryService extends BaseService {
   async update(auth: AuthDto, id: string, dto: MemoryUpdateDto): Promise<MemoryResponseDto> {
     await this.requireAccess({ auth, permission: Permission.MemoryUpdate, ids: [id] });
 
-    const memory = await this.memoryRepository.update(id, {
-      isSaved: dto.isSaved,
-      memoryAt: dto.memoryAt,
-      seenAt: dto.seenAt,
-    });
+    const lockVisibility = await this.getViewerLockVisibility(auth);
+    const memory = await this.memoryRepository.update(
+      id,
+      {
+        isSaved: dto.isSaved,
+        memoryAt: dto.memoryAt,
+        seenAt: dto.seenAt,
+      },
+      lockVisibility,
+    );
 
     return mapMemory(memory, auth);
   }
@@ -171,8 +187,8 @@ export class MemoryService extends BaseService {
     return results;
   }
 
-  private async findOrFail(id: string) {
-    const memory = await this.memoryRepository.get(id);
+  private async findOrFail(id: string, lockVisibility?: OwnerLockVisibility[]) {
+    const memory = await this.memoryRepository.get(id, lockVisibility);
     if (!memory) {
       throw new BadRequestException('Memory not found');
     }

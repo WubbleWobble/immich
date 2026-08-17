@@ -9,7 +9,14 @@ import { DB } from 'src/schema';
 import { AssetFaceTable } from 'src/schema/tables/asset-face.table';
 import { FaceSearchTable } from 'src/schema/tables/face-search.table';
 import { PersonTable } from 'src/schema/tables/person.table';
-import { dummy, removeUndefinedKeys, withFilePath } from 'src/utils/database';
+import {
+  dummy,
+  joinDeduplicationPlugin,
+  OwnerLockVisibility,
+  removeUndefinedKeys,
+  withFilePath,
+  withLockVisibility,
+} from 'src/utils/database';
 import { paginationHelper, PaginationOptions } from 'src/utils/pagination';
 
 export interface PersonSearchOptions {
@@ -149,7 +156,12 @@ export class PersonRepository {
   }
 
   @GenerateSql({ params: [{ take: 1, skip: 0 }, DummyValue.UUID] })
-  async getAllForUser(pagination: PaginationOptions, userId: string, options?: PersonSearchOptions) {
+  async getAllForUser(
+    pagination: PaginationOptions,
+    userId: string,
+    options?: PersonSearchOptions,
+    lockVisibility?: OwnerLockVisibility[],
+  ) {
     const items = await this.db
       .selectFrom('person')
       .selectAll('person')
@@ -159,6 +171,11 @@ export class PersonRepository {
           .onRef('asset_face.assetId', '=', 'asset.id')
           .on('asset.visibility', '=', sql.lit(AssetVisibility.Timeline))
           .on('asset.deletedAt', 'is', null),
+      )
+      .$if(!!lockVisibility?.length, (qb) =>
+        // People whose only faces are on locked-away assets vanish from the list; the
+        // embedded subqueries rely on the root query for join deduplication.
+        withLockVisibility(qb, this.db, lockVisibility!).withPlugin(joinDeduplicationPlugin),
       )
       .where('person.ownerId', '=', userId)
       .where('asset_face.deletedAt', 'is', null)
@@ -356,32 +373,37 @@ export class PersonRepository {
   }
 
   @GenerateSql({ params: [DummyValue.UUID] })
-  getNumberOfPeople(userId: string) {
+  getNumberOfPeople(userId: string, lockVisibility?: OwnerLockVisibility[]) {
     const zero = sql.lit(0);
-    return this.db
-      .selectFrom('person')
-      .where((eb) =>
-        eb.exists((eb) =>
-          eb
-            .selectFrom('asset_face')
-            .whereRef('asset_face.personId', '=', 'person.id')
-            .where('asset_face.deletedAt', 'is', null)
-            .where('asset_face.isVisible', '=', true)
-            .where((eb) =>
-              eb.exists((eb) =>
-                eb
-                  .selectFrom('asset')
-                  .whereRef('asset.id', '=', 'asset_face.assetId')
-                  .where('asset.visibility', '=', sql.lit(AssetVisibility.Timeline))
-                  .where('asset.deletedAt', 'is', null),
+    return (
+      this.db
+        .selectFrom('person')
+        .where((eb) =>
+          eb.exists((eb) =>
+            eb
+              .selectFrom('asset_face')
+              .whereRef('asset_face.personId', '=', 'person.id')
+              .where('asset_face.deletedAt', 'is', null)
+              .where('asset_face.isVisible', '=', true)
+              .where((eb) =>
+                eb.exists((eb) =>
+                  eb
+                    .selectFrom('asset')
+                    .whereRef('asset.id', '=', 'asset_face.assetId')
+                    .where('asset.visibility', '=', sql.lit(AssetVisibility.Timeline))
+                    .where('asset.deletedAt', 'is', null)
+                    .$if(!!lockVisibility?.length, (qb) => withLockVisibility(qb, this.db, lockVisibility!)),
+                ),
               ),
-            ),
-        ),
-      )
-      .where('person.ownerId', '=', userId)
-      .select((eb) => eb.fn.coalesce(eb.fn.countAll<number>(), zero).as('total'))
-      .select((eb) => eb.fn.coalesce(eb.fn.countAll<number>().filterWhere('isHidden', '=', true), zero).as('hidden'))
-      .executeTakeFirstOrThrow();
+          ),
+        )
+        .where('person.ownerId', '=', userId)
+        // Embedded lock-visibility subqueries rely on the root query for join deduplication.
+        .$if(!!lockVisibility?.length, (qb) => qb.withPlugin(joinDeduplicationPlugin))
+        .select((eb) => eb.fn.coalesce(eb.fn.countAll<number>(), zero).as('total'))
+        .select((eb) => eb.fn.coalesce(eb.fn.countAll<number>().filterWhere('isHidden', '=', true), zero).as('hidden'))
+        .executeTakeFirstOrThrow()
+    );
   }
 
   create(person: Insertable<PersonTable>) {

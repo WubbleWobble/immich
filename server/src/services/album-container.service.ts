@@ -143,6 +143,7 @@ export class AlbumContainerService extends BaseService {
   }
 
   async update(auth: AuthDto, id: string, dto: UpdateAlbumContainerDto): Promise<AlbumContainerResponseDto> {
+    await BaseService.create(LockService, this).assertContainerVisibleForViewer(auth, id);
     const container = await this.albumContainerRepository.getById(id);
     if (!container) {
       throw new NotFoundException('Folder not found');
@@ -189,6 +190,7 @@ export class AlbumContainerService extends BaseService {
   }
 
   async delete(auth: AuthDto, id: string): Promise<void> {
+    await BaseService.create(LockService, this).assertContainerVisibleForViewer(auth, id);
     const container = await this.albumContainerRepository.getById(id);
     if (!container) {
       throw new NotFoundException('Folder not found');
@@ -200,6 +202,7 @@ export class AlbumContainerService extends BaseService {
   }
 
   async addUser(auth: AuthDto, id: string, dto: AlbumContainerUserCreateDto): Promise<void> {
+    await BaseService.create(LockService, this).assertContainerVisibleForViewer(auth, id);
     const container = await this.albumContainerRepository.getById(id);
     if (!container) {
       throw new NotFoundException('Folder not found');
@@ -231,6 +234,7 @@ export class AlbumContainerService extends BaseService {
   }
 
   async updateUser(auth: AuthDto, id: string, userId: string, dto: AlbumContainerUserUpdateDto): Promise<void> {
+    await BaseService.create(LockService, this).assertContainerVisibleForViewer(auth, id);
     const container = await this.albumContainerRepository.getById(id);
     if (!container) {
       throw new NotFoundException('Folder not found');
@@ -249,6 +253,7 @@ export class AlbumContainerService extends BaseService {
   }
 
   async removeUser(auth: AuthDto, id: string, userId: string): Promise<void> {
+    await BaseService.create(LockService, this).assertContainerVisibleForViewer(auth, id);
     const container = await this.albumContainerRepository.getById(id);
     if (!container) {
       throw new NotFoundException('Folder not found');

@@ -44,6 +44,7 @@ import {
   onAfterUnlink,
   onBeforeLink,
   onBeforeUnlink,
+  rejectLegacyLockedVisibility,
 } from 'src/utils/asset.util';
 import { updateLockedColumns } from 'src/utils/database';
 import { extractTimeZone } from 'src/utils/date';
@@ -628,15 +629,5 @@ export class AssetService extends BaseService {
 
     await this.assetEditRepository.replaceAll(id, []);
     await this.jobRepository.queue({ name: JobName.AssetEditThumbnailGeneration, data: { id } });
-  }
-}
-
-// The per-asset visibility=locked mechanism is replaced by per-user locked albums/folders
-// (see ../immich-specs/2026-05-24-locked-albums-and-folders-design.md). No code writes the
-// legacy value after the migration - and the old path was destructive, silently removing
-// the asset from every album it was in.
-function rejectLegacyLockedVisibility(visibility: AssetVisibility | undefined): void {
-  if (visibility === AssetVisibility.Locked) {
-    throw new BadRequestException('visibility=locked has been replaced by locked albums; lock an album instead');
   }
 }

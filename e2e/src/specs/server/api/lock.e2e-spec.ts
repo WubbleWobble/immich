@@ -376,4 +376,110 @@ describe('/albums/:id/lock', () => {
     expect(info.status).toBe(200);
     expect(info.body.visibility).toBe('timeline');
   });
+
+  it('rejects uploads with the retired visibility=locked value', async () => {
+    const { status } = await request(app)
+      .post('/assets')
+      .attach('assetData', Buffer.from('not-a-real-image'), 'locked-upload.png')
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .field('deviceAssetId', 'locked-upload-1')
+      .field('deviceId', 'e2e')
+      .field('fileCreatedAt', new Date().toISOString())
+      .field('fileModifiedAt', new Date().toISOString())
+      .field('visibility', 'locked');
+    expect(status).toBe(400);
+  });
+
+  it('blocks writes to a hidden album outside an elevated session', async () => {
+    // lockedAlbum is still locked; a fresh session cannot mutate it even though the
+    // underlying permission checks (ownership) would succeed.
+    const fresh = await login({
+      loginCredentialDto: { email: 'lock-owner@immich.cloud', password: 'password-lock-owner' },
+    });
+    const headers = { Authorization: `Bearer ${fresh.accessToken}` };
+
+    const update = await request(app).patch(`/albums/${lockedAlbum.id}`).set(headers).send({ albumName: 'renamed' });
+    expect(update.status).toBe(400);
+
+    const deletion = await request(app).delete(`/albums/${lockedAlbum.id}`).set(headers);
+    expect(deletion.status).toBe(400);
+
+    const add = await request(app)
+      .put(`/albums/${lockedAlbum.id}/assets`)
+      .set(headers)
+      .send({ ids: [ownerAssetB.id] });
+    expect(add.status).toBe(400);
+
+    // ... and activity on the hidden album is unreachable too.
+    const activityList = await request(app).get(`/activities?albumId=${lockedAlbum.id}`).set(headers);
+    expect(activityList.status).toBe(400);
+    const activityCreate = await request(app)
+      .post('/activities')
+      .set(headers)
+      .send({ albumId: lockedAlbum.id, type: 'like' });
+    expect(activityCreate.status).toBe(400);
+
+    // The elevated session can still rename it.
+    const elevatedUpdate = await request(app)
+      .patch(`/albums/${lockedAlbum.id}`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .send({ albumName: 'To Lock' });
+    expect(elevatedUpdate.status).toBe(200);
+  });
+
+  it('excludes hidden assets from whole-user download archives', async () => {
+    const fresh = await login({
+      loginCredentialDto: { email: 'lock-owner@immich.cloud', password: 'password-lock-owner' },
+    });
+
+    const { status, body } = await request(app)
+      .post('/download/info')
+      .set('Authorization', `Bearer ${fresh.accessToken}`)
+      .send({ userId: owner.userId });
+    expect(status).toBe(201);
+    const ids = body.archives.flatMap(({ assetIds }: { assetIds: string[] }) => assetIds);
+    expect(ids).not.toContain(ownerAssetA.id);
+    expect(ids).toContain(ownerAssetB.id);
+
+    // Like the timeline, the elevated session sees hidden content only via reveal headers.
+    const elevated = await request(app)
+      .post('/download/info')
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .set('x-immich-revealed-albums', lockedAlbum.id)
+      .send({ userId: owner.userId });
+    expect(elevated.status).toBe(201);
+    const elevatedIds = elevated.body.archives.flatMap(({ assetIds }: { assetIds: string[] }) => assetIds);
+    expect(elevatedIds).toContain(ownerAssetA.id);
+  });
+
+  it('hides locked-away assets inside memories', async () => {
+    // The elevated owner can build a memory containing the hidden asset.
+    const create = await request(app)
+      .post('/memories')
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .send({
+        type: 'on_this_day',
+        data: { year: 2021 },
+        memoryAt: new Date('2021-01-01').toISOString(),
+        assetIds: [ownerAssetA.id, ownerAssetB.id],
+      });
+    expect(create.status).toBe(201);
+    const memoryId = create.body.id;
+    expect(create.body.assets.map(({ id }: { id: string }) => id)).toContain(ownerAssetA.id);
+
+    // A fresh session sees the memory, but the hidden asset is filtered out of it.
+    const fresh = await login({
+      loginCredentialDto: { email: 'lock-owner@immich.cloud', password: 'password-lock-owner' },
+    });
+    const get = await request(app).get(`/memories/${memoryId}`).set('Authorization', `Bearer ${fresh.accessToken}`);
+    expect(get.status).toBe(200);
+    const freshIds = get.body.assets.map(({ id }: { id: string }) => id);
+    expect(freshIds).not.toContain(ownerAssetA.id);
+    expect(freshIds).toContain(ownerAssetB.id);
+
+    const search = await request(app).get('/memories').set('Authorization', `Bearer ${fresh.accessToken}`);
+    expect(search.status).toBe(200);
+    const searchIds = search.body.flatMap(({ assets }: { assets: { id: string }[] }) => assets.map(({ id }) => id));
+    expect(searchIds).not.toContain(ownerAssetA.id);
+  });
 });

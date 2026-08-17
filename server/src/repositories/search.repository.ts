@@ -8,6 +8,7 @@ import { DB } from 'src/schema';
 import { AssetExifTable } from 'src/schema/tables/asset-exif.table';
 import {
   anyUuid,
+  joinDeduplicationPlugin,
   OwnerLockVisibility,
   searchAssetBuilder,
   withExifInner,
@@ -477,14 +478,18 @@ export class SearchRepository {
       .execute();
   }
 
-  async getCountries(userIds: string[]): Promise<string[]> {
-    const res = await this.getExifField('country', userIds).execute();
+  async getCountries(userIds: string[], lockVisibility?: OwnerLockVisibility[]): Promise<string[]> {
+    const res = await this.getExifField('country', userIds, lockVisibility).execute();
     return res.map((row) => row.country!);
   }
 
   @GenerateSql({ params: [[DummyValue.UUID], DummyValue.STRING] })
-  async getStates(userIds: string[], { country }: GetStatesOptions): Promise<string[]> {
-    const res = await this.getExifField('state', userIds)
+  async getStates(
+    userIds: string[],
+    { country }: GetStatesOptions,
+    lockVisibility?: OwnerLockVisibility[],
+  ): Promise<string[]> {
+    const res = await this.getExifField('state', userIds, lockVisibility)
       .$if(!!country, (qb) => qb.where('country', '=', country!))
       .execute();
 
@@ -492,8 +497,12 @@ export class SearchRepository {
   }
 
   @GenerateSql({ params: [[DummyValue.UUID], DummyValue.STRING, DummyValue.STRING] })
-  async getCities(userIds: string[], { country, state }: GetCitiesOptions): Promise<string[]> {
-    const res = await this.getExifField('city', userIds)
+  async getCities(
+    userIds: string[],
+    { country, state }: GetCitiesOptions,
+    lockVisibility?: OwnerLockVisibility[],
+  ): Promise<string[]> {
+    const res = await this.getExifField('city', userIds, lockVisibility)
       .$if(!!country, (qb) => qb.where('country', '=', country!))
       .$if(!!state, (qb) => qb.where('state', '=', state!))
       .execute();
@@ -502,8 +511,12 @@ export class SearchRepository {
   }
 
   @GenerateSql({ params: [[DummyValue.UUID], DummyValue.STRING, DummyValue.STRING] })
-  async getCameraMakes(userIds: string[], { model, lensModel }: GetCameraMakesOptions): Promise<string[]> {
-    const res = await this.getExifField('make', userIds)
+  async getCameraMakes(
+    userIds: string[],
+    { model, lensModel }: GetCameraMakesOptions,
+    lockVisibility?: OwnerLockVisibility[],
+  ): Promise<string[]> {
+    const res = await this.getExifField('make', userIds, lockVisibility)
       .$if(!!model, (qb) => qb.where('model', '=', model!))
       .$if(!!lensModel, (qb) => qb.where('lensModel', '=', lensModel!))
       .execute();
@@ -512,8 +525,12 @@ export class SearchRepository {
   }
 
   @GenerateSql({ params: [[DummyValue.UUID], DummyValue.STRING, DummyValue.STRING] })
-  async getCameraModels(userIds: string[], { make, lensModel }: GetCameraModelsOptions): Promise<string[]> {
-    const res = await this.getExifField('model', userIds)
+  async getCameraModels(
+    userIds: string[],
+    { make, lensModel }: GetCameraModelsOptions,
+    lockVisibility?: OwnerLockVisibility[],
+  ): Promise<string[]> {
+    const res = await this.getExifField('model', userIds, lockVisibility)
       .$if(!!make, (qb) => qb.where('make', '=', make!))
       .$if(!!lensModel, (qb) => qb.where('lensModel', '=', lensModel!))
       .execute();
@@ -522,8 +539,12 @@ export class SearchRepository {
   }
 
   @GenerateSql({ params: [[DummyValue.UUID], DummyValue.STRING] })
-  async getCameraLensModels(userIds: string[], { make, model }: GetCameraLensModelsOptions): Promise<string[]> {
-    const res = await this.getExifField('lensModel', userIds)
+  async getCameraLensModels(
+    userIds: string[],
+    { make, model }: GetCameraLensModelsOptions,
+    lockVisibility?: OwnerLockVisibility[],
+  ): Promise<string[]> {
+    const res = await this.getExifField('lensModel', userIds, lockVisibility)
       .$if(!!make, (qb) => qb.where('make', '=', make!))
       .$if(!!model, (qb) => qb.where('model', '=', model!))
       .execute();
@@ -531,7 +552,11 @@ export class SearchRepository {
     return res.map((row) => row.lensModel!);
   }
 
-  private getExifField(field: 'city' | 'state' | 'country' | 'make' | 'model' | 'lensModel', userIds: string[]) {
+  private getExifField(
+    field: 'city' | 'state' | 'country' | 'make' | 'model' | 'lensModel',
+    userIds: string[],
+    lockVisibility?: OwnerLockVisibility[],
+  ) {
     return this.db
       .selectFrom('asset_exif')
       .select(field)
@@ -541,6 +566,10 @@ export class SearchRepository {
       .where('visibility', '=', AssetVisibility.Timeline)
       .where('deletedAt', 'is', null)
       .where(field, 'is not', null)
-      .where(field, '!=', '');
+      .where(field, '!=', '')
+      .$if(!!lockVisibility?.length, (qb) =>
+        // Embedded lock-visibility subqueries rely on the root query for join deduplication.
+        withLockVisibility(qb, this.db, lockVisibility!).withPlugin(joinDeduplicationPlugin),
+      );
   }
 }

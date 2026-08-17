@@ -292,6 +292,23 @@ describe(AssetMediaService.name, () => {
   });
 
   describe('uploadAsset', () => {
+    it('should reject the retired visibility=locked value instead of silently converting it', async () => {
+      const file = {
+        uuid: 'random-uuid',
+        originalPath: 'fake_path/asset_1.jpeg',
+        mimeType: 'image/jpeg',
+        checksum: Buffer.from('file hash', 'utf8'),
+        originalName: 'asset_1.jpeg',
+        size: 42,
+      };
+
+      await expect(
+        sut.uploadAsset(authStub.admin, { ...createDto, visibility: AssetVisibility.Locked }, file),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(mocks.asset.create).not.toHaveBeenCalled();
+    });
+
     it('should throw an error if the quota is exceeded', async () => {
       const file = {
         uuid: 'random-uuid',

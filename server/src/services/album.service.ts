@@ -303,6 +303,7 @@ export class AlbumService extends BaseService {
 
   async update(auth: AuthDto, id: string, dto: UpdateAlbumDto): Promise<AlbumResponseDto> {
     await this.requireAccess({ auth, permission: Permission.AlbumUpdate, ids: [id] });
+    await BaseService.create(LockService, this).assertAlbumVisibleForViewer(auth, id);
 
     const album = await this.findOrFail(id, auth.user.id, { withAssets: true });
 
@@ -377,12 +378,16 @@ export class AlbumService extends BaseService {
 
   async delete(auth: AuthDto, id: string): Promise<void> {
     await this.requireAccess({ auth, permission: Permission.AlbumDelete, ids: [id] });
+    // Deleting a locked album would cascade locked_album and album_asset rows and could
+    // un-hide formerly zero-container assets - hidden targets are write-protected too.
+    await BaseService.create(LockService, this).assertAlbumVisibleForViewer(auth, id);
     await this.albumRepository.delete(id);
   }
 
   async addAssets(auth: AuthDto, id: string, dto: BulkIdsDto): Promise<BulkIdResponseDto[]> {
     const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
     await this.requireAccess({ auth, permission: Permission.AlbumAssetCreate, ids: [id] });
+    await BaseService.create(LockService, this).assertAlbumVisibleForViewer(auth, id);
 
     if (album.kind === AlbumKind.Smart) {
       throw new BadRequestException('Cannot add assets to a smart album');
@@ -439,8 +444,17 @@ export class AlbumService extends BaseService {
     }
 
     // Smart albums are read-only; the bulk path must enforce the same guard as addAssets().
+    // Hidden albums are write-protected for their locker outside an elevated session, so
+    // they are excluded from the bulk targets as well. Elevated sessions bypass entirely
+    // (same rule as assertAlbumVisibleForViewer).
+    const hiddenTargetIds = auth.session?.hasElevatedPermission
+      ? new Set<string>()
+      : await this.getViewerHiddenAlbumIds(auth);
     const targetAlbums = [];
     for (const albumId of allowedAlbumIds) {
+      if (hiddenTargetIds.has(albumId)) {
+        continue;
+      }
       const album = await this.findOrFail(albumId, auth.user.id, { withAssets: false });
       if (album.kind !== AlbumKind.Smart) {
         targetAlbums.push(album);
@@ -491,6 +505,7 @@ export class AlbumService extends BaseService {
 
   async removeAssets(auth: AuthDto, id: string, dto: BulkIdsDto): Promise<BulkIdResponseDto[]> {
     await this.requireAccess({ auth, permission: Permission.AlbumAssetDelete, ids: [id] });
+    await BaseService.create(LockService, this).assertAlbumVisibleForViewer(auth, id);
 
     const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
 
@@ -514,6 +529,7 @@ export class AlbumService extends BaseService {
 
   async addUsers(auth: AuthDto, id: string, { albumUsers }: AddUsersDto): Promise<AlbumResponseDto> {
     await this.requireAccess({ auth, permission: Permission.AlbumShare, ids: [id] });
+    await BaseService.create(LockService, this).assertAlbumVisibleForViewer(auth, id);
 
     const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
 
@@ -572,6 +588,7 @@ export class AlbumService extends BaseService {
     // non-admin can remove themselves
     if (auth.user.id !== userId) {
       await this.requireAccess({ auth, permission: Permission.AlbumShare, ids: [id] });
+      await BaseService.create(LockService, this).assertAlbumVisibleForViewer(auth, id);
     }
 
     await this.albumUserRepository.delete({ albumId: id, userId });
@@ -579,6 +596,7 @@ export class AlbumService extends BaseService {
 
   async updateUser(auth: AuthDto, id: string, userId: string, dto: UpdateAlbumUserDto): Promise<void> {
     await this.requireAccess({ auth, permission: Permission.AlbumShare, ids: [id] });
+    await BaseService.create(LockService, this).assertAlbumVisibleForViewer(auth, id);
 
     const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
     if (album.kind === AlbumKind.Smart) {

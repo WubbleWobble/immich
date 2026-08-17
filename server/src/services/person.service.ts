@@ -43,6 +43,7 @@ import { BaseService } from 'src/services/base.service';
 import { JobItem, JobOf } from 'src/types';
 import { getDimensions } from 'src/utils/asset.util';
 import { ImmichFileResponse } from 'src/utils/file';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
 import { mimeTypes } from 'src/utils/mime-types';
 import { isFacialRecognitionEnabled } from 'src/utils/misc';
 import { Point, transformPoints } from 'src/utils/transform';
@@ -65,12 +66,24 @@ export class PersonService extends BaseService {
       closestFaceAssetId = person.faceAssetId;
     }
     const { machineLearning } = await this.getConfig({ withCache: false });
-    const { items, hasNextPage } = await this.personRepository.getAllForUser(pagination, auth.user.id, {
-      minimumFaceCount: machineLearning.facialRecognition.minFaces,
-      withHidden,
-      closestFaceAssetId,
+    // People are derived from the viewer's own assets, so the only relevant lock owner is the viewer.
+    const lockVisibility = await this.lockRepository.getOwnerLockVisibility({
+      viewerId: auth.user.id,
+      ownerIds: [auth.user.id],
+      revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
+      isElevated: !!auth.session?.hasElevatedPermission,
     });
-    const { total, hidden } = await this.personRepository.getNumberOfPeople(auth.user.id);
+    const { items, hasNextPage } = await this.personRepository.getAllForUser(
+      pagination,
+      auth.user.id,
+      {
+        minimumFaceCount: machineLearning.facialRecognition.minFaces,
+        withHidden,
+        closestFaceAssetId,
+      },
+      lockVisibility,
+    );
+    const { total, hidden } = await this.personRepository.getNumberOfPeople(auth.user.id, lockVisibility);
 
     return {
       people: items.map((person) => mapPerson(person)),

@@ -234,3 +234,13 @@ export const getDimensions = ({
 export const isPanorama = (asset: { projectionType: string | null; originalFileName: string }) => {
   return asset.projectionType === 'EQUIRECTANGULAR' || asset.originalFileName.toLowerCase().endsWith('.insp');
 };
+
+// The per-asset visibility=locked mechanism is replaced by per-user locked albums/folders
+// (see ../immich-specs/2026-05-24-locked-albums-and-folders-design.md). No code writes the
+// legacy value after the migration - and the old path was destructive, silently removing
+// the asset from every album it was in.
+export function rejectLegacyLockedVisibility(visibility: AssetVisibility | undefined): void {
+  if (visibility === AssetVisibility.Locked) {
+    throw new BadRequestException('visibility=locked has been replaced by locked albums; lock an album instead');
+  }
+}

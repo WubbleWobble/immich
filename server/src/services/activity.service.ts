@@ -14,11 +14,13 @@ import {
 import { AuthDto } from 'src/dtos/auth.dto';
 import { Permission } from 'src/enum';
 import { BaseService } from 'src/services/base.service';
+import { LockService } from 'src/services/lock.service';
 
 @Injectable()
 export class ActivityService extends BaseService {
   async getAll(auth: AuthDto, dto: ActivitySearchDto): Promise<ActivityResponseDto[]> {
     await this.requireAccess({ auth, permission: Permission.AlbumRead, ids: [dto.albumId] });
+    await BaseService.create(LockService, this).assertAlbumVisibleForViewer(auth, dto.albumId);
     const activities = await this.activityRepository.search({
       userId: dto.userId,
       albumId: dto.albumId,
@@ -31,11 +33,13 @@ export class ActivityService extends BaseService {
 
   async getStatistics(auth: AuthDto, dto: ActivityDto): Promise<ActivityStatisticsResponseDto> {
     await this.requireAccess({ auth, permission: Permission.AlbumRead, ids: [dto.albumId] });
+    await BaseService.create(LockService, this).assertAlbumVisibleForViewer(auth, dto.albumId);
     return await this.activityRepository.getStatistics({ albumId: dto.albumId, assetId: dto.assetId });
   }
 
   async create(auth: AuthDto, dto: ActivityCreateDto): Promise<MaybeDuplicate<ActivityResponseDto>> {
     await this.requireAccess({ auth, permission: Permission.ActivityCreate, ids: [dto.albumId] });
+    await BaseService.create(LockService, this).assertAlbumVisibleForViewer(auth, dto.albumId);
 
     const common = {
       userId: auth.user.id,

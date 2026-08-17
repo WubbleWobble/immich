@@ -101,7 +101,7 @@ describe(SearchService.name, () => {
       await expect(
         sut.getSearchSuggestions(authStub.user1, { includeNull: false, type: SearchSuggestionType.COUNTRY }),
       ).resolves.toEqual(['USA']);
-      expect(mocks.search.getCountries).toHaveBeenCalledWith([authStub.user1.user.id]);
+      expect(mocks.search.getCountries).toHaveBeenCalledWith([authStub.user1.user.id], undefined);
     });
 
     it('should return search suggestions for country (including null)', async () => {
@@ -111,7 +111,7 @@ describe(SearchService.name, () => {
       await expect(
         sut.getSearchSuggestions(authStub.user1, { includeNull: true, type: SearchSuggestionType.COUNTRY }),
       ).resolves.toEqual(['USA', null]);
-      expect(mocks.search.getCountries).toHaveBeenCalledWith([authStub.user1.user.id]);
+      expect(mocks.search.getCountries).toHaveBeenCalledWith([authStub.user1.user.id], undefined);
     });
 
     it('should return search suggestions for state', async () => {
@@ -121,7 +121,7 @@ describe(SearchService.name, () => {
       await expect(
         sut.getSearchSuggestions(authStub.user1, { includeNull: false, type: SearchSuggestionType.STATE }),
       ).resolves.toEqual(['California']);
-      expect(mocks.search.getStates).toHaveBeenCalledWith([authStub.user1.user.id], expect.anything());
+      expect(mocks.search.getStates).toHaveBeenCalledWith([authStub.user1.user.id], expect.anything(), undefined);
     });
 
     it('should return search suggestions for state (including null)', async () => {
@@ -131,7 +131,7 @@ describe(SearchService.name, () => {
       await expect(
         sut.getSearchSuggestions(authStub.user1, { includeNull: true, type: SearchSuggestionType.STATE }),
       ).resolves.toEqual(['California', null]);
-      expect(mocks.search.getStates).toHaveBeenCalledWith([authStub.user1.user.id], expect.anything());
+      expect(mocks.search.getStates).toHaveBeenCalledWith([authStub.user1.user.id], expect.anything(), undefined);
     });
 
     it('should return search suggestions for city', async () => {
@@ -141,7 +141,7 @@ describe(SearchService.name, () => {
       await expect(
         sut.getSearchSuggestions(authStub.user1, { includeNull: false, type: SearchSuggestionType.CITY }),
       ).resolves.toEqual(['Denver']);
-      expect(mocks.search.getCities).toHaveBeenCalledWith([authStub.user1.user.id], expect.anything());
+      expect(mocks.search.getCities).toHaveBeenCalledWith([authStub.user1.user.id], expect.anything(), undefined);
     });
 
     it('should return search suggestions for city (including null)', async () => {
@@ -151,7 +151,7 @@ describe(SearchService.name, () => {
       await expect(
         sut.getSearchSuggestions(authStub.user1, { includeNull: true, type: SearchSuggestionType.CITY }),
       ).resolves.toEqual(['Denver', null]);
-      expect(mocks.search.getCities).toHaveBeenCalledWith([authStub.user1.user.id], expect.anything());
+      expect(mocks.search.getCities).toHaveBeenCalledWith([authStub.user1.user.id], expect.anything(), undefined);
     });
 
     it('should return search suggestions for camera make', async () => {
@@ -161,7 +161,7 @@ describe(SearchService.name, () => {
       await expect(
         sut.getSearchSuggestions(authStub.user1, { includeNull: false, type: SearchSuggestionType.CAMERA_MAKE }),
       ).resolves.toEqual(['Nikon']);
-      expect(mocks.search.getCameraMakes).toHaveBeenCalledWith([authStub.user1.user.id], expect.anything());
+      expect(mocks.search.getCameraMakes).toHaveBeenCalledWith([authStub.user1.user.id], expect.anything(), undefined);
     });
 
     it('should return search suggestions for camera make (including null)', async () => {
@@ -171,7 +171,7 @@ describe(SearchService.name, () => {
       await expect(
         sut.getSearchSuggestions(authStub.user1, { includeNull: true, type: SearchSuggestionType.CAMERA_MAKE }),
       ).resolves.toEqual(['Nikon', null]);
-      expect(mocks.search.getCameraMakes).toHaveBeenCalledWith([authStub.user1.user.id], expect.anything());
+      expect(mocks.search.getCameraMakes).toHaveBeenCalledWith([authStub.user1.user.id], expect.anything(), undefined);
     });
 
     it('should return search suggestions for camera model', async () => {
@@ -181,7 +181,7 @@ describe(SearchService.name, () => {
       await expect(
         sut.getSearchSuggestions(authStub.user1, { includeNull: false, type: SearchSuggestionType.CAMERA_MODEL }),
       ).resolves.toEqual(['Fujifilm X100VI']);
-      expect(mocks.search.getCameraModels).toHaveBeenCalledWith([authStub.user1.user.id], expect.anything());
+      expect(mocks.search.getCameraModels).toHaveBeenCalledWith([authStub.user1.user.id], expect.anything(), undefined);
     });
 
     it('should return search suggestions for camera model (including null)', async () => {
@@ -191,7 +191,7 @@ describe(SearchService.name, () => {
       await expect(
         sut.getSearchSuggestions(authStub.user1, { includeNull: true, type: SearchSuggestionType.CAMERA_MODEL }),
       ).resolves.toEqual(['Fujifilm X100VI', null]);
-      expect(mocks.search.getCameraModels).toHaveBeenCalledWith([authStub.user1.user.id], expect.anything());
+      expect(mocks.search.getCameraModels).toHaveBeenCalledWith([authStub.user1.user.id], expect.anything(), undefined);
     });
 
     it('should return search suggestions for camera lens model', async () => {
@@ -201,7 +201,7 @@ describe(SearchService.name, () => {
       await expect(
         sut.getSearchSuggestions(authStub.user1, { includeNull: false, type: SearchSuggestionType.CAMERA_LENS_MODEL }),
       ).resolves.toEqual(['10-24mm']);
-      expect(mocks.search.getCameraLensModels).toHaveBeenCalledWith([authStub.user1.user.id], expect.anything());
+      expect(mocks.search.getCameraLensModels).toHaveBeenCalledWith([authStub.user1.user.id], expect.anything(), undefined);
     });
 
     it('should return search suggestions for camera lens model (including null)', async () => {
@@ -211,7 +211,7 @@ describe(SearchService.name, () => {
       await expect(
         sut.getSearchSuggestions(authStub.user1, { includeNull: true, type: SearchSuggestionType.CAMERA_LENS_MODEL }),
       ).resolves.toEqual(['10-24mm', null]);
-      expect(mocks.search.getCameraLensModels).toHaveBeenCalledWith([authStub.user1.user.id], expect.anything());
+      expect(mocks.search.getCameraLensModels).toHaveBeenCalledWith([authStub.user1.user.id], expect.anything(), undefined);
     });
   });
 

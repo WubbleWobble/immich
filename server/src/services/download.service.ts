@@ -10,6 +10,7 @@ import { ImmichReadStream } from 'src/repositories/storage.repository';
 import { BaseService } from 'src/services/base.service';
 import { LockService } from 'src/services/lock.service';
 import { HumanReadableSize } from 'src/utils/bytes';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
 import { getPreferences } from 'src/utils/preferences';
 
 @Injectable()
@@ -42,7 +43,14 @@ export class DownloadService extends BaseService {
     } else if (dto.userId) {
       const userId = dto.userId;
       await this.requireAccess({ auth, permission: Permission.TimelineDownload, ids: [userId] });
-      assets = this.downloadRepository.downloadUserId(userId);
+      // Whole-user downloads respect locked content the same way the timeline does.
+      const lockVisibility = await this.lockRepository.getOwnerLockVisibility({
+        viewerId: auth.user.id,
+        ownerIds: [userId],
+        revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
+        isElevated: !!auth.session?.hasElevatedPermission,
+      });
+      assets = this.downloadRepository.downloadUserId(userId, lockVisibility);
     } else {
       throw new BadRequestException('assetIds, albumId, or userId is required');
     }

@@ -192,32 +192,37 @@ export class SearchService extends BaseService {
 
   async getSearchSuggestions(auth: AuthDto, dto: SearchSuggestionRequestDto) {
     const userIds = await this.getUserIdsToSearch(auth);
-    const suggestions = await this.getSuggestions(userIds, dto);
+    const lockVisibility = await this.getLockVisibility(auth, userIds);
+    const suggestions = await this.getSuggestions(userIds, dto, lockVisibility);
     if (dto.includeNull) {
       suggestions.push(null);
     }
     return suggestions;
   }
 
-  private getSuggestions(userIds: string[], dto: SearchSuggestionRequestDto): Promise<Array<string | null>> {
+  private getSuggestions(
+    userIds: string[],
+    dto: SearchSuggestionRequestDto,
+    lockVisibility?: OwnerLockVisibility[],
+  ): Promise<Array<string | null>> {
     switch (dto.type) {
       case SearchSuggestionType.COUNTRY: {
-        return this.searchRepository.getCountries(userIds);
+        return this.searchRepository.getCountries(userIds, lockVisibility);
       }
       case SearchSuggestionType.STATE: {
-        return this.searchRepository.getStates(userIds, dto);
+        return this.searchRepository.getStates(userIds, dto, lockVisibility);
       }
       case SearchSuggestionType.CITY: {
-        return this.searchRepository.getCities(userIds, dto);
+        return this.searchRepository.getCities(userIds, dto, lockVisibility);
       }
       case SearchSuggestionType.CAMERA_MAKE: {
-        return this.searchRepository.getCameraMakes(userIds, dto);
+        return this.searchRepository.getCameraMakes(userIds, dto, lockVisibility);
       }
       case SearchSuggestionType.CAMERA_MODEL: {
-        return this.searchRepository.getCameraModels(userIds, dto);
+        return this.searchRepository.getCameraModels(userIds, dto, lockVisibility);
       }
       case SearchSuggestionType.CAMERA_LENS_MODEL: {
-        return this.searchRepository.getCameraLensModels(userIds, dto);
+        return this.searchRepository.getCameraLensModels(userIds, dto, lockVisibility);
       }
       default: {
         return Promise.resolve([]);

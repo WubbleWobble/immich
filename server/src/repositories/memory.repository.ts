@@ -9,6 +9,7 @@ import { AssetOrderWithRandom, AssetVisibility } from 'src/enum';
 import { DB } from 'src/schema';
 import { MemoryTable } from 'src/schema/tables/memory.table';
 import { IBulkAsset } from 'src/types';
+import { joinDeduplicationPlugin, OwnerLockVisibility, withLockVisibility } from 'src/utils/database';
 
 @Injectable()
 export class MemoryRepository implements IBulkAsset {
@@ -57,45 +58,50 @@ export class MemoryRepository implements IBulkAsset {
     { params: [DummyValue.UUID, {}] },
     { name: 'date filter', params: [DummyValue.UUID, { for: DummyValue.DATE }] },
   )
-  search(ownerId: string, dto: MemorySearchDto) {
-    return this.searchBuilder(ownerId, dto)
-      .select((eb) =>
-        jsonArrayFrom(
-          eb
-            .selectFrom('asset')
-            .selectAll('asset')
-            .innerJoin('memory_asset', 'asset.id', 'memory_asset.assetId')
-            .whereRef('memory_asset.memoriesId', '=', 'memory.id')
-            .where('asset.visibility', '=', sql.lit(AssetVisibility.Timeline))
-            .where('asset.deletedAt', 'is', null)
-            .where((eb) =>
-              eb.not(
-                eb.exists(
-                  eb
-                    .selectFrom('asset_face')
-                    .innerJoin('person', 'person.id', 'asset_face.personId')
-                    .select((eb) => eb.val(1).as('one'))
-                    .whereRef('asset_face.assetId', '=', 'asset.id')
-                    .where('person.isHidden', '=', true),
+  search(ownerId: string, dto: MemorySearchDto, lockVisibility?: OwnerLockVisibility[]) {
+    return (
+      this.searchBuilder(ownerId, dto)
+        .select((eb) =>
+          jsonArrayFrom(
+            eb
+              .selectFrom('asset')
+              .selectAll('asset')
+              .innerJoin('memory_asset', 'asset.id', 'memory_asset.assetId')
+              .whereRef('memory_asset.memoriesId', '=', 'memory.id')
+              .where('asset.visibility', '=', sql.lit(AssetVisibility.Timeline))
+              .where('asset.deletedAt', 'is', null)
+              .$if(!!lockVisibility?.length, (qb) => withLockVisibility(qb, this.db, lockVisibility!))
+              .where((eb) =>
+                eb.not(
+                  eb.exists(
+                    eb
+                      .selectFrom('asset_face')
+                      .innerJoin('person', 'person.id', 'asset_face.personId')
+                      .select((eb) => eb.val(1).as('one'))
+                      .whereRef('asset_face.assetId', '=', 'asset.id')
+                      .where('person.isHidden', '=', true),
+                  ),
                 ),
-              ),
-            )
-            .orderBy('asset.fileCreatedAt', 'asc'),
-        ).as('assets'),
-      )
-      .selectAll('memory')
-      .$call((qb) =>
-        dto.order === AssetOrderWithRandom.Random
-          ? qb.orderBy(sql`RANDOM()`)
-          : qb.orderBy('memoryAt', (dto.order?.toLowerCase() || 'desc') as OrderByDirection),
-      )
-      .$if(dto.size !== undefined, (qb) => qb.limit(dto.size!))
-      .execute();
+              )
+              .orderBy('asset.fileCreatedAt', 'asc'),
+          ).as('assets'),
+        )
+        .selectAll('memory')
+        .$call((qb) =>
+          dto.order === AssetOrderWithRandom.Random
+            ? qb.orderBy(sql`RANDOM()`)
+            : qb.orderBy('memoryAt', (dto.order?.toLowerCase() || 'desc') as OrderByDirection),
+        )
+        .$if(dto.size !== undefined, (qb) => qb.limit(dto.size!))
+        // Embedded lock-visibility subqueries rely on the root query for join deduplication.
+        .$if(!!lockVisibility?.length, (qb) => qb.withPlugin(joinDeduplicationPlugin))
+        .execute()
+    );
   }
 
   @GenerateSql({ params: [DummyValue.UUID] })
-  get(id: string) {
-    return this.getByIdBuilder(id).executeTakeFirst();
+  get(id: string, lockVisibility?: OwnerLockVisibility[]) {
+    return this.getByIdBuilder(id, lockVisibility).executeTakeFirst();
   }
 
   async create(memory: Insertable<MemoryTable>, assetIds: Set<string>) {
@@ -114,9 +120,9 @@ export class MemoryRepository implements IBulkAsset {
   }
 
   @GenerateSql({ params: [DummyValue.UUID, { ownerId: DummyValue.UUID, isSaved: true }] })
-  async update(id: string, memory: Updateable<MemoryTable>) {
+  async update(id: string, memory: Updateable<MemoryTable>, lockVisibility?: OwnerLockVisibility[]) {
     await this.db.updateTable('memory').set(memory).where('id', '=', id).execute();
-    return this.getByIdBuilder(id).executeTakeFirstOrThrow();
+    return this.getByIdBuilder(id, lockVisibility).executeTakeFirstOrThrow();
   }
 
   @GenerateSql({ params: [DummyValue.UUID] })
@@ -163,23 +169,28 @@ export class MemoryRepository implements IBulkAsset {
     await this.db.deleteFrom('memory_asset').where('memoriesId', '=', id).where('assetId', 'in', assetIds).execute();
   }
 
-  private getByIdBuilder(id: string) {
-    return this.db
-      .selectFrom('memory')
-      .selectAll('memory')
-      .select((eb) =>
-        jsonArrayFrom(
-          eb
-            .selectFrom('asset')
-            .selectAll('asset')
-            .innerJoin('memory_asset', 'asset.id', 'memory_asset.assetId')
-            .whereRef('memory_asset.memoriesId', '=', 'memory.id')
-            .orderBy('asset.fileCreatedAt', 'asc')
-            .where('asset.visibility', '=', sql.lit(AssetVisibility.Timeline))
-            .where('asset.deletedAt', 'is', null),
-        ).as('assets'),
-      )
-      .where('id', '=', id)
-      .where('deletedAt', 'is', null);
+  private getByIdBuilder(id: string, lockVisibility?: OwnerLockVisibility[]) {
+    return (
+      this.db
+        .selectFrom('memory')
+        .selectAll('memory')
+        .select((eb) =>
+          jsonArrayFrom(
+            eb
+              .selectFrom('asset')
+              .selectAll('asset')
+              .innerJoin('memory_asset', 'asset.id', 'memory_asset.assetId')
+              .whereRef('memory_asset.memoriesId', '=', 'memory.id')
+              .orderBy('asset.fileCreatedAt', 'asc')
+              .where('asset.visibility', '=', sql.lit(AssetVisibility.Timeline))
+              .where('asset.deletedAt', 'is', null)
+              .$if(!!lockVisibility?.length, (qb) => withLockVisibility(qb, this.db, lockVisibility!)),
+          ).as('assets'),
+        )
+        .where('id', '=', id)
+        .where('deletedAt', 'is', null)
+        // Embedded lock-visibility subqueries rely on the root query for join deduplication.
+        .$if(!!lockVisibility?.length, (qb) => qb.withPlugin(joinDeduplicationPlugin))
+    );
   }
 }
