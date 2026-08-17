@@ -516,6 +516,7 @@ describe('/albums', () => {
         order: AssetOrder.Desc,
         kind: AlbumKind.Regular,
         filter: null,
+        containerId: null,
       });
     });
 
