@@ -36,6 +36,7 @@ import { EmailRepository } from 'src/repositories/email.repository';
 import { EventRepository } from 'src/repositories/event.repository';
 import { JobRepository } from 'src/repositories/job.repository';
 import { LibraryRepository } from 'src/repositories/library.repository';
+import { LockRepository } from 'src/repositories/lock.repository';
 import { LoggingRepository } from 'src/repositories/logging.repository';
 import { MachineLearningRepository } from 'src/repositories/machine-learning.repository';
 import { MapRepository } from 'src/repositories/map.repository';
@@ -234,6 +235,7 @@ export type ServiceOverrides = {
   event: EventRepository;
   job: JobRepository;
   library: LibraryRepository;
+  lock: LockRepository;
   logger: LoggingRepository;
   machineLearning: MachineLearningRepository;
   map: MapRepository;
@@ -318,6 +320,7 @@ export const getMocks = () => {
     job: newJobRepositoryMock(),
     apiKey: automock(ApiKeyRepository),
     library: automock(LibraryRepository, { strict: false }),
+    lock: automock(LockRepository, { strict: false }),
     machineLearning: automock(MachineLearningRepository, { args: [loggerMock], strict: false }),
     map: automock(MapRepository, { args: [undefined, undefined, { setContext: () => {} }] }),
     media: newMediaRepositoryMock(),
@@ -387,6 +390,7 @@ export const newTestService = <T extends BaseService>(
     overrides.event || (mocks.event as As<EventRepository>),
     overrides.job || (mocks.job as As<JobRepository>),
     overrides.library || (mocks.library as As<LibraryRepository>),
+    overrides.lock || (mocks.lock as As<LockRepository>),
     overrides.machineLearning || (mocks.machineLearning as As<MachineLearningRepository>),
     overrides.map || (mocks.map as As<MapRepository>),
     overrides.media || (mocks.media as As<MediaRepository>),

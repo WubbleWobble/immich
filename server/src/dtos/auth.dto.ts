@@ -17,6 +17,12 @@ export type AuthDto = {
   apiKey?: AuthApiKey;
   sharedLink?: AuthSharedLink;
   session?: AuthSession;
+  /**
+   * Client-held per-session reveal sets for locked albums/folders, parsed from request
+   * headers. Presentation state, never authorization: consumers only honour these when the
+   * session is elevated, and only after intersecting with the user's own lock rows.
+   */
+  revealedLocks?: { albumIds: string[]; containerIds: string[] };
 };
 
 const LoginCredentialSchema = z

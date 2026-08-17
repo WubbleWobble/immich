@@ -25,6 +25,7 @@ import { EmailRepository } from 'src/repositories/email.repository';
 import { EventRepository } from 'src/repositories/event.repository';
 import { JobRepository } from 'src/repositories/job.repository';
 import { LibraryRepository } from 'src/repositories/library.repository';
+import { LockRepository } from 'src/repositories/lock.repository';
 import { LoggingRepository } from 'src/repositories/logging.repository';
 import { MachineLearningRepository } from 'src/repositories/machine-learning.repository';
 import { MapRepository } from 'src/repositories/map.repository';
@@ -145,6 +146,7 @@ export class BaseService {
     protected eventRepository: EventRepository,
     protected jobRepository: JobRepository,
     protected libraryRepository: LibraryRepository,
+    protected lockRepository: LockRepository,
     protected machineLearningRepository: MachineLearningRepository,
     protected mapRepository: MapRepository,
     protected mediaRepository: MediaRepository,
@@ -214,6 +216,7 @@ export class BaseService {
       ctx.eventRepository,
       ctx.jobRepository,
       ctx.libraryRepository,
+      ctx.lockRepository,
       ctx.machineLearningRepository,
       ctx.mapRepository,
       ctx.mediaRepository,

@@ -217,6 +217,7 @@ export class AuthService extends BaseService {
 
   async authenticate({ headers, queryParams, metadata }: ValidateRequest): Promise<AuthDto> {
     const authDto = await this.validate({ headers, queryParams });
+    authDto.revealedLocks = parseRevealedLockHeaders(headers);
     const { adminRoute, sharedLinkRoute, uri } = metadata;
     const requestedPermission = metadata.permission ?? Permission.All;
 
@@ -647,3 +648,24 @@ export class AuthService extends BaseService {
     };
   }
 }
+
+// Client-held reveal sets for locked content, sent as comma-separated UUID headers.
+// Malformed entries are dropped here; ownership sanitisation (only ids the user actually
+// locked can reveal anything) and elevation gating happen where the sets are consumed.
+const UUID_PATTERN = /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i;
+const parseRevealHeader = (value: unknown): string[] => {
+  if (typeof value !== 'string' || value.length === 0) {
+    return [];
+  }
+  return value
+    .split(',')
+    .map((part) => part.trim().toLowerCase())
+    .filter((part) => UUID_PATTERN.test(part));
+};
+
+export const parseRevealedLockHeaders = (
+  headers: IncomingHttpHeaders,
+): { albumIds: string[]; containerIds: string[] } => ({
+  albumIds: parseRevealHeader(headers[ImmichHeader.RevealedAlbums]),
+  containerIds: parseRevealHeader(headers[ImmichHeader.RevealedContainers]),
+});

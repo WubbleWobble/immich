@@ -23,6 +23,8 @@ export enum ImmichHeader {
   SharedLinkSlug = 'x-immich-share-slug',
   Checksum = 'x-immich-checksum',
   CorrelationId = 'X-Correlation-ID',
+  RevealedAlbums = 'x-immich-revealed-albums',
+  RevealedContainers = 'x-immich-revealed-containers',
 }
 
 export enum ImmichQuery {
@@ -1126,6 +1128,7 @@ export enum CronJob {
 export enum ApiTag {
   Activities = 'Activities',
   AlbumContainers = 'Album Containers',
+  Locks = 'Locks',
   Albums = 'Albums',
   ApiKeys = 'API keys',
   Authentication = 'Authentication',

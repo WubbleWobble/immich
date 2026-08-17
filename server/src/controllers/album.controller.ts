@@ -18,12 +18,16 @@ import { MapMarkerResponseDto } from 'src/dtos/map.dto';
 import { ApiTag, Permission } from 'src/enum';
 import { Auth, Authenticated } from 'src/middleware/auth.guard';
 import { AlbumService } from 'src/services/album.service';
+import { LockService } from 'src/services/lock.service';
 import { ParseMeUUIDPipe, UUIDParamDto } from 'src/validation';
 
 @ApiTags(ApiTag.Albums)
 @Controller('albums')
 export class AlbumController {
-  constructor(private service: AlbumService) {}
+  constructor(
+    private service: AlbumService,
+    private lockService: LockService,
+  ) {}
 
   @Get()
   @Authenticated({ permission: Permission.AlbumRead })
@@ -196,5 +200,27 @@ export class AlbumController {
     @Param('userId', new ParseMeUUIDPipe({ version: '4' })) userId: string,
   ): Promise<void> {
     return this.service.removeUser(auth, id, userId);
+  }
+
+  @Post(':id/lock')
+  @Authenticated()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Endpoint({
+    summary: 'Lock album for the requesting user (requires an elevated session)',
+    history: new HistoryBuilder().added('v2').alpha('v2'),
+  })
+  lockAlbum(@Auth() auth: AuthDto, @Param() { id }: UUIDParamDto): Promise<void> {
+    return this.lockService.lockAlbum(auth, id);
+  }
+
+  @Delete(':id/lock')
+  @Authenticated()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Endpoint({
+    summary: 'Unlock album for the requesting user (requires an elevated session)',
+    history: new HistoryBuilder().added('v2').alpha('v2'),
+  })
+  unlockAlbum(@Auth() auth: AuthDto, @Param() { id }: UUIDParamDto): Promise<void> {
+    return this.lockService.unlockAlbum(auth, id);
   }
 }

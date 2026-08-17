@@ -12,12 +12,16 @@ import { AuthDto } from 'src/dtos/auth.dto';
 import { ApiTag } from 'src/enum';
 import { Auth, Authenticated } from 'src/middleware/auth.guard';
 import { AlbumContainerService } from 'src/services/album-container.service';
+import { LockService } from 'src/services/lock.service';
 import { ParseMeUUIDPipe, UUIDParamDto } from 'src/validation';
 
 @ApiTags(ApiTag.AlbumContainers)
 @Controller('album-containers')
 export class AlbumContainerController {
-  constructor(private service: AlbumContainerService) {}
+  constructor(
+    private service: AlbumContainerService,
+    private lockService: LockService,
+  ) {}
 
   @Get()
   @Authenticated()
@@ -97,5 +101,27 @@ export class AlbumContainerController {
     @Param('userId', new ParseMeUUIDPipe({ version: '4' })) userId: string,
   ): Promise<void> {
     return this.service.removeUser(auth, id, userId);
+  }
+
+  @Post(':id/lock')
+  @Authenticated()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Endpoint({
+    summary: 'Lock folder for the requesting user (requires an elevated session)',
+    history: new HistoryBuilder().added('v2').alpha('v2'),
+  })
+  lockAlbumContainer(@Auth() auth: AuthDto, @Param() { id }: UUIDParamDto): Promise<void> {
+    return this.lockService.lockContainer(auth, id);
+  }
+
+  @Delete(':id/lock')
+  @Authenticated()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Endpoint({
+    summary: 'Unlock folder for the requesting user (requires an elevated session)',
+    history: new HistoryBuilder().added('v2').alpha('v2'),
+  })
+  unlockAlbumContainer(@Auth() auth: AuthDto, @Param() { id }: UUIDParamDto): Promise<void> {
+    return this.lockService.unlockContainer(auth, id);
   }
 }
