@@ -24,6 +24,8 @@
     groupOptionsMetadata,
     sortOptionsMetadata,
   } from '$lib/utils/album-utils';
+  import NewFolderModal from '$lib/modals/NewFolderModal.svelte';
+  import { invalidateAll } from '$app/navigation';
   import { Button, IconButton, modalManager, Text } from '@immich/ui';
   import {
     mdiArrowDownThin,
@@ -31,6 +33,7 @@
     mdiAutoFix,
     mdiFolderArrowDownOutline,
     mdiFolderArrowUpOutline,
+    mdiFolderPlusOutline,
     mdiFolderRemoveOutline,
     mdiFormatListBulletedSquare,
     mdiPlusBoxOutline,
@@ -44,9 +47,23 @@
   interface Props {
     albumGroups: string[];
     searchQuery: string;
+    currentFolderId?: string | null;
+    canModifyCurrentFolder?: boolean;
   }
 
-  let { albumGroups, searchQuery = $bindable() }: Props = $props();
+  let {
+    albumGroups,
+    searchQuery = $bindable(),
+    currentFolderId = null,
+    canModifyCurrentFolder = true,
+  }: Props = $props();
+
+  const handleCreateFolder = async () => {
+    const result = await modalManager.show(NewFolderModal, { parentId: currentFolderId });
+    if (result) {
+      await invalidateAll();
+    }
+  };
 
   const flipOrdering = (ordering: string) => {
     return ordering === SortOrder.Asc ? SortOrder.Desc : SortOrder.Asc;
@@ -131,16 +148,23 @@
   <SearchBar placeholder={$t('search_albums')} bind:name={searchQuery} showLoadingSpinner={false} />
 </div>
 
-<!-- Create Album -->
-<Button
-  leadingIcon={mdiPlusBoxOutline}
-  onclick={() => createAlbumAndRedirect()}
-  size="small"
-  variant="ghost"
-  color="secondary"
->
-  <p class="hidden md:block">{$t('create_album')}</p>
-</Button>
+{#if canModifyCurrentFolder}
+  <!-- Create Album -->
+  <Button
+    leadingIcon={mdiPlusBoxOutline}
+    onclick={() => createAlbumAndRedirect(undefined, undefined, currentFolderId)}
+    size="small"
+    variant="ghost"
+    color="secondary"
+  >
+    <p class="hidden md:block">{$t('create_album')}</p>
+  </Button>
+
+  <!-- Create Folder -->
+  <Button leadingIcon={mdiFolderPlusOutline} onclick={handleCreateFolder} size="small" variant="ghost" color="secondary">
+    <p class="hidden md:block">{$t('new_folder')}</p>
+  </Button>
+{/if}
 
 <!-- Create Smart Album -->
 <Button

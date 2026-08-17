@@ -13,6 +13,7 @@ import { UpdatedAtTrigger, UpdateIdColumn } from 'src/decorators';
 import type { SmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
 import { AlbumKind, AssetOrder } from 'src/enum';
 import { album_kind_enum } from 'src/schema/enums';
+import { AlbumContainerTable } from 'src/schema/tables/album-container.table';
 import { AssetTable } from 'src/schema/tables/asset.table';
 
 @Table({ name: 'album' })
@@ -80,6 +81,9 @@ export class AlbumTable {
 
   @Column({ type: 'timestamp with time zone', nullable: true })
   cacheInvalidatedAt!: Date | null;
+
+  @ForeignKeyColumn(() => AlbumContainerTable, { nullable: true, onUpdate: 'CASCADE', onDelete: 'SET NULL' })
+  containerId!: string | null;
 
   @UpdateIdColumn({ index: true })
   updateId!: Generated<string>;

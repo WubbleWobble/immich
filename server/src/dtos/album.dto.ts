@@ -39,6 +39,7 @@ const CreateAlbumSchema = z
     assetIds: z.array(z.uuidv4()).optional().describe('Initial asset IDs'),
     kind: AlbumKindSchema.optional().default(AlbumKind.Regular).describe('Album kind'),
     filter: SmartAlbumFilterSchema.optional().describe('Filter for smart albums'),
+    containerId: z.uuidv4().nullable().optional().describe('Target folder (null/omit for root)'),
   })
   .meta({ id: 'CreateAlbumDto' });
 
@@ -64,6 +65,7 @@ const UpdateAlbumSchema = z
     isActivityEnabled: z.boolean().optional().describe('Enable activity feed'),
     order: AssetOrderSchema.optional(),
     filter: SmartAlbumFilterSchema.optional().describe('Updated filter (smart albums only)'),
+    containerId: z.uuidv4().nullable().optional().describe('Move album to this folder (null for root)'),
   })
   .meta({ id: 'UpdateAlbumDto' });
 
@@ -141,6 +143,7 @@ export const AlbumResponseSchema = z
     contributorCounts: z.array(ContributorCountResponseSchema).optional(),
     kind: AlbumKindSchema.describe('Album kind'),
     filter: SmartAlbumFilterSchema.nullable().describe('Filter for smart albums'),
+    containerId: z.string().nullable().describe('Containing folder ID, or null if at root'),
   })
   .meta({ id: 'AlbumResponseDto' });
 
@@ -176,6 +179,7 @@ export type MapAlbumDto = {
   cachedEndDate?: string | null;
   cacheComputedAt?: Date | string | null;
   cacheInvalidatedAt?: Date | string | null;
+  containerId: string | null;
 };
 
 export const mapAlbum = (entity: MaybeDehydrated<MapAlbumDto>): AlbumResponseDto => {
@@ -220,5 +224,6 @@ export const mapAlbum = (entity: MaybeDehydrated<MapAlbumDto>): AlbumResponseDto
     order: entity.order,
     kind: entity.kind,
     filter: entity.filter,
+    containerId: entity.containerId ?? null,
   };
 };

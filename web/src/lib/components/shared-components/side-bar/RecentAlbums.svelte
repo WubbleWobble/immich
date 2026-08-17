@@ -3,44 +3,90 @@
   import { userInteraction } from '$lib/stores/user.svelte';
   import { getAssetMediaUrl } from '$lib/utils';
   import { handleError } from '$lib/utils/handle-error';
-  import { getAllAlbums } from '@immich/sdk';
+  import {
+    getAllAlbumContainers,
+    getAllAlbums,
+    type AlbumContainerResponseDto,
+    type AlbumResponseDto,
+  } from '@immich/sdk';
+  import { Icon } from '@immich/ui';
+  import { mdiFolderOutline } from '@mdi/js';
   import { t } from 'svelte-i18n';
 
-  let albums = $state(userInteraction.recentAlbums);
+  type AlbumEntry = { kind: 'album'; data: AlbumResponseDto };
+  type FolderEntry = { kind: 'folder'; data: AlbumContainerResponseDto };
+  type Entry = AlbumEntry | FolderEntry;
 
-  const refreshAlbums = async () => {
+  let entries = $state<Entry[]>([]);
+
+  const refresh = async () => {
     try {
-      const allAlbums = await getAllAlbums({});
-      albums = allAlbums.sort((a, b) => (a.updatedAt > b.updatedAt ? -1 : 1)).slice(0, 3);
-      userInteraction.recentAlbums = albums;
+      const [allAlbums, allContainers] = await Promise.all([getAllAlbums({}), getAllAlbumContainers()]);
+      // Sidebar only surfaces root-level items. Albums/folders nested inside a folder are reachable
+      // via that folder; bubbling them up would be redundant and confusing in a 3-item list.
+      const rootAlbums = allAlbums.filter((a) => !a.containerId);
+      const rootContainers = allContainers.filter((c) => !c.parentId);
+      const mixed: Entry[] = [
+        ...rootAlbums.map((a): AlbumEntry => ({ kind: 'album', data: a })),
+        ...rootContainers.map((c): FolderEntry => ({ kind: 'folder', data: c })),
+      ];
+      entries = mixed.sort((a, b) => (a.data.updatedAt > b.data.updatedAt ? -1 : 1)).slice(0, 3);
+      userInteraction.recentAlbums = entries.filter((e): e is AlbumEntry => e.kind === 'album').map((e) => e.data);
     } catch (error) {
       handleError(error, $t('failed_to_load_assets'));
     }
   };
 
+  // Hydrate from cache for instant paint, then refresh asynchronously so folders show up.
+  if (userInteraction.recentAlbums && entries.length === 0) {
+    entries = userInteraction.recentAlbums.map((a): AlbumEntry => ({ kind: 'album', data: a }));
+  }
+
   $effect(() => {
-    if (!userInteraction.recentAlbums) {
-      void refreshAlbums();
-    }
+    void refresh();
   });
 </script>
 
-{#each albums as album (album.id)}
-  <a
-    href={Route.viewAlbum(album)}
-    title={album.albumName}
-    class="flex w-full place-items-center justify-between gap-4 rounded-e-full py-3 ps-10 transition-[padding] delay-100 duration-100 hover:cursor-pointer hover:bg-subtle hover:text-immich-primary group-hover:sm:px-10 md:px-10 dark:text-immich-dark-fg dark:hover:bg-immich-dark-gray dark:hover:text-immich-dark-primary"
-  >
-    <div>
-      <div
-        class="size-6 rounded-sm bg-gray-200 bg-cover dark:bg-gray-600"
-        style={album.albumThumbnailAssetId
-          ? `background-image:url('${getAssetMediaUrl({ id: album.albumThumbnailAssetId })}')`
-          : ''}
-      ></div>
-    </div>
-    <div class="grow truncate text-sm font-medium">
-      {album.albumName}
-    </div>
-  </a>
+{#each entries as entry (entry.data.id)}
+  {#if entry.kind === 'album'}
+    <a
+      href={Route.viewAlbum(entry.data)}
+      title={entry.data.albumName}
+      class="flex w-full place-items-center justify-between gap-4 rounded-e-full py-3 ps-10 transition-[padding] delay-100 duration-100 hover:cursor-pointer hover:bg-subtle hover:text-immich-primary group-hover:sm:px-10 md:px-10 dark:text-immich-dark-fg dark:hover:bg-immich-dark-gray dark:hover:text-immich-dark-primary"
+    >
+      <div>
+        <div
+          class="size-6 rounded-sm bg-gray-200 bg-cover dark:bg-gray-600"
+          style={entry.data.albumThumbnailAssetId
+            ? `background-image:url('${getAssetMediaUrl({ id: entry.data.albumThumbnailAssetId })}')`
+            : ''}
+        ></div>
+      </div>
+      <div class="grow truncate text-sm font-medium">
+        {entry.data.albumName}
+      </div>
+    </a>
+  {:else}
+    <a
+      href={Route.albums({ folder: entry.data.id })}
+      title={entry.data.name}
+      class="flex w-full place-items-center justify-between gap-4 rounded-e-full py-3 ps-10 transition-[padding] delay-100 duration-100 hover:cursor-pointer hover:bg-subtle hover:text-immich-primary group-hover:sm:px-10 md:px-10 dark:text-immich-dark-fg dark:hover:bg-immich-dark-gray dark:hover:text-immich-dark-primary"
+    >
+      <div>
+        {#if entry.data.thumbnailAssetIds?.[0]}
+          <div
+            class="size-6 rounded-sm bg-gray-200 bg-cover dark:bg-gray-600"
+            style="background-image:url('{getAssetMediaUrl({ id: entry.data.thumbnailAssetIds[0] })}')"
+          ></div>
+        {:else}
+          <div class="flex size-6 items-center justify-center rounded-sm bg-gray-200 dark:bg-gray-600">
+            <Icon icon={mdiFolderOutline} size="14" />
+          </div>
+        {/if}
+      </div>
+      <div class="grow truncate text-sm font-medium">
+        {entry.data.name}
+      </div>
+    </a>
+  {/if}
 {/each}

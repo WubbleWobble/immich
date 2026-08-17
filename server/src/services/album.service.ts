@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 import {
   AddUsersDto,
   AlbumResponseDto,
@@ -251,6 +251,16 @@ export class AlbumService extends BaseService {
       }
     }
 
+    if (dto.containerId) {
+      const container = await this.albumContainerRepository.getById(dto.containerId);
+      if (!container) {
+        throw new BadRequestException('Folder not found');
+      }
+      if (container.ownerId !== auth.user.id) {
+        throw new ForbiddenException("Cannot create album in another user's folder");
+      }
+    }
+
     const allowedAssetIdsSet = await this.checkAccess({
       auth,
       permission: Permission.AssetShare,
@@ -268,6 +278,7 @@ export class AlbumService extends BaseService {
         order: getPreferences(userMetadata).albums.defaultAssetOrder,
         kind,
         filter,
+        containerId: dto.containerId ?? null,
       },
       assetIds,
       [{ userId: auth.user.id, role: AlbumUserRole.Owner }, ...albumUsers],
@@ -313,6 +324,24 @@ export class AlbumService extends BaseService {
         throw new BadRequestException('Invalid album thumbnail');
       }
     }
+
+    if (dto.containerId !== undefined && dto.containerId !== album.containerId) {
+      const albumOwnerId = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
+      if (auth.user.id !== albumOwnerId) {
+        throw new ForbiddenException('Only the album owner can move it to a folder');
+      }
+
+      if (dto.containerId !== null) {
+        const container = await this.albumContainerRepository.getById(dto.containerId);
+        if (!container) {
+          throw new BadRequestException('Folder not found');
+        }
+        if (container.ownerId !== auth.user.id) {
+          throw new ForbiddenException("Cannot move album to another user's folder");
+        }
+      }
+    }
+
     const updatedAlbum = await this.albumRepository.update(
       album.id,
       {
@@ -323,6 +352,7 @@ export class AlbumService extends BaseService {
         isActivityEnabled: dto.isActivityEnabled,
         order: dto.order,
         ...(dto.filter === undefined ? {} : { filter: dto.filter }),
+        containerId: dto.containerId,
       },
       auth.user.id,
     );

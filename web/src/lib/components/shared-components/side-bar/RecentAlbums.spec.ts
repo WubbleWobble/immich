@@ -14,6 +14,7 @@ describe('RecentAlbums component', () => {
     ];
 
     sdkMock.getAllAlbums.mockResolvedValueOnce([...albums]);
+    sdkMock.getAllAlbumContainers.mockResolvedValueOnce([]);
     render(RecentAlbums);
 
     expect(sdkMock.getAllAlbums).toBeCalledTimes(1);

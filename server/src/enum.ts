@@ -1125,6 +1125,7 @@ export enum CronJob {
 
 export enum ApiTag {
   Activities = 'Activities',
+  AlbumContainers = 'Album Containers',
   Albums = 'Albums',
   ApiKeys = 'API keys',
   Authentication = 'Authentication',

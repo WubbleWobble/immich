@@ -40,6 +40,7 @@ export class AlbumFactory {
       cachedEndDate: null,
       cacheComputedAt: null,
       cacheInvalidatedAt: null,
+      containerId: null,
       updatedAt: newDate(),
       updateId: newUuidV7(),
       ...dto,

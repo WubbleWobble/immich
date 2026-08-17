@@ -442,6 +442,50 @@ export type AssetStatsResponseDto = {
     /** Number of videos */
     videos: number;
 };
+export type AlbumContainerUserResponseDto = {
+    role: AlbumUserRole;
+    user: UserResponseDto;
+    /** User ID */
+    userId: string;
+};
+export type AlbumContainerResponseDto = {
+    /** Users this folder is shared with (owner not included); only present for the owner */
+    albumContainerUsers?: AlbumContainerUserResponseDto[];
+    /** Creation date */
+    createdAt: string;
+    /** Container ID */
+    id: string;
+    /** Folder name */
+    name: string;
+    /** Owner user ID */
+    ownerId: string;
+    /** Parent folder ID (null for root) */
+    parentId: string | null;
+    /** Up to 4 recent descendant asset IDs for a folder mosaic thumbnail */
+    thumbnailAssetIds: string[];
+    /** Last update date */
+    updatedAt: string;
+};
+export type CreateAlbumContainerDto = {
+    /** Folder name */
+    name: string;
+    /** Parent folder ID (null for root) */
+    parentId?: string | null;
+};
+export type UpdateAlbumContainerDto = {
+    /** Folder name */
+    name?: string;
+    /** Parent folder ID */
+    parentId?: string | null;
+};
+export type AlbumContainerUserCreateDto = {
+    role: AlbumUserRole;
+    /** User ID */
+    userId: string;
+};
+export type AlbumContainerUserUpdateDto = {
+    role: AlbumUserRole;
+};
 export type AlbumUserResponseDto = {
     role: AlbumUserRole;
     user: UserResponseDto;
@@ -513,6 +557,8 @@ export type AlbumResponseDto = {
     albumUsers: AlbumUserResponseDto[];
     /** Number of assets */
     assetCount: number;
+    /** Containing folder ID, or null if at root */
+    containerId: string | null;
     contributorCounts?: ContributorCountResponseDto[];
     /** Creation date */
     createdAt: string;
@@ -551,6 +597,8 @@ export type CreateAlbumDto = {
     albumUsers?: AlbumUserCreateDto[];
     /** Initial asset IDs */
     assetIds?: string[];
+    /** Target folder (null/omit for root) */
+    containerId?: string | null;
     /** Album description */
     description?: string;
     /** Filter for smart albums */
@@ -582,6 +630,8 @@ export type UpdateAlbumDto = {
     albumName?: string;
     /** Album thumbnail asset ID */
     albumThumbnailAssetId?: string;
+    /** Move album to this folder (null for root) */
+    containerId?: string | null;
     /** Album description */
     description?: string;
     /** Updated filter (smart albums only) */
@@ -3632,6 +3682,111 @@ export function getUserStatisticsAdmin({ id, isFavorite, isTrashed, visibility }
     }))}`, {
         ...opts
     }));
+}
+/**
+ * List folders
+ */
+export function getAllAlbumContainers(opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchJson<{
+        status: 200;
+        data: AlbumContainerResponseDto[];
+    }>("/album-containers", {
+        ...opts
+    }));
+}
+/**
+ * Create folder
+ */
+export function createAlbumContainer({ createAlbumContainerDto }: {
+    createAlbumContainerDto: CreateAlbumContainerDto;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchJson<{
+        status: 201;
+        data: AlbumContainerResponseDto;
+    }>("/album-containers", oazapfts.json({
+        ...opts,
+        method: "POST",
+        body: createAlbumContainerDto
+    })));
+}
+/**
+ * Delete folder
+ */
+export function deleteAlbumContainer({ id }: {
+    id: string;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchText(`/album-containers/${encodeURIComponent(id)}`, {
+        ...opts,
+        method: "DELETE"
+    }));
+}
+/**
+ * Get folder
+ */
+export function getAlbumContainer({ id }: {
+    id: string;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchJson<{
+        status: 200;
+        data: AlbumContainerResponseDto;
+    }>(`/album-containers/${encodeURIComponent(id)}`, {
+        ...opts
+    }));
+}
+/**
+ * Rename or move folder
+ */
+export function updateAlbumContainer({ id, updateAlbumContainerDto }: {
+    id: string;
+    updateAlbumContainerDto: UpdateAlbumContainerDto;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchJson<{
+        status: 200;
+        data: AlbumContainerResponseDto;
+    }>(`/album-containers/${encodeURIComponent(id)}`, oazapfts.json({
+        ...opts,
+        method: "PUT",
+        body: updateAlbumContainerDto
+    })));
+}
+/**
+ * Add user to folder
+ */
+export function addUserToAlbumContainer({ id, albumContainerUserCreateDto }: {
+    id: string;
+    albumContainerUserCreateDto: AlbumContainerUserCreateDto;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchText(`/album-containers/${encodeURIComponent(id)}/users`, oazapfts.json({
+        ...opts,
+        method: "POST",
+        body: albumContainerUserCreateDto
+    })));
+}
+/**
+ * Remove user from folder
+ */
+export function removeUserFromAlbumContainer({ id, userId }: {
+    id: string;
+    userId: string;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchText(`/album-containers/${encodeURIComponent(id)}/users/${encodeURIComponent(userId)}`, {
+        ...opts,
+        method: "DELETE"
+    }));
+}
+/**
+ * Update folder user role
+ */
+export function updateAlbumContainerUser({ id, userId, albumContainerUserUpdateDto }: {
+    id: string;
+    userId: string;
+    albumContainerUserUpdateDto: AlbumContainerUserUpdateDto;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchText(`/album-containers/${encodeURIComponent(id)}/users/${encodeURIComponent(userId)}`, oazapfts.json({
+        ...opts,
+        method: "PUT",
+        body: albumContainerUserUpdateDto
+    })));
 }
 /**
  * List all albums
