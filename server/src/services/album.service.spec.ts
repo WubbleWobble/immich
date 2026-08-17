@@ -139,6 +139,26 @@ describe(AlbumService.name, () => {
       expect(mocks.search.searchStatistics).not.toHaveBeenCalled();
     });
 
+    it('presents an ownerless smart album as empty instead of serving the cache', async () => {
+      // Corrupt-data edge: no owner row means no library to evaluate against, so cached
+      // values (fresh-looking or stale) must not be served.
+      const smartAlbum = AlbumFactory.from().albumUser().kind(AlbumKind.Smart).filter({ isFavorite: true }).build();
+      smartAlbum.albumUsers = smartAlbum.albumUsers.filter(({ role }) => role !== AlbumUserRole.Owner);
+      smartAlbum.cachedAssetCount = 42;
+      smartAlbum.cachedThumbnailAssetId = newUuid();
+      const viewer = smartAlbum.albumUsers[0].user;
+      mocks.album.getAll.mockResolvedValue([getForAlbum(smartAlbum)]);
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        { albumId: smartAlbum.id, assetCount: 0, startDate: null, endDate: null, lastModifiedAssetTimestamp: null },
+      ]);
+
+      const result = await sut.getAll(AuthFactory.create(viewer), {});
+
+      expect(result[0].assetCount).toBe(0);
+      expect(result[0].albumThumbnailAssetId).toBeNull();
+      expect(mocks.search.searchStatistics).not.toHaveBeenCalled();
+    });
+
     it('serves smart album metadata from the cache when fresh', async () => {
       const cachedThumbnailAssetId = newUuid();
       const computedAt = new Date('2026-05-22T10:00:00Z');

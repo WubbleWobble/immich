@@ -111,18 +111,15 @@ export class AlbumService extends BaseService {
       if (album.kind !== AlbumKind.Smart) {
         continue;
       }
-      // A missing/unevaluable filter presents as empty regardless of cache freshness: the
-      // cached values may predate the filter becoming unevaluable and still describe broad
-      // results.
-      if (!album.filter || !toEvaluableSmartAlbumFilter(album.filter)) {
+      // A missing/unevaluable filter or no resolvable owner (corrupt data) presents as
+      // empty regardless of cache freshness: the cached values may predate the album
+      // becoming unevaluable and still describe broad results.
+      const albumOwnerId = album.albumUsers?.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
+      if (!albumOwnerId || !album.filter || !toEvaluableSmartAlbumFilter(album.filter)) {
         Object.assign(album, emptySmartAlbumDisplayMetadata);
         continue;
       }
       if (!isSmartAlbumCacheStale(album)) {
-        continue;
-      }
-      const albumOwnerId = album.albumUsers?.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
-      if (!albumOwnerId) {
         continue;
       }
       const fresh = await this.recomputeSmartAlbumCache(album.id, albumOwnerId, album.filter);
