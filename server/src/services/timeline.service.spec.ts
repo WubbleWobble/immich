@@ -326,6 +326,26 @@ describe(TimelineService.name, () => {
       expect(options.assetFilter).not.toHaveProperty('visibility');
     });
 
+    it('should fail closed when the legacy filter has no effective criteria left', async () => {
+      // Only field is stripped at evaluation time -> the album must match nothing. The
+      // service falls back to the regular album path, whose album_asset join is empty
+      // for a smart album.
+      const smartAlbum = AlbumFactory.from({ id: 'smart-album-id' })
+        .kind(AlbumKind.Smart)
+        .filter({ visibility: AssetVisibility.Locked as never })
+        .build();
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['smart-album-id']));
+      mocks.album.getById.mockResolvedValue(getForAlbum(smartAlbum));
+      mocks.asset.getTimeBuckets.mockResolvedValue([]);
+
+      const result = await sut.getTimeBuckets(authStub.admin, { albumId: 'smart-album-id' });
+
+      expect(result).toEqual([]);
+      const options = mocks.asset.getTimeBuckets.mock.calls.at(-1)![0];
+      expect(options).not.toHaveProperty('assetFilter');
+      expect(options.albumId).toBe('smart-album-id');
+    });
+
     it('should strip trash filters from a legacy stored filter', async () => {
       const smartAlbum = AlbumFactory.from({ id: 'smart-album-id' })
         .kind(AlbumKind.Smart)

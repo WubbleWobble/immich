@@ -14,7 +14,11 @@ import {
 import { BulkIdErrorReason, BulkIdResponseDto, BulkIdsDto } from 'src/dtos/asset-ids.response.dto';
 import { AuthDto } from 'src/dtos/auth.dto';
 import { MapMarkerResponseDto } from 'src/dtos/map.dto';
-import { isEmptySmartAlbumFilter, sanitizeSmartAlbumFilter, SmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
+import {
+  isEmptySmartAlbumFilter,
+  SmartAlbumFilter,
+  toEvaluableSmartAlbumFilter,
+} from 'src/dtos/smart-album-filter.dto';
 import { AlbumKind, AlbumUserRole, Permission } from 'src/enum';
 import { AlbumAssetCount, AlbumInfoOptions } from 'src/repositories/album.repository';
 import { BaseService } from 'src/services/base.service';
@@ -169,11 +173,14 @@ export class AlbumService extends BaseService {
     const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
     if (album.kind === AlbumKind.Smart && album.filter) {
       const ownerId = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
-      if (!ownerId) {
+      // Fail closed: an unevaluable filter (e.g. a legacy row whose only fields were
+      // sanitized away) has no markers, not the whole library's.
+      const filter = toEvaluableSmartAlbumFilter(album.filter);
+      if (!ownerId || !filter) {
         return [];
       }
       return this.mapRepository.getMapMarkersForSearch({
-        ...sanitizeSmartAlbumFilter(album.filter),
+        ...filter,
         userIds: [ownerId],
       });
     }
@@ -550,7 +557,22 @@ export class AlbumService extends BaseService {
     ownerId: string,
     filter: SmartAlbumFilter,
   ): Promise<SmartAlbumCachedMetadata> {
-    const options = { ...sanitizeSmartAlbumFilter(filter), userIds: [ownerId] };
+    // Fail closed: an unevaluable filter (e.g. a legacy row whose only fields were
+    // sanitized away) matches nothing, not the owner's entire timeline.
+    const evaluable = toEvaluableSmartAlbumFilter(filter);
+    if (!evaluable) {
+      const empty: SmartAlbumCachedMetadata = {
+        cachedAssetCount: 0,
+        cachedThumbnailAssetId: null,
+        cachedStartDate: null,
+        cachedEndDate: null,
+        cacheComputedAt: new Date(),
+      };
+      await this.albumRepository.updateCachedMetadata(albumId, empty);
+      return empty;
+    }
+
+    const options = { ...evaluable, userIds: [ownerId] };
     // Count and date range are aggregates so albums beyond any page size stay accurate;
     // only the thumbnail needs an actual row (most recent match).
     const [{ total }, range, { items }] = await Promise.all([

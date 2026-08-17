@@ -1,6 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { BulkIdErrorReason } from 'src/dtos/asset-ids.response.dto';
-import { AlbumKind, AlbumUserRole, AssetOrder, UserMetadataKey } from 'src/enum';
+import { AlbumKind, AlbumUserRole, AssetOrder, AssetVisibility, UserMetadataKey } from 'src/enum';
 import { AlbumService } from 'src/services/album.service';
 import { AlbumUserFactory } from 'test/factories/album-user.factory';
 import { AlbumFactory } from 'test/factories/album.factory';
@@ -393,8 +393,15 @@ describe(AlbumService.name, () => {
       const owner = UserFactory.create();
       const auth = AuthFactory.create(owner);
 
-      // {} matches the owner's whole timeline - reject it and its degenerate forms.
-      for (const filter of [{}, { personIds: [] }] as never[]) {
+      // {} matches the owner's whole timeline - reject it, its degenerate forms, and
+      // no-op values the search builder silently ignores.
+      for (const filter of [
+        {},
+        { personIds: [] },
+        { visibility: 'timeline' },
+        { isNotInAlbum: false },
+        { libraryId: null },
+      ] as never[]) {
         await expect(
           sut.create(auth, { albumName: 'Smart empty', kind: AlbumKind.Smart, filter }),
         ).rejects.toBeInstanceOf(BadRequestException);
@@ -1245,6 +1252,37 @@ describe(AlbumService.name, () => {
 
       const result = await sut.get(auth, album.id);
       expect(result.albumThumbnailAssetId).toEqual(recent.id);
+    });
+
+    it('fails closed when a legacy filter has no effective criteria after sanitization', async () => {
+      // A row whose only field was stripped (visibility: locked) must report zero assets,
+      // not the owner's entire timeline.
+      const album = AlbumFactory.from()
+        .kind(AlbumKind.Smart)
+        .filter({ visibility: AssetVisibility.Locked as never })
+        .build();
+      album.cachedAssetCount = 42;
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const auth = AuthFactory.create(owner);
+
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        { albumId: album.id, assetCount: 0, startDate: null, endDate: null, lastModifiedAssetTimestamp: null },
+      ]);
+
+      const result = await sut.get(auth, album.id);
+
+      expect(result.assetCount).toBe(0);
+      expect(result.albumThumbnailAssetId).toBeNull();
+      // No search queries run for an unevaluable filter.
+      expect(mocks.search.searchStatistics).not.toHaveBeenCalled();
+      expect(mocks.search.searchMetadata).not.toHaveBeenCalled();
+      // The zeroed metadata is persisted so the list view stops serving stale numbers.
+      expect(mocks.album.updateCachedMetadata).toHaveBeenCalledWith(
+        album.id,
+        expect.objectContaining({ cachedAssetCount: 0, cachedThumbnailAssetId: null }),
+      );
     });
 
     it('recomputes smart album cache on get() even when cache is fresh by timestamp', async () => {

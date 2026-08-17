@@ -45,13 +45,51 @@ export class SmartAlbumFilterDto extends createZodDto(SmartAlbumFilterSchema) {}
 export type SmartAlbumFilter = z.infer<typeof SmartAlbumFilterSchema>;
 
 /**
- * A filter with no effective criteria (no fields, or only undefined values / empty arrays)
- * matches the owner's entire timeline. That is almost always an accident - and once the
- * album is shared, it exposes the whole library - so creation and updates reject it.
- * Note `null` values are NOT empty (e.g. `tagIds: null` means "untagged").
+ * Whether a single filter field actually constrains the search, mirroring the guards in
+ * searchAssetBuilder: several fields are truthiness-guarded there, so values like `false`,
+ * `null`, or `''` are silently ignored and must not count as criteria.
+ */
+const isEffectiveCriterion = (key: string, value: unknown): boolean => {
+  if (value === undefined) {
+    return false;
+  }
+  if (Array.isArray(value)) {
+    return value.length > 0;
+  }
+  switch (key) {
+    // The search builder defaults to timeline when visibility is absent.
+    case 'visibility': {
+      return value !== AssetVisibility.Timeline;
+    }
+    // Truthiness-guarded in searchAssetBuilder: false is a no-op.
+    case 'isNotInAlbum': {
+      return value === true;
+    }
+    // Truthiness-guarded: null / empty string are no-ops.
+    case 'libraryId':
+    case 'description':
+    case 'ocr':
+    case 'originalFileName': {
+      return typeof value === 'string' && value.length > 0;
+    }
+    // Everything else: null is meaningful (tagIds: null = untagged, city: null = no city,
+    // rating: null = unrated) and false is meaningful (isFavorite: false = non-favorites).
+    default: {
+      return true;
+    }
+  }
+};
+
+/**
+ * A filter with no effective criteria matches the owner's entire timeline. That is almost
+ * always an accident - and once the album is shared, it exposes the whole library - so
+ * creation and updates reject it, and evaluation fails closed (see
+ * toEvaluableSmartAlbumFilter). "No effective criteria" includes no-op values the search
+ * builder ignores, such as `visibility: timeline`, `isNotInAlbum: false`, `libraryId: null`,
+ * or empty arrays.
  */
 export const isEmptySmartAlbumFilter = (filter: SmartAlbumFilter): boolean =>
-  Object.values(filter).every((value) => value === undefined || (Array.isArray(value) && value.length === 0));
+  !Object.entries(filter).some(([key, value]) => isEffectiveCriterion(key, value));
 
 /**
  * Runtime guard for filters loaded from the database. Rows written before the schema
@@ -80,4 +118,16 @@ export const sanitizeSmartAlbumFilter = <
   }
   const { visibility, trashedBefore: _tb, trashedAfter: _ta, isOffline: _o, ...rest } = filter;
   return (validVisibility && visibility !== undefined ? { ...rest, visibility } : rest) as unknown as T;
+};
+
+/**
+ * Prepare a stored filter for evaluation: sanitize legacy fields, then refuse to evaluate
+ * a filter with no effective criteria left. A legacy row whose only fields were stripped
+ * (e.g. `visibility: locked`) must match NOTHING - evaluating the empty remainder would
+ * expose the owner's entire timeline instead. Returns null when the album must not match
+ * any asset.
+ */
+export const toEvaluableSmartAlbumFilter = (filter: SmartAlbumFilter): SmartAlbumFilter | null => {
+  const sanitized = sanitizeSmartAlbumFilter(filter);
+  return isEmptySmartAlbumFilter(sanitized) ? null : sanitized;
 };

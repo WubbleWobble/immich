@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Kysely, NotNull, sql } from 'kysely';
 import { InjectKysely } from 'nestjs-kysely';
 import { ChunkedSet, DummyValue, GenerateSql } from 'src/decorators';
-import { sanitizeSmartAlbumFilter, SmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
+import { SmartAlbumFilter, toEvaluableSmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
 import { AlbumKind, AlbumUserRole, AssetVisibility } from 'src/enum';
 import { DB } from 'src/schema';
 import { asUuid, searchAssetBuilder } from 'src/utils/database';
@@ -244,12 +244,15 @@ class AssetAccess {
       if (remaining.size === 0) {
         break;
       }
-      if (!album.filter) {
+      // Fail closed: a filter without effective criteria (e.g. a legacy row whose only
+      // fields were sanitized away) grants access to nothing, not everything.
+      const filter = album.filter ? toEvaluableSmartAlbumFilter(album.filter) : null;
+      if (!filter) {
         continue;
       }
       const candidateIds = [...remaining];
       const matches = await searchAssetBuilder(this.db, {
-        ...sanitizeSmartAlbumFilter(album.filter),
+        ...filter,
         userIds: [album.ownerId],
       })
         .select(['asset.id', 'asset.livePhotoVideoId'])

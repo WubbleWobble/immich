@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { AuthDto } from 'src/dtos/auth.dto';
-import { sanitizeSmartAlbumFilter, SmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
+import { SmartAlbumFilter, toEvaluableSmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
 import { TimeBucketAssetDto, TimeBucketDto, TimeBucketsResponseDto } from 'src/dtos/time-bucket.dto';
 import { AlbumKind, AlbumUserRole, AssetVisibility, Permission } from 'src/enum';
 import { TimeBucketOptions } from 'src/repositories/asset.repository';
@@ -71,7 +71,14 @@ export class TimelineService extends BaseService {
     if (!ownerId) {
       return null;
     }
-    return { filter: sanitizeSmartAlbumFilter(album.filter), ownerId };
+    const filter = toEvaluableSmartAlbumFilter(album.filter);
+    if (!filter) {
+      // Fail closed: a filter left without effective criteria (e.g. a legacy row whose only
+      // fields were sanitized away) must match nothing. Returning null routes the request
+      // through the regular album path, whose album_asset join is empty for a smart album.
+      return null;
+    }
+    return { filter, ownerId };
   }
 
   private async buildTimeBucketOptions(auth: AuthDto, dto: TimeBucketDto): Promise<TimeBucketOptions> {

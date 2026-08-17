@@ -4,7 +4,7 @@ import sanitize from 'sanitize-filename';
 import { StorageCore } from 'src/cores/storage.core';
 import { AuthDto } from 'src/dtos/auth.dto';
 import { DownloadArchiveDto, DownloadArchiveInfo, DownloadInfoDto, DownloadResponseDto } from 'src/dtos/download.dto';
-import { sanitizeSmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
+import { toEvaluableSmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
 import { AlbumKind, AlbumUserRole, Permission } from 'src/enum';
 import { ImmichReadStream } from 'src/repositories/storage.repository';
 import { BaseService } from 'src/services/base.service';
@@ -24,14 +24,15 @@ export class DownloadService extends BaseService {
       const albumId = dto.albumId;
       await this.requireAccess({ auth, permission: Permission.AlbumDownload, ids: [albumId] });
       // Smart albums have no album_asset rows; stream membership from the filter instead.
+      // An unevaluable filter (e.g. a legacy row whose only fields were sanitized away)
+      // falls through to the empty album_asset join - it must download nothing, not the
+      // owner's entire timeline.
       const album = await this.albumRepository.getById(albumId, { withAssets: false });
       const ownerId = album?.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
+      const filter = album?.kind === AlbumKind.Smart && album.filter ? toEvaluableSmartAlbumFilter(album.filter) : null;
       assets =
-        album?.kind === AlbumKind.Smart && album.filter && ownerId
-          ? this.downloadRepository.downloadSearchResults({
-              ...sanitizeSmartAlbumFilter(album.filter),
-              userIds: [ownerId],
-            })
+        album?.kind === AlbumKind.Smart && filter && ownerId
+          ? this.downloadRepository.downloadSearchResults({ ...filter, userIds: [ownerId] })
           : this.downloadRepository.downloadAlbumId(albumId);
     } else if (dto.userId) {
       const userId = dto.userId;
