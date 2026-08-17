@@ -22,6 +22,8 @@ import { AssetOrder, AssetVisibility, Permission } from 'src/enum';
 import { BaseService } from 'src/services/base.service';
 import { requireElevatedPermission } from 'src/utils/access';
 import { getMyPartnerIds } from 'src/utils/asset.util';
+import { OwnerLockVisibility } from 'src/utils/database';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
 import { isSmartSearchEnabled } from 'src/utils/misc';
 
 @Injectable()
@@ -83,6 +85,7 @@ export class SearchService extends BaseService {
         checksum,
         userIds,
         orderDirection: dto.order ?? AssetOrder.Desc,
+        lockVisibility: await this.getLockVisibility(auth, userIds),
       },
     );
 
@@ -104,7 +107,11 @@ export class SearchService extends BaseService {
     }
 
     const userIds = await this.getUserIdsToSearch(auth);
-    const items = await this.searchRepository.searchRandom(dto.size || 250, { ...dto, userIds });
+    const items = await this.searchRepository.searchRandom(dto.size || 250, {
+      ...dto,
+      userIds,
+      lockVisibility: await this.getLockVisibility(auth, userIds),
+    });
     return items.map((item) => mapAsset(item, { auth }));
   }
 
@@ -153,9 +160,15 @@ export class SearchService extends BaseService {
     }
     const page = dto.page ?? 1;
     const size = dto.size || 100;
+    const resolvedUserIds = await userIds;
     const { hasNextPage, items } = await this.searchRepository.searchSmart(
       { page, size },
-      { ...dto, userIds: await userIds, embedding },
+      {
+        ...dto,
+        userIds: resolvedUserIds,
+        embedding,
+        lockVisibility: await this.getLockVisibility(auth, resolvedUserIds),
+      },
     );
 
     return this.mapResponse(items, hasNextPage ? (page + 1).toString() : null, { auth });
@@ -200,6 +213,21 @@ export class SearchService extends BaseService {
         return Promise.resolve([]);
       }
     }
+  }
+
+  /**
+   * Locked-content filter for search results. Each owner in the search scope (viewer and
+   * timeline-enabled partners) contributes their OWN lock state; the viewer's reveal set
+   * applies only to their own locks and only in an elevated session.
+   */
+  private async getLockVisibility(auth: AuthDto, ownerIds: string[]): Promise<OwnerLockVisibility[] | undefined> {
+    const entries = await this.lockRepository.getOwnerLockVisibility({
+      viewerId: auth.user.id,
+      ownerIds,
+      revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
+      isElevated: !!auth.session?.hasElevatedPermission,
+    });
+    return entries.length > 0 ? entries : undefined;
   }
 
   private async getUserIdsToSearch(auth: AuthDto): Promise<string[]> {

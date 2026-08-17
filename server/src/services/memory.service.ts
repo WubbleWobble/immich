@@ -8,6 +8,7 @@ import { MemoryCreateDto, MemoryResponseDto, MemorySearchDto, MemoryUpdateDto, m
 import { DatabaseLock, JobName, MemoryType, Permission, QueueName, SystemMetadataKey } from 'src/enum';
 import { BaseService } from 'src/services/base.service';
 import { addAssets, removeAssets } from 'src/utils/asset.util';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
 
 const DAYS = 3;
 
@@ -45,9 +46,17 @@ export class MemoryService extends BaseService {
   }
 
   private async createOnThisDayMemories(ownerId: string, target: DateTime) {
+    // Background job: no session, so no reveal - the owner's locked content stays out of
+    // generated memories.
+    const lockVisibility = await this.lockRepository.getOwnerLockVisibility({
+      viewerId: ownerId,
+      ownerIds: [ownerId],
+      revealed: NO_REVEALED_LOCKS,
+      isElevated: false,
+    });
     const showAt = target.startOf('day').toISO();
     const hideAt = target.endOf('day').toISO();
-    const memories = await this.assetRepository.getByDayOfYear([ownerId], target);
+    const memories = await this.assetRepository.getByDayOfYear([ownerId], target, lockVisibility);
     await Promise.all(
       memories.map(({ year, assets }) =>
         this.memoryRepository.create(

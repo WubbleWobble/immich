@@ -3,6 +3,7 @@ import { AuthDto } from 'src/dtos/auth.dto';
 import { MapMarkerDto, MapMarkerResponseDto, MapReverseGeocodeDto } from 'src/dtos/map.dto';
 import { BaseService } from 'src/services/base.service';
 import { getMyPartnerIds } from 'src/utils/asset.util';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
 
 @Injectable()
 export class MapService extends BaseService {
@@ -15,7 +16,14 @@ export class MapService extends BaseService {
 
     const albumIds = options.withSharedAlbums ? await this.albumRepository.getAllIds(auth.user.id) : [];
 
-    return this.mapRepository.getMapMarkers(userIds, albumIds, options);
+    const lockVisibility = await this.lockRepository.getOwnerLockVisibility({
+      viewerId: auth.user.id,
+      ownerIds: userIds,
+      revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
+      isElevated: !!auth.session?.hasElevatedPermission,
+    });
+
+    return this.mapRepository.getMapMarkers(userIds, albumIds, options, lockVisibility);
   }
 
   async reverseGeocode(dto: MapReverseGeocodeDto) {

@@ -1,6 +1,5 @@
 import { ActivityService } from 'src/services/activity.service';
 import { AlbumContainerService } from 'src/services/album-container.service';
-import { LockService } from 'src/services/lock.service';
 import { AlbumService } from 'src/services/album.service';
 import { ApiKeyService } from 'src/services/api-key.service';
 import { ApiService } from 'src/services/api.service';
@@ -15,6 +14,7 @@ import { DownloadService } from 'src/services/download.service';
 import { DuplicateService } from 'src/services/duplicate.service';
 import { JobService } from 'src/services/job.service';
 import { LibraryService } from 'src/services/library.service';
+import { LockService } from 'src/services/lock.service';
 import { MaintenanceService } from 'src/services/maintenance.service';
 import { MapService } from 'src/services/map.service';
 import { MediaService } from 'src/services/media.service';

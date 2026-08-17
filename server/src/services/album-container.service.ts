@@ -21,7 +21,19 @@ const MAX_DEPTH = 16;
 @Injectable()
 export class AlbumContainerService extends BaseService {
   async list(auth: AuthDto): Promise<AlbumContainerResponseDto[]> {
-    const containers = await this.albumContainerRepository.getForUser(auth.user.id);
+    let containers = await this.albumContainerRepository.getForUser(auth.user.id);
+
+    // Locked folders (and their descendants via the closure cascade) vanish from the list
+    // for their locker until revealed in an elevated session. Other users are unaffected.
+    if (await this.lockRepository.hasAnyLocks(auth.user.id)) {
+      const isElevated = !!auth.session?.hasElevatedPermission;
+      const revealed = isElevated ? (auth.revealedLocks?.containerIds ?? []) : [];
+      const hidden = new Set(await this.lockRepository.getHiddenContainerIds(auth.user.id, revealed));
+      if (hidden.size > 0) {
+        containers = containers.filter((container) => !hidden.has(container.id));
+      }
+    }
+
     const ids = containers.map((c) => c.id);
     // Privacy: recipients shouldn't see the full share graph; only fetch users for owned containers.
     const ownedIds = containers.filter((c) => c.ownerId === auth.user.id).map((c) => c.id);

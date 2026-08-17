@@ -31,6 +31,7 @@ import {
   asUuid,
   hasPeople,
   joinDeduplicationPlugin,
+  OwnerLockVisibility,
   removeUndefinedKeys,
   searchAssetIdSubquery,
   truncatedDate,
@@ -43,6 +44,7 @@ import {
   withFilePath,
   withFiles,
   withLibrary,
+  withLockVisibility,
   withOwner,
   withSmartSearch,
   withTagId,
@@ -100,6 +102,11 @@ export interface TimeBucketOptions extends AssetBuilderOptions {
    * request still composes with it.
    */
   assetFilter?: AssetSearchBuilderOptions;
+  /**
+   * Per-owner locked-content visibility entries (see utils/database.ts withLockVisibility),
+   * precomputed once per request. Applied inside the bucket CTEs like assetFilter.
+   */
+  lockVisibility?: OwnerLockVisibility[];
 }
 
 export interface TimeBucketItem {
@@ -455,54 +462,61 @@ export class AssetRepository {
   }
 
   @GenerateSql({ params: [DummyValue.UUID, { year: 2000, day: 1, month: 1 }] })
-  getByDayOfYear(ownerIds: string[], { year, day, month }: YearMonthDay) {
-    return this.db
-      .with('res', (qb) =>
-        qb
-          .with('today', (qb) =>
-            qb
-              .selectFrom((eb) =>
-                eb
-                  .fn('generate_series', [
-                    sql`(select date_part('year', min(("localDateTime" at time zone 'UTC')::date))::int from asset)`,
-                    sql`${year - 1}`,
-                  ])
-                  .as('year'),
-              )
-              .select((eb) => eb.fn('make_date', [sql`year::int`, sql`${month}::int`, sql`${day}::int`]).as('date')),
-          )
-          .selectFrom('today')
-          .innerJoinLateral(
-            (qb) =>
+  getByDayOfYear(ownerIds: string[], { year, day, month }: YearMonthDay, lockVisibility?: OwnerLockVisibility[]) {
+    return (
+      this.db
+        .with('res', (qb) =>
+          qb
+            .with('today', (qb) =>
               qb
-                .selectFrom('asset')
-                .select(['asset.id', 'asset.localDateTime'])
-                .innerJoin('asset_job_status', 'asset.id', 'asset_job_status.assetId')
-                .where(sql`(asset."localDateTime" at time zone 'UTC')::date`, '=', sql`today.date`)
-                .where('asset.ownerId', '=', anyUuid(ownerIds))
-                .where('asset.visibility', '=', AssetVisibility.Timeline)
-                .where((eb) =>
-                  eb.exists((qb) =>
-                    qb
-                      .selectFrom('asset_file')
-                      .whereRef('assetId', '=', 'asset.id')
-                      .where('asset_file.type', '=', AssetFileType.Preview),
-                  ),
+                .selectFrom((eb) =>
+                  eb
+                    .fn('generate_series', [
+                      sql`(select date_part('year', min(("localDateTime" at time zone 'UTC')::date))::int from asset)`,
+                      sql`${year - 1}`,
+                    ])
+                    .as('year'),
                 )
-                .where('asset.deletedAt', 'is', null)
-                .orderBy(sql`(asset."localDateTime" at time zone 'UTC')::date`, 'desc')
-                .limit(20)
-                .as('a'),
-            (join) => join.onTrue(),
-          )
-          .selectAll('a'),
-      )
-      .selectFrom('res')
-      .select(sql<number>`date_part('year', ("localDateTime" at time zone 'UTC')::date)::int`.as('year'))
-      .select((eb) => eb.fn.jsonAgg(eb.table('res')).as('assets'))
-      .groupBy(sql`("localDateTime" at time zone 'UTC')::date`)
-      .orderBy(sql`("localDateTime" at time zone 'UTC')::date`, 'desc')
-      .execute();
+                .select((eb) => eb.fn('make_date', [sql`year::int`, sql`${month}::int`, sql`${day}::int`]).as('date')),
+            )
+            .selectFrom('today')
+            .innerJoinLateral(
+              (qb) =>
+                qb
+                  .selectFrom('asset')
+                  .select(['asset.id', 'asset.localDateTime'])
+                  .innerJoin('asset_job_status', 'asset.id', 'asset_job_status.assetId')
+                  .where(sql`(asset."localDateTime" at time zone 'UTC')::date`, '=', sql`today.date`)
+                  .where('asset.ownerId', '=', anyUuid(ownerIds))
+                  .where('asset.visibility', '=', AssetVisibility.Timeline)
+                  .$if(!!lockVisibility && lockVisibility.length > 0, (qb) =>
+                    withLockVisibility(qb, this.db, lockVisibility!),
+                  )
+                  .where((eb) =>
+                    eb.exists((qb) =>
+                      qb
+                        .selectFrom('asset_file')
+                        .whereRef('assetId', '=', 'asset.id')
+                        .where('asset_file.type', '=', AssetFileType.Preview),
+                    ),
+                  )
+                  .where('asset.deletedAt', 'is', null)
+                  .orderBy(sql`(asset."localDateTime" at time zone 'UTC')::date`, 'desc')
+                  .limit(20)
+                  .as('a'),
+              (join) => join.onTrue(),
+            )
+            .selectAll('a'),
+        )
+        .selectFrom('res')
+        .select(sql<number>`date_part('year', ("localDateTime" at time zone 'UTC')::date)::int`.as('year'))
+        .select((eb) => eb.fn.jsonAgg(eb.table('res')).as('assets'))
+        .groupBy(sql`("localDateTime" at time zone 'UTC')::date`)
+        .orderBy(sql`("localDateTime" at time zone 'UTC')::date`, 'desc')
+        // Embedded lock-visibility subqueries rely on the root query for join deduplication.
+        .$if(!!lockVisibility?.length, (qb) => qb.withPlugin(joinDeduplicationPlugin))
+        .execute()
+    );
   }
 
   @GenerateSql({ params: [[DummyValue.UUID]] })
@@ -751,6 +765,9 @@ export class AssetRepository {
             .$if(!!options.assetFilter, (qb) =>
               qb.where('asset.id', 'in', searchAssetIdSubquery(this.db, options.assetFilter!)),
             )
+            .$if(!!options.lockVisibility && options.lockVisibility.length > 0, (qb) =>
+              withLockVisibility(qb, this.db, options.lockVisibility!),
+            )
             .$if(!!options.personId, (qb) => hasPeople(qb, [options.personId!]))
             .$if(!!options.withStacked, (qb) =>
               qb
@@ -772,8 +789,9 @@ export class AssetRepository {
         .select((eb) => eb.fn.countAll<number>().as('count'))
         .groupBy('timeBucket')
         .orderBy('timeBucket', options.order ?? 'desc')
-        // An embedded assetFilter subquery relies on the root query to deduplicate its joins.
-        .$if(!!options.assetFilter, (qb) => qb.withPlugin(joinDeduplicationPlugin))
+        // Embedded assetFilter / lock-visibility subqueries rely on the root query to
+        // deduplicate their joins.
+        .$if(!!options.assetFilter || !!options.lockVisibility?.length, (qb) => qb.withPlugin(joinDeduplicationPlugin))
         .execute() as any as Promise<TimeBucketItem[]>
     );
   }
@@ -849,6 +867,9 @@ export class AssetRepository {
           .$if(!!options.assetIds, (qb) => qb.where('asset.id', '=', anyUuid(options.assetIds!)))
           .$if(!!options.assetFilter, (qb) =>
             qb.where('asset.id', 'in', searchAssetIdSubquery(this.db, options.assetFilter!)),
+          )
+          .$if(!!options.lockVisibility && options.lockVisibility.length > 0, (qb) =>
+            withLockVisibility(qb, this.db, options.lockVisibility!),
           )
           .$if(!!options.personId, (qb) => hasPeople(qb, [options.personId!]))
           .$if(!!options.userIds, (qb) => qb.where('asset.ownerId', '=', anyUuid(options.userIds!)))
@@ -928,8 +949,9 @@ export class AssetRepository {
       )
       .selectFrom('agg')
       .select(sql<string>`to_json(agg)::text`.as('assets'))
-      // An embedded assetFilter subquery relies on the root query to deduplicate its joins.
-      .$if(!!options.assetFilter, (qb) => qb.withPlugin(joinDeduplicationPlugin));
+      // Embedded assetFilter / lock-visibility subqueries rely on the root query to
+      // deduplicate their joins.
+      .$if(!!options.assetFilter || !!options.lockVisibility?.length, (qb) => qb.withPlugin(joinDeduplicationPlugin));
 
     return query.executeTakeFirstOrThrow();
   }

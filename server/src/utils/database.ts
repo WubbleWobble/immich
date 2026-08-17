@@ -382,6 +382,92 @@ export function searchAssetIdSubquery(
   return searchAssetBuilder(kysely, options).select('asset.id').$castTo<{ id: string }>();
 }
 
+/**
+ * Per-owner locked-content visibility, precomputed once per request (see
+ * utils/lock-visibility.ts). An entry exists only for owners with at least one effectively
+ * hidden album; owners without an entry are untouched by the filter.
+ */
+export interface OwnerLockVisibility {
+  ownerId: string;
+  /** Effectively hidden album row ids (regular and smart), after reveal subtraction. */
+  hiddenAlbumIds: string[];
+  /** Owner-scoped, evaluable filters of the owner's HIDDEN smart albums. */
+  hiddenSmartFilters: AssetSearchBuilderOptions[];
+  /** Owner-scoped, evaluable filters of the owner's VISIBLE smart albums. */
+  visibleSmartFilters: AssetSearchBuilderOptions[];
+}
+
+/**
+ * Locked-content asset filter (spec §7.3): an asset of a lock-holding owner is visible iff
+ * at least one of its containers is unlocked - a regular-album membership pointing at a
+ * non-hidden album, or a match by a visible smart album - or it has no containers at all
+ * (not in any live album and matched by no smart album; zero-container assets are never
+ * hidden by the lock mechanism).
+ *
+ * Assets of owners without an entry pass through untouched. Smart-album membership is
+ * embedded as id subqueries; the ROOT query must therefore attach
+ * {@link joinDeduplicationPlugin} (searchAssetBuilder-rooted queries already do).
+ *
+ * Note on the spec's fast-path 3 ("skip visible-smart evaluation when no smart album is
+ * locked"): that shortcut is unsound - an unlocked smart album can rescue an asset whose
+ * regular albums are all locked - so visible-smart subqueries are included whenever the
+ * owner has anything hidden.
+ */
+export function withLockVisibility<O>(
+  qb: SelectQueryBuilder<DB, 'asset', O>,
+  db: Kysely<DB>,
+  entries: OwnerLockVisibility[],
+): SelectQueryBuilder<DB, 'asset', O> {
+  if (entries.length === 0) {
+    return qb;
+  }
+  const ownersWithLocks = entries.map(({ ownerId }) => ownerId);
+  const unionSmart = (filters: AssetSearchBuilderOptions[]) => {
+    let union = searchAssetIdSubquery(db, filters[0]);
+    for (const filter of filters.slice(1)) {
+      union = union.union(searchAssetIdSubquery(db, filter));
+    }
+    return union;
+  };
+
+  return qb.where((eb) => {
+    const liveMembership = (assetRef: 'asset.id') =>
+      eb
+        .selectFrom('album_asset')
+        .innerJoin('album', (join) =>
+          join.onRef('album.id', '=', 'album_asset.albumId').on('album.deletedAt', 'is', null),
+        )
+        .select('album_asset.assetId')
+        .whereRef('album_asset.assetId', '=', assetRef);
+
+    return eb.or([
+      eb.not(eb('asset.ownerId', '=', anyUuid(ownersWithLocks))),
+      ...entries.map((entry) => {
+        const ownerClauses = [
+          // Visible via an unlocked (live) regular-album membership.
+          eb.exists(
+            liveMembership('asset.id').where((eb2) =>
+              eb2.not(eb2('album_asset.albumId', '=', anyUuid(entry.hiddenAlbumIds))),
+            ),
+          ),
+        ];
+        if (entry.visibleSmartFilters.length > 0) {
+          ownerClauses.push(eb('asset.id', 'in', unionSmart(entry.visibleSmartFilters)));
+        }
+        const zeroContainer = [eb.not(eb.exists(liveMembership('asset.id')))];
+        if (entry.hiddenSmartFilters.length > 0) {
+          zeroContainer.push(eb('asset.id', 'not in', unionSmart(entry.hiddenSmartFilters)));
+        }
+        if (entry.visibleSmartFilters.length > 0) {
+          zeroContainer.push(eb('asset.id', 'not in', unionSmart(entry.visibleSmartFilters)));
+        }
+        ownerClauses.push(eb.and(zeroContainer));
+        return eb.and([eb('asset.ownerId', '=', asUuid(entry.ownerId)), eb.or(ownerClauses)]);
+      }),
+    ]);
+  });
+}
+
 export function searchAssetBuilder(kysely: Kysely<DB>, options: AssetSearchBuilderOptions) {
   options.withDeleted ||= !!(options.trashedAfter || options.trashedBefore || options.isOffline);
   const visibility = options.visibility == null ? AssetVisibility.Timeline : options.visibility;
@@ -496,7 +582,10 @@ export function searchAssetBuilder(kysely: Kysely<DB>, options: AssetSearchBuild
     .$if(options.withStacked === false, (qb) => qb.where('asset.stackId', 'is', null))
     .$if(!!options.withExif, withExifInner)
     .$if(!!(options.withFaces || options.withPeople), (qb) => qb.select(withFacesAndPeople))
-    .$if(!options.withDeleted, (qb) => qb.where('asset.deletedAt', 'is', null));
+    .$if(!options.withDeleted, (qb) => qb.where('asset.deletedAt', 'is', null))
+    .$if(!!options.lockVisibility && options.lockVisibility.length > 0, (qb) =>
+      withLockVisibility(qb, kysely, options.lockVisibility!),
+    );
 }
 
 export type ReindexVectorIndexOptions = { indexName: string; lists?: number };

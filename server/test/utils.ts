@@ -359,6 +359,14 @@ export const getMocks = () => {
     workflow: automock(WorkflowRepository, { strict: true }),
   };
 
+  // Lock-visibility defaults: the overwhelmingly common case is "no locks", and most specs
+  // exercise read paths that consult these on every request.
+  mocks.lock.hasAnyLocks.mockResolvedValue(false);
+  mocks.lock.getOwnerLockVisibility.mockResolvedValue([]);
+  mocks.lock.getHiddenAlbumIds.mockResolvedValue([]);
+  mocks.lock.getHiddenContainerIds.mockResolvedValue([]);
+  mocks.lock.getLocks.mockResolvedValue({ lockedAlbumIds: [], lockedContainerIds: [] });
+
   return mocks;
 };
 

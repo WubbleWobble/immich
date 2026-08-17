@@ -8,6 +8,8 @@ import { AssetSearchBuilderOptions } from 'src/repositories/search.repository';
 import { BaseService } from 'src/services/base.service';
 import { requireElevatedPermission } from 'src/utils/access';
 import { getMyPartnerIds } from 'src/utils/asset.util';
+import { OwnerLockVisibility } from 'src/utils/database';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
 
 interface SmartAlbumContext {
   /** Owner-scoped membership filter, or null when the album must present as empty. */
@@ -36,7 +38,10 @@ export class TimelineService extends BaseService {
       });
     }
 
-    return await this.assetRepository.getTimeBuckets(timeBucketOptions);
+    return await this.assetRepository.getTimeBuckets({
+      ...timeBucketOptions,
+      lockVisibility: await this.getLockVisibility(auth, timeBucketOptions.userIds),
+    });
   }
 
   // pre-jsonified response
@@ -61,8 +66,33 @@ export class TimelineService extends BaseService {
     }
 
     // TODO: use id cursor for pagination
-    const bucket = await this.assetRepository.getTimeBucket(dto.timeBucket, timeBucketOptions, auth);
+    const bucket = await this.assetRepository.getTimeBucket(
+      dto.timeBucket,
+      { ...timeBucketOptions, lockVisibility: await this.getLockVisibility(auth, timeBucketOptions.userIds) },
+      auth,
+    );
     return bucket.assets;
+  }
+
+  /**
+   * Locked-content filter for non-album timeline views (main timeline, partner, person, tag
+   * buckets). Each owner in the query contributes their OWN lock state; the viewer's reveal
+   * set applies only to the viewer's own locks and only in an elevated session. Album-scoped
+   * views are deliberately not filtered: an album the viewer can open IS the container being
+   * inspected (spec §8.4).
+   */
+  private async getLockVisibility(
+    auth: AuthDto,
+    ownerIds: string[] | undefined,
+  ): Promise<OwnerLockVisibility[] | undefined> {
+    const owners = ownerIds && ownerIds.length > 0 ? ownerIds : [auth.user.id];
+    const entries = await this.lockRepository.getOwnerLockVisibility({
+      viewerId: auth.user.id,
+      ownerIds: owners,
+      revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
+      isElevated: !!auth.session?.hasElevatedPermission,
+    });
+    return entries.length > 0 ? entries : undefined;
   }
 
   private async loadSmartAlbumContext(albumId: string | undefined): Promise<SmartAlbumContext | null> {

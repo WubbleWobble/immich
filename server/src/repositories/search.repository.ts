@@ -6,7 +6,7 @@ import { AssetStatus, AssetType, AssetVisibility, VectorIndex } from 'src/enum';
 import { probes } from 'src/repositories/database.repository';
 import { DB } from 'src/schema';
 import { AssetExifTable } from 'src/schema/tables/asset-exif.table';
-import { anyUuid, searchAssetBuilder, withExifInner } from 'src/utils/database';
+import { anyUuid, OwnerLockVisibility, searchAssetBuilder, withExifInner } from 'src/utils/database';
 import { paginationHelper } from 'src/utils/pagination';
 import { isValidInteger } from 'src/validation';
 
@@ -96,6 +96,15 @@ export interface SearchAlbumOptions {
   albumIds?: string[];
 }
 
+export interface SearchLockVisibilityOptions {
+  /**
+   * Per-owner locked-content visibility (see utils/database.ts withLockVisibility). Only
+   * set on request-level queries; never present on stored smart-album filters, so embedded
+   * membership subqueries cannot recurse into it.
+   */
+  lockVisibility?: OwnerLockVisibility[];
+}
+
 export interface SearchOrderOptions {
   orderDirection?: 'asc' | 'desc';
 }
@@ -115,7 +124,8 @@ type BaseAssetSearchOptions = SearchDateOptions &
   SearchPeopleOptions &
   SearchTagOptions &
   SearchAlbumOptions &
-  SearchOcrOptions;
+  SearchOcrOptions &
+  SearchLockVisibilityOptions;
 
 export type AssetSearchOptions = BaseAssetSearchOptions & SearchRelationOptions;
 
@@ -129,7 +139,8 @@ export type SmartSearchOptions = SearchDateOptions &
   SearchUserIdOptions &
   SearchPeopleOptions &
   SearchTagOptions &
-  SearchOcrOptions;
+  SearchOcrOptions &
+  SearchLockVisibilityOptions;
 
 export type OcrSearchOptions = SearchDateOptions & SearchOcrOptions;
 

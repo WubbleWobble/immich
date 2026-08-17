@@ -1,5 +1,6 @@
 import { AlbumController } from 'src/controllers/album.controller';
 import { AlbumService } from 'src/services/album.service';
+import { LockService } from 'src/services/lock.service';
 import request from 'supertest';
 import { factory } from 'test/small.factory';
 import { ControllerContext, controllerSetup, mockBaseService } from 'test/utils';
@@ -7,9 +8,13 @@ import { ControllerContext, controllerSetup, mockBaseService } from 'test/utils'
 describe(AlbumController.name, () => {
   let ctx: ControllerContext;
   const service = mockBaseService(AlbumService);
+  const lockService = mockBaseService(LockService);
 
   beforeAll(async () => {
-    ctx = await controllerSetup(AlbumController, [{ provide: AlbumService, useValue: service }]);
+    ctx = await controllerSetup(AlbumController, [
+      { provide: AlbumService, useValue: service },
+      { provide: LockService, useValue: lockService },
+    ]);
     return () => ctx.close();
   });
 

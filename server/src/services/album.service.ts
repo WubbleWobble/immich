@@ -24,6 +24,7 @@ import { AlbumAssetCount, AlbumInfoOptions } from 'src/repositories/album.reposi
 import { BaseService } from 'src/services/base.service';
 import { addAssets, removeAssets } from 'src/utils/asset.util';
 import { asDateString } from 'src/utils/date';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
 import { getPreferences } from 'src/utils/preferences';
 
 interface SmartAlbumCachedMetadata {
@@ -82,15 +83,20 @@ export class AlbumService extends BaseService {
     };
   }
 
-  async getAll(
-    { user: { id: ownerId } }: AuthDto,
-    { assetId, isOwned, isShared }: GetAlbumsDto,
-  ): Promise<AlbumResponseDto[]> {
+  async getAll(auth: AuthDto, { assetId, isOwned, isShared }: GetAlbumsDto): Promise<AlbumResponseDto[]> {
+    const ownerId = auth.user.id;
     await this.albumRepository.updateThumbnails();
 
-    const albums = assetId
+    let albums = assetId
       ? await this.albumRepository.getByAssetId(ownerId, assetId)
       : await this.albumRepository.getAll(ownerId, { isOwned, isShared });
+
+    // Locked albums (directly, or via a locked folder) vanish from every list surface for
+    // their locker until revealed in an elevated session. Other users are unaffected.
+    const hiddenAlbumIds = await this.getViewerHiddenAlbumIds(auth);
+    if (hiddenAlbumIds.size > 0) {
+      albums = albums.filter((album) => !hiddenAlbumIds.has(album.id));
+    }
 
     if (albums.length === 0) {
       return [];
@@ -588,6 +594,19 @@ export class AlbumService extends BaseService {
     }
 
     await this.albumUserRepository.update({ albumId: id, userId }, { role: dto.role });
+  }
+
+  /**
+   * The viewer's effectively-hidden album ids (empty for the common no-locks case). The
+   * reveal set applies only in an elevated session.
+   */
+  private async getViewerHiddenAlbumIds(auth: AuthDto): Promise<Set<string>> {
+    if (auth.sharedLink || !(await this.lockRepository.hasAnyLocks(auth.user.id))) {
+      return new Set();
+    }
+    const isElevated = !!auth.session?.hasElevatedPermission;
+    const revealed = isElevated ? (auth.revealedLocks ?? NO_REVEALED_LOCKS) : NO_REVEALED_LOCKS;
+    return new Set(await this.lockRepository.getHiddenAlbumIds(auth.user.id, revealed));
   }
 
   private async findOrFail(id: string, authUserId: string, options: AlbumInfoOptions) {

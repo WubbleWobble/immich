@@ -1,6 +1,5 @@
 import { ActivityController } from 'src/controllers/activity.controller';
 import { AlbumContainerController } from 'src/controllers/album-container.controller';
-import { LockController } from 'src/controllers/lock.controller';
 import { AlbumController } from 'src/controllers/album.controller';
 import { ApiKeyController } from 'src/controllers/api-key.controller';
 import { AppController } from 'src/controllers/app.controller';
@@ -14,6 +13,7 @@ import { DuplicateController } from 'src/controllers/duplicate.controller';
 import { FaceController } from 'src/controllers/face.controller';
 import { JobController } from 'src/controllers/job.controller';
 import { LibraryController } from 'src/controllers/library.controller';
+import { LockController } from 'src/controllers/lock.controller';
 import { MaintenanceController } from 'src/controllers/maintenance.controller';
 import { MapController } from 'src/controllers/map.controller';
 import { MemoryController } from 'src/controllers/memory.controller';

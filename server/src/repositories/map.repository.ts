@@ -15,7 +15,12 @@ import { SystemMetadataRepository } from 'src/repositories/system-metadata.repos
 import { DB } from 'src/schema';
 import { GeodataPlacesTable } from 'src/schema/tables/geodata-places.table';
 import { NaturalEarthCountriesTable } from 'src/schema/tables/natural-earth-countries.table';
-import { joinDeduplicationPlugin, searchAssetIdSubquery } from 'src/utils/database';
+import {
+  joinDeduplicationPlugin,
+  OwnerLockVisibility,
+  searchAssetIdSubquery,
+  withLockVisibility,
+} from 'src/utils/database';
 
 export interface MapMarkerSearchOptions {
   isArchived?: boolean;
@@ -97,8 +102,14 @@ export class MapRepository {
     ownerIds: string[],
     albumIds: string[],
     { isArchived, isFavorite, fileCreatedAfter, fileCreatedBefore }: MapMarkerSearchOptions = {},
+    lockVisibility?: OwnerLockVisibility[],
   ) {
     return this.mapMarkersQuery()
+      .$if(!!lockVisibility && lockVisibility.length > 0, (qb) =>
+        withLockVisibility(qb, this.db as unknown as Kysely<DB>, lockVisibility!)
+          // Embedded lock-visibility subqueries rely on the root query for join deduplication.
+          .withPlugin(joinDeduplicationPlugin),
+      )
       .$if(isArchived === true, (qb) =>
         qb.where((eb) =>
           eb.or([

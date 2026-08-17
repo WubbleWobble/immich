@@ -217,7 +217,10 @@ export class AuthService extends BaseService {
 
   async authenticate({ headers, queryParams, metadata }: ValidateRequest): Promise<AuthDto> {
     const authDto = await this.validate({ headers, queryParams });
-    authDto.revealedLocks = parseRevealedLockHeaders(headers);
+    const revealedLocks = parseRevealedLockHeaders(headers);
+    if (revealedLocks.albumIds.length > 0 || revealedLocks.containerIds.length > 0) {
+      authDto.revealedLocks = revealedLocks;
+    }
     const { adminRoute, sharedLinkRoute, uri } = metadata;
     const requestedPermission = metadata.permission ?? Permission.All;
 

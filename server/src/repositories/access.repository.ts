@@ -5,7 +5,8 @@ import { ChunkedSet, DummyValue, GenerateSql } from 'src/decorators';
 import { SmartAlbumFilter, toEvaluableSmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
 import { AlbumKind, AlbumUserRole, AssetVisibility } from 'src/enum';
 import { DB } from 'src/schema';
-import { asUuid, searchAssetBuilder } from 'src/utils/database';
+import { asUuid, joinDeduplicationPlugin, searchAssetBuilder, withLockVisibility } from 'src/utils/database';
+import { getOwnerLockVisibility, NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
 
 class ActivityAccess {
   constructor(private db: Kysely<DB>) {}
@@ -356,13 +357,13 @@ class AssetAccess {
       return new Set<string>();
     }
 
-    return this.db
+    const rows = await this.db
       .selectFrom('partner')
       .innerJoin('user as sharedBy', (join) =>
         join.onRef('sharedBy.id', '=', 'partner.sharedById').on('sharedBy.deletedAt', 'is', null),
       )
       .innerJoin('asset', (join) => join.onRef('asset.ownerId', '=', 'sharedBy.id').on('asset.deletedAt', 'is', null))
-      .select('asset.id')
+      .select(['asset.id', 'asset.ownerId'])
       .where('partner.sharedWithId', '=', userId)
       .where((eb) =>
         eb.or([
@@ -372,8 +373,38 @@ class AssetAccess {
       )
 
       .where('asset.id', 'in', [...assetIds])
-      .execute()
-      .then((assets) => new Set(assets.map((asset) => asset.id)));
+      .execute();
+
+    const allowed = new Set(rows.map((asset) => asset.id));
+    if (allowed.size === 0) {
+      return allowed;
+    }
+
+    // Locked-content exclusion: a partner must not reach the owner's effectively-hidden
+    // assets by direct id either. The owner's own lock rows apply, never with a reveal set
+    // (the viewer cannot reveal someone else's locks).
+    const owners = [...new Set(rows.map((asset) => asset.ownerId))];
+    const lockVisibility = await getOwnerLockVisibility(this.db, {
+      viewerId: userId,
+      ownerIds: owners,
+      revealed: NO_REVEALED_LOCKS,
+      isElevated: false,
+    });
+    if (lockVisibility.length === 0) {
+      return allowed;
+    }
+    const visible = await withLockVisibility(
+      this.db
+        .selectFrom('asset')
+        .select('asset.id')
+        .where('asset.id', 'in', [...allowed]),
+      this.db,
+      lockVisibility,
+    )
+      // Embedded lock-visibility subqueries rely on the root query for join deduplication.
+      .withPlugin(joinDeduplicationPlugin)
+      .execute();
+    return new Set(visible.map((asset) => asset.id));
   }
 
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID_SET] })

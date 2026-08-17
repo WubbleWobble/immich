@@ -3,7 +3,15 @@ import { Kysely } from 'kysely';
 import { InjectKysely } from 'nestjs-kysely';
 import { DummyValue, GenerateSql } from 'src/decorators';
 import { DB } from 'src/schema';
-import { anyUuid } from 'src/utils/database';
+import { OwnerLockVisibility } from 'src/utils/database';
+import {
+  getHiddenAlbumIdsQuery,
+  getHiddenContainerIdsQuery,
+  getOwnerLockVisibility,
+  hasAnyLocksQuery,
+  LockVisibilityRequest,
+  RevealedLocks,
+} from 'src/utils/lock-visibility';
 
 /**
  * Per-user lock state for albums and album containers (folders). Rows are pure per-user
@@ -25,11 +33,7 @@ export class LockRepository {
 
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID] })
   async unlockAlbum(userId: string, albumId: string): Promise<void> {
-    await this.db
-      .deleteFrom('locked_album')
-      .where('userId', '=', userId)
-      .where('albumId', '=', albumId)
-      .execute();
+    await this.db.deleteFrom('locked_album').where('userId', '=', userId).where('albumId', '=', albumId).execute();
   }
 
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID] })
@@ -65,73 +69,25 @@ export class LockRepository {
   /**
    * Fast path for the visibility filter: a user with zero lock rows pays nothing.
    */
-  @GenerateSql({ params: [DummyValue.UUID] })
-  async hasAnyLocks(userId: string): Promise<boolean> {
-    const row = await this.db
-      .selectFrom('locked_album')
-      .select('albumId as id')
-      .where('userId', '=', userId)
-      .union((eb) => eb.selectFrom('locked_container').select('containerId as id').where('userId', '=', userId))
-      .limit(1)
-      .executeTakeFirst();
-    return row !== undefined;
+  hasAnyLocks(userId: string): Promise<boolean> {
+    return hasAnyLocksQuery(this.db, userId);
+  }
+
+  /** See getHiddenAlbumIdsQuery in utils/lock-visibility.ts - the single source of truth. */
+  getHiddenAlbumIds(userId: string, revealed: RevealedLocks): Promise<string[]> {
+    return getHiddenAlbumIdsQuery(this.db, userId, revealed);
+  }
+
+  /** See getHiddenContainerIdsQuery in utils/lock-visibility.ts. */
+  getHiddenContainerIds(userId: string, revealedContainerIds: string[]): Promise<string[]> {
+    return getHiddenContainerIdsQuery(this.db, userId, revealedContainerIds);
   }
 
   /**
-   * The user's effectively-hidden album ids: directly-locked albums (minus the revealed
-   * set) plus every album living in a folder subtree whose root is locked (minus revealed
-   * folders). Reveal subtraction happens BEFORE closure expansion, so revealing a parent
-   * folder does not reveal a separately-locked descendant. Reveal sets are intersected with
-   * the user's own lock rows by construction - foreign ids in the reveal set cannot reveal
-   * anything.
+   * Per-owner visibility entries for withLockVisibility(). Compute once per request and
+   * thread through the query options.
    */
-  @GenerateSql({ params: [DummyValue.UUID, [DummyValue.UUID], [DummyValue.UUID]] })
-  async getHiddenAlbumIds(
-    userId: string,
-    revealedAlbumIds: string[],
-    revealedContainerIds: string[],
-  ): Promise<string[]> {
-    const rows = await this.db
-      .selectFrom('locked_album')
-      .select('albumId as id')
-      .where('userId', '=', userId)
-      .where((eb) => eb.not(eb('albumId', '=', anyUuid(revealedAlbumIds))))
-      .union((eb) =>
-        eb
-          .selectFrom('album')
-          .select('album.id as id')
-          .where('album.deletedAt', 'is', null)
-          .where('album.containerId', 'in', (qb) =>
-            qb
-              .selectFrom('locked_container')
-              .innerJoin(
-                'album_container_closure',
-                'album_container_closure.id_ancestor',
-                'locked_container.containerId',
-              )
-              .select('album_container_closure.id_descendant')
-              .where('locked_container.userId', '=', userId)
-              .where((eb2) => eb2.not(eb2('locked_container.containerId', '=', anyUuid(revealedContainerIds)))),
-          ),
-      )
-      .execute();
-    return rows.map(({ id }) => id);
-  }
-
-  /**
-   * The user's effectively-hidden container ids: locked folders (minus revealed) expanded
-   * through the closure table to all descendants.
-   */
-  @GenerateSql({ params: [DummyValue.UUID, [DummyValue.UUID]] })
-  async getHiddenContainerIds(userId: string, revealedContainerIds: string[]): Promise<string[]> {
-    const rows = await this.db
-      .selectFrom('locked_container')
-      .innerJoin('album_container_closure', 'album_container_closure.id_ancestor', 'locked_container.containerId')
-      .select('album_container_closure.id_descendant as id')
-      .distinct()
-      .where('locked_container.userId', '=', userId)
-      .where((eb) => eb.not(eb('locked_container.containerId', '=', anyUuid(revealedContainerIds))))
-      .execute();
-    return rows.map(({ id }) => id);
+  getOwnerLockVisibility(request: LockVisibilityRequest): Promise<OwnerLockVisibility[]> {
+    return getOwnerLockVisibility(this.db, request);
   }
 }
