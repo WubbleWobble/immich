@@ -251,6 +251,38 @@ describe(AlbumService.name, () => {
       expect(mocks.album.updateCachedMetadata).toHaveBeenCalledTimes(1);
     });
 
+    it('hides locked albums from the list for their locker', async () => {
+      const albumA = AlbumFactory.create();
+      const { user: owner } = albumA.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const albumB = AlbumFactory.create();
+      mocks.album.getAll.mockResolvedValue([getForAlbum(albumA), getForAlbum(albumB)]);
+      mocks.album.getMetadataForIds.mockResolvedValue([]);
+      mocks.lock.hasAnyLocks.mockResolvedValue(true);
+      mocks.lock.getHiddenAlbumIds.mockResolvedValue([albumB.id]);
+
+      const result = await sut.getAll(AuthFactory.create(owner), {});
+
+      expect(result.map(({ id }) => id)).toEqual([albumA.id]);
+      // Not elevated: the reveal set must not reach the derivation.
+      expect(mocks.lock.getHiddenAlbumIds).toHaveBeenCalledWith(owner.id, { albumIds: [], containerIds: [] });
+    });
+
+    it('honours the reveal set only in an elevated session', async () => {
+      const album = AlbumFactory.create();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.album.getAll.mockResolvedValue([getForAlbum(album)]);
+      mocks.album.getMetadataForIds.mockResolvedValue([]);
+      mocks.lock.hasAnyLocks.mockResolvedValue(true);
+      mocks.lock.getHiddenAlbumIds.mockResolvedValue([]);
+
+      const auth = AuthFactory.from(owner).session({ hasElevatedPermission: true }).build();
+      auth.revealedLocks = { albumIds: [album.id], containerIds: [] };
+
+      await sut.getAll(auth, {});
+
+      expect(mocks.lock.getHiddenAlbumIds).toHaveBeenCalledWith(owner.id, { albumIds: [album.id], containerIds: [] });
+    });
+
     it('gets list of albums that have a specific asset', async () => {
       const album = AlbumFactory.from()
         .owner({ isAdmin: true })

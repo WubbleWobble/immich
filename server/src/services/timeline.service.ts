@@ -38,6 +38,12 @@ export class TimelineService extends BaseService {
       });
     }
 
+    // Album-scoped views are deliberately not lock-filtered (spec §8.4): the album is the
+    // container being inspected.
+    if (dto.albumId) {
+      return await this.assetRepository.getTimeBuckets(timeBucketOptions);
+    }
+
     return await this.assetRepository.getTimeBuckets({
       ...timeBucketOptions,
       lockVisibility: await this.getLockVisibility(auth, timeBucketOptions.userIds),
@@ -68,7 +74,9 @@ export class TimelineService extends BaseService {
     // TODO: use id cursor for pagination
     const bucket = await this.assetRepository.getTimeBucket(
       dto.timeBucket,
-      { ...timeBucketOptions, lockVisibility: await this.getLockVisibility(auth, timeBucketOptions.userIds) },
+      dto.albumId
+        ? timeBucketOptions
+        : { ...timeBucketOptions, lockVisibility: await this.getLockVisibility(auth, timeBucketOptions.userIds) },
       auth,
     );
     return bucket.assets;

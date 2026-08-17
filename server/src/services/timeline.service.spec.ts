@@ -208,6 +208,50 @@ describe(TimelineService.name, () => {
     });
   });
 
+  describe('locked-content filtering', () => {
+    it('passes per-owner lock visibility into non-album bucket queries', async () => {
+      const entries = [
+        { ownerId: authStub.admin.user.id, hiddenAlbumIds: ['a1'], hiddenSmartFilters: [], visibleSmartFilters: [] },
+      ];
+      mocks.lock.getOwnerLockVisibility.mockResolvedValue(entries);
+      mocks.asset.getTimeBuckets.mockResolvedValue([]);
+
+      await sut.getTimeBuckets(authStub.admin, {});
+
+      expect(mocks.lock.getOwnerLockVisibility).toHaveBeenCalledWith(
+        expect.objectContaining({
+          viewerId: authStub.admin.user.id,
+          ownerIds: [authStub.admin.user.id],
+          isElevated: false,
+        }),
+      );
+      expect(mocks.asset.getTimeBuckets).toHaveBeenCalledWith(expect.objectContaining({ lockVisibility: entries }));
+    });
+
+    it('omits the filter when no owner has locks', async () => {
+      mocks.lock.getOwnerLockVisibility.mockResolvedValue([]);
+      mocks.asset.getTimeBuckets.mockResolvedValue([]);
+
+      await sut.getTimeBuckets(authStub.admin, {});
+
+      const options = mocks.asset.getTimeBuckets.mock.calls.at(-1)![0];
+      expect(options.lockVisibility).toBeUndefined();
+    });
+
+    it('does not apply lock filtering to album-scoped buckets', async () => {
+      const regularAlbum = AlbumFactory.from({ id: 'regular-album-id' }).build();
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set(['regular-album-id']));
+      mocks.album.getById.mockResolvedValue(getForAlbum(regularAlbum));
+      mocks.asset.getTimeBuckets.mockResolvedValue([]);
+
+      await sut.getTimeBuckets(authStub.admin, { albumId: 'regular-album-id' });
+
+      expect(mocks.lock.getOwnerLockVisibility).not.toHaveBeenCalled();
+      const options = mocks.asset.getTimeBuckets.mock.calls.at(-1)![0];
+      expect(options).not.toHaveProperty('lockVisibility');
+    });
+  });
+
   describe('smart album routing', () => {
     it('getTimeBuckets should apply the smart filter as an assetFilter subquery', async () => {
       const smartAlbum = AlbumFactory.from({ id: 'smart-album-id' })
