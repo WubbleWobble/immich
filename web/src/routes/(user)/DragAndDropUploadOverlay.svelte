@@ -4,13 +4,12 @@
   import { authManager } from '$lib/managers/auth-manager.svelte';
   import { dragAndDropFilesStore } from '$lib/stores/drag-and-drop-files.store';
   import { fileUploadHandler } from '$lib/utils/file-uploader';
-  import { isAlbumsRoute, isLockedFolderRoute } from '$lib/utils/navigation';
+  import { isAlbumsRoute } from '$lib/utils/navigation';
   import { Logo } from '@immich/ui';
   import { t } from 'svelte-i18n';
   import { fade } from 'svelte/transition';
 
   let albumId = $derived(isAlbumsRoute(page.route?.id) ? page.params.albumId : undefined);
-  let isInLockedFolder = $derived(isLockedFolderRoute(page.route.id));
 
   let dragStartTarget: EventTarget | null = $state(null);
   let isInternalDrag = false;
@@ -130,7 +129,9 @@
     if (authManager.isSharedLink) {
       dragAndDropFilesStore.set({ isDragging: true, files: filesArray });
     } else {
-      await fileUploadHandler({ files: filesArray, albumId, isLockedAssets: isInLockedFolder });
+      // The locked page is now the Lock Management panel; direct visibility=locked uploads
+      // are retired along with the per-asset lock mechanism.
+      await fileUploadHandler({ files: filesArray, albumId });
     }
   };
 

@@ -1,5 +1,8 @@
 import {
+  AlbumUserRole,
+  createAlbum,
   defaults,
+  getAlbumInfo,
   getAuthStatus,
   getLocks,
   lockAlbum,
@@ -90,6 +93,28 @@ class LockManager {
     await unlockAlbumContainer({ id });
     this.lockedContainerIds.delete(id);
     this.revealContainer(id, false);
+  }
+
+  /**
+   * The user's built-in "Locked Folder" album (same heuristic as the server migration: a
+   * locked album named 'Locked Folder' owned by the user), created and locked on demand.
+   * Powers the one-click "move to locked folder" flow the spec preserves.
+   */
+  async ensureBuiltInLockedAlbum(userId: string): Promise<string> {
+    for (const id of this.lockedAlbumIds) {
+      try {
+        const album = await getAlbumInfo({ id });
+        const ownerId = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
+        if (album.albumName === 'Locked Folder' && ownerId === userId) {
+          return id;
+        }
+      } catch {
+        // Stale lock; keep looking.
+      }
+    }
+    const album = await createAlbum({ createAlbumDto: { albumName: 'Locked Folder' } });
+    await this.lockAlbum(album.id);
+    return album.id;
   }
 
   /** Drop server-side elevation and every client-side reveal. */

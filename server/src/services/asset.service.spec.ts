@@ -37,6 +37,28 @@ describe(AssetService.name, () => {
     ({ sut, mocks } = newTestService(AssetService));
   });
 
+  describe('legacy locked visibility', () => {
+    it('rejects visibility=locked on single update', async () => {
+      const asset = AssetFactory.create();
+      mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set([asset.id]));
+
+      await expect(sut.update(authStub.admin, asset.id, { visibility: AssetVisibility.Locked })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(mocks.asset.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects visibility=locked on bulk update and never strips album memberships', async () => {
+      const asset = AssetFactory.create();
+      mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set([asset.id]));
+
+      await expect(
+        sut.updateAll(authStub.admin, { ids: [asset.id], visibility: AssetVisibility.Locked }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(mocks.album.removeAssetsFromAll).not.toHaveBeenCalled();
+    });
+  });
+
   describe('getStatistics', () => {
     it('should get the statistics for a user, excluding archived assets', async () => {
       const auth = AuthFactory.create();

@@ -95,6 +95,7 @@ export class AssetService extends BaseService {
 
   async update(auth: AuthDto, id: string, dto: UpdateAssetDto): Promise<AssetResponseDto> {
     await this.requireAccess({ auth, permission: Permission.AssetUpdate, ids: [id] });
+    rejectLegacyLockedVisibility(dto.visibility);
 
     const { description, dateTimeOriginal, latitude, longitude, rating, ...rest } = dto;
     const repos = { asset: this.assetRepository, event: this.eventRepository };
@@ -133,6 +134,7 @@ export class AssetService extends BaseService {
   }
 
   async updateAll(auth: AuthDto, dto: AssetBulkUpdateDto): Promise<void> {
+    rejectLegacyLockedVisibility(dto.visibility);
     const {
       ids,
       isFavorite,
@@ -176,10 +178,6 @@ export class AssetService extends BaseService {
 
     if (Object.keys(assetDto).length > 0) {
       await this.assetRepository.updateAll(ids, assetDto);
-    }
-
-    if (visibility === AssetVisibility.Locked) {
-      await this.albumRepository.removeAssetsFromAll(ids);
     }
 
     await this.jobRepository.queueAll(ids.map((id) => ({ name: JobName.SidecarWrite, data: { id } })));
@@ -630,5 +628,15 @@ export class AssetService extends BaseService {
 
     await this.assetEditRepository.replaceAll(id, []);
     await this.jobRepository.queue({ name: JobName.AssetEditThumbnailGeneration, data: { id } });
+  }
+}
+
+// The per-asset visibility=locked mechanism is replaced by per-user locked albums/folders
+// (see ../immich-specs/2026-05-24-locked-albums-and-folders-design.md). No code writes the
+// legacy value after the migration - and the old path was destructive, silently removing
+// the asset from every album it was in.
+function rejectLegacyLockedVisibility(visibility: AssetVisibility | undefined): void {
+  if (visibility === AssetVisibility.Locked) {
+    throw new BadRequestException('visibility=locked has been replaced by locked albums; lock an album instead');
   }
 }
