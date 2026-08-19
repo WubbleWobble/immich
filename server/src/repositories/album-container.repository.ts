@@ -315,26 +315,28 @@ export class AlbumContainerRepository {
     if (containerIds.length === 0) {
       return Promise.resolve([]);
     }
-    return this.db
-      .selectFrom('album_container_closure as closure')
-      .innerJoin('album', 'album.containerId', 'closure.id_descendant')
-      .innerJoin('album_user as owner', (join) =>
-        join.onRef('owner.albumId', '=', 'album.id').on('owner.role', '=', sql.lit(AlbumUserRole.Owner)),
-      )
-      .where('closure.id_ancestor', 'in', containerIds)
-      .where('album.kind', '=', sql.lit(AlbumKind.Smart))
-      .where('album.deletedAt', 'is', null)
-      // The closure yields one row per requested ancestor; when containerIds holds both a
-      // parent and its child, the same descendant album matches once per ancestor.
-      .distinctOn('album.id')
-      .select([
-        'album.id',
-        'album.filter',
-        'album.cacheComputedAt',
-        'album.cacheInvalidatedAt',
-        'owner.userId as ownerId',
-      ])
-      .execute();
+    return (
+      this.db
+        .selectFrom('album_container_closure as closure')
+        .innerJoin('album', 'album.containerId', 'closure.id_descendant')
+        .innerJoin('album_user as owner', (join) =>
+          join.onRef('owner.albumId', '=', 'album.id').on('owner.role', '=', sql.lit(AlbumUserRole.Owner)),
+        )
+        .where('closure.id_ancestor', 'in', containerIds)
+        .where('album.kind', '=', sql.lit(AlbumKind.Smart))
+        .where('album.deletedAt', 'is', null)
+        // The closure yields one row per requested ancestor; when containerIds holds both a
+        // parent and its child, the same descendant album matches once per ancestor.
+        .distinctOn('album.id')
+        .select([
+          'album.id',
+          'album.filter',
+          'album.cacheComputedAt',
+          'album.cacheInvalidatedAt',
+          'owner.userId as ownerId',
+        ])
+        .execute()
+    );
   }
 
   @GenerateSql({ params: [[DummyValue.UUID]] })
