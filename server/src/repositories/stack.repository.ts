@@ -6,14 +6,25 @@ import { columns } from 'src/database';
 import { DummyValue, GenerateSql } from 'src/decorators';
 import { DB } from 'src/schema';
 import { StackTable } from 'src/schema/tables/stack.table';
-import { asUuid, withDefaultVisibility } from 'src/utils/database';
+import {
+  asUuid,
+  joinDeduplicationPlugin,
+  OwnerLockVisibility,
+  withDefaultVisibility,
+  withLockVisibility,
+} from 'src/utils/database';
 
 export interface StackSearch {
   ownerId: string;
   primaryAssetId?: string;
 }
 
-const withAssets = (eb: ExpressionBuilder<DB, 'stack'>, withTags = false) => {
+const withAssets = (
+  eb: ExpressionBuilder<DB, 'stack'>,
+  withTags = false,
+  db?: Kysely<DB>,
+  lockVisibility?: OwnerLockVisibility[],
+) => {
   return jsonArrayFrom(
     eb
       .selectFrom('asset')
@@ -41,7 +52,8 @@ const withAssets = (eb: ExpressionBuilder<DB, 'stack'>, withTags = false) => {
       .select((eb) => eb.fn.toJson('exifInfo').as('exifInfo'))
       .where('asset.deletedAt', 'is', null)
       .whereRef('asset.stackId', '=', 'stack.id')
-      .$call(withDefaultVisibility),
+      .$call(withDefaultVisibility)
+      .$if(!!db && !!lockVisibility?.length, (qb) => withLockVisibility(qb, db!, lockVisibility!)),
   ).as('assets');
 };
 
@@ -50,14 +62,18 @@ export class StackRepository {
   constructor(@InjectKysely() private db: Kysely<DB>) {}
 
   @GenerateSql({ params: [{ ownerId: DummyValue.UUID }] })
-  search(query: StackSearch) {
-    return this.db
-      .selectFrom('stack')
-      .selectAll('stack')
-      .select(withAssets)
-      .where('stack.ownerId', '=', query.ownerId)
-      .$if(!!query.primaryAssetId, (eb) => eb.where('stack.primaryAssetId', '=', query.primaryAssetId!))
-      .execute();
+  search(query: StackSearch, lockVisibility?: OwnerLockVisibility[]) {
+    return (
+      this.db
+        .selectFrom('stack')
+        .selectAll('stack')
+        .select((eb) => withAssets(eb, false, this.db, lockVisibility))
+        .where('stack.ownerId', '=', query.ownerId)
+        .$if(!!query.primaryAssetId, (eb) => eb.where('stack.primaryAssetId', '=', query.primaryAssetId!))
+        // Embedded lock-visibility subqueries rely on the root query for join deduplication.
+        .$if(!!lockVisibility?.length, (qb) => qb.withPlugin(joinDeduplicationPlugin))
+        .execute()
+    );
   }
 
   async create(entity: Omit<Insertable<StackTable>, 'primaryAssetId'>, assetIds: string[]) {
@@ -133,24 +149,29 @@ export class StackRepository {
     await this.db.deleteFrom('stack').where('id', 'in', ids).execute();
   }
 
-  update(id: string, entity: Updateable<StackTable>) {
+  update(id: string, entity: Updateable<StackTable>, lockVisibility?: OwnerLockVisibility[]) {
     return this.db
       .updateTable('stack')
       .set(entity)
       .where('id', '=', asUuid(id))
       .returningAll('stack')
-      .returning((eb) => withAssets(eb, true))
+      .returning((eb) => withAssets(eb, true, this.db, lockVisibility))
+      .$if(!!lockVisibility?.length, (qb) => qb.withPlugin(joinDeduplicationPlugin))
       .executeTakeFirstOrThrow();
   }
 
   @GenerateSql({ params: [DummyValue.UUID] })
-  getById(id: string) {
-    return this.db
-      .selectFrom('stack')
-      .selectAll()
-      .select((eb) => withAssets(eb, true))
-      .where('id', '=', asUuid(id))
-      .executeTakeFirst();
+  getById(id: string, lockVisibility?: OwnerLockVisibility[]) {
+    return (
+      this.db
+        .selectFrom('stack')
+        .selectAll()
+        .select((eb) => withAssets(eb, true, this.db, lockVisibility))
+        .where('id', '=', asUuid(id))
+        // Embedded lock-visibility subqueries rely on the root query for join deduplication.
+        .$if(!!lockVisibility?.length, (qb) => qb.withPlugin(joinDeduplicationPlugin))
+        .executeTakeFirst()
+    );
   }
 
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID] })

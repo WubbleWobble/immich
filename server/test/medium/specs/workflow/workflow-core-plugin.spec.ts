@@ -9,6 +9,7 @@ import { AssetRepository } from 'src/repositories/asset.repository';
 import { ConfigRepository } from 'src/repositories/config.repository';
 import { CryptoRepository } from 'src/repositories/crypto.repository';
 import { DatabaseRepository } from 'src/repositories/database.repository';
+import { LockRepository } from 'src/repositories/lock.repository';
 import { LoggingRepository } from 'src/repositories/logging.repository';
 import { PluginRepository } from 'src/repositories/plugin.repository';
 import { StorageRepository } from 'src/repositories/storage.repository';
@@ -27,6 +28,7 @@ class WorkflowTestContext extends MediumTestContext<WorkflowExecutionService> {
     super(WorkflowExecutionService, {
       database,
       real: [
+        LockRepository,
         AccessRepository,
         AlbumRepository,
         AssetRepository,

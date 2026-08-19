@@ -4,6 +4,7 @@ import { AssetFileType, MemoryType } from 'src/enum';
 import { AccessRepository } from 'src/repositories/access.repository';
 import { AssetRepository } from 'src/repositories/asset.repository';
 import { DatabaseRepository } from 'src/repositories/database.repository';
+import { LockRepository } from 'src/repositories/lock.repository';
 import { LoggingRepository } from 'src/repositories/logging.repository';
 import { MemoryRepository } from 'src/repositories/memory.repository';
 import { PartnerRepository } from 'src/repositories/partner.repository';
@@ -21,6 +22,7 @@ const setup = (db?: Kysely<DB>) => {
   return newMediumService(MemoryService, {
     database: db || defaultDatabase,
     real: [
+      LockRepository,
       AccessRepository,
       AssetRepository,
       DatabaseRepository,

@@ -77,10 +77,14 @@ export class AlbumService extends BaseService {
       this.albumRepository.getAll(auth.user.id, { isOwned: true, isShared: false }),
     ]);
 
+    // Counts must match what getAll lists: albums hidden by the viewer's locks don't count.
+    const hiddenAlbumIds = await this.getViewerHiddenAlbumIds(auth);
+    const countVisible = (albums: { id: string }[]) => albums.filter((album) => !hiddenAlbumIds.has(album.id)).length;
+
     return {
-      owned: owned.length,
-      shared: shared.length,
-      notShared: notShared.length,
+      owned: countVisible(owned),
+      shared: countVisible(shared),
+      notShared: countVisible(notShared),
     };
   }
 

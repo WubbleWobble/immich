@@ -2,9 +2,12 @@ import {
   addAssetsToAlbum as addToAlbum,
   addAssetsToAlbums as addToAlbums,
   addUsersToAlbum,
+  AlbumKind,
   AlbumUserRole,
   BulkIdErrorReason,
   deleteAlbum,
+  getAllAlbums,
+  removeAssetFromAlbum,
   removeUserFromAlbum,
   updateAlbumInfo,
   updateAlbumUser,
@@ -90,6 +93,41 @@ export const getAlbumAssetsActions = ($t: MessageFormatter, album: AlbumResponse
   };
 
   return { AddAssets, Upload };
+};
+
+/**
+ * True "move" semantics for the built-in locked album: add the assets, then remove them
+ * from every other visible regular album (an unlocked membership would otherwise rescue
+ * them from the lock and they would reappear on refresh). Removals from albums the user
+ * cannot edit (e.g. viewer-role shares) are skipped; smart-album matches cannot be removed
+ * at all (membership is computed) - the confirmation copy warns about both.
+ */
+export const moveAssetsToLockedAlbum = async (lockedAlbumId: string, assetIds: string[]): Promise<boolean> => {
+  const added = await addAssetsToAlbums([lockedAlbumId], assetIds, { notify: false });
+  if (!added) {
+    return false;
+  }
+
+  const albumsPerAsset = await Promise.all(
+    assetIds.map((assetId) => getAllAlbums({ ...authManager.params, assetId }).catch(() => [])),
+  );
+  const removals = new Map<string, string[]>();
+  for (const [index, albums] of albumsPerAsset.entries()) {
+    for (const album of albums) {
+      if (album.id === lockedAlbumId || album.kind === AlbumKind.Smart) {
+        continue;
+      }
+      const ids = removals.get(album.id) ?? [];
+      ids.push(assetIds[index]);
+      removals.set(album.id, ids);
+    }
+  }
+  await Promise.all(
+    [...removals.entries()].map(([albumId, ids]) =>
+      removeAssetFromAlbum({ ...authManager.params, id: albumId, bulkIdsDto: { ids } }).catch(() => undefined),
+    ),
+  );
+  return true;
 };
 
 export const addAssetsToAlbums = async (albumIds: string[], assetIds: string[], { notify }: { notify: boolean }) => {

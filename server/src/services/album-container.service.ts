@@ -162,7 +162,16 @@ export class AlbumContainerService extends BaseService {
   }
 
   async update(auth: AuthDto, id: string, dto: UpdateAlbumContainerDto): Promise<AlbumContainerResponseDto> {
-    await BaseService.create(LockService, this).assertContainerVisibleForViewer(auth, id);
+    const lockService = BaseService.create(LockService, this);
+    await lockService.assertContainerVisibleForViewer(auth, id);
+    if (dto.parentId !== undefined) {
+      // Moving a folder re-routes cascade shares for everything beneath it, and moving it
+      // INTO a hidden parent is a write on hidden content.
+      await lockService.assertSubtreeVisibleForViewer(auth, id);
+      if (dto.parentId !== null) {
+        await lockService.assertContainerVisibleForViewer(auth, dto.parentId);
+      }
+    }
     const container = await this.albumContainerRepository.getById(id);
     if (!container) {
       throw new NotFoundException('Folder not found');
@@ -209,7 +218,11 @@ export class AlbumContainerService extends BaseService {
   }
 
   async delete(auth: AuthDto, id: string): Promise<void> {
-    await BaseService.create(LockService, this).assertContainerVisibleForViewer(auth, id);
+    const lockService = BaseService.create(LockService, this);
+    await lockService.assertContainerVisibleForViewer(auth, id);
+    // Deleting cascades through descendant folders (removing their lock rows) and detaches
+    // their albums to the root, un-hiding content - so a locked descendant blocks it too.
+    await lockService.assertSubtreeVisibleForViewer(auth, id);
     const container = await this.albumContainerRepository.getById(id);
     if (!container) {
       throw new NotFoundException('Folder not found');
@@ -221,7 +234,10 @@ export class AlbumContainerService extends BaseService {
   }
 
   async addUser(auth: AuthDto, id: string, dto: AlbumContainerUserCreateDto): Promise<void> {
-    await BaseService.create(LockService, this).assertContainerVisibleForViewer(auth, id);
+    const lockService = BaseService.create(LockService, this);
+    await lockService.assertContainerVisibleForViewer(auth, id);
+    // Share changes on an ancestor grant or revoke cascade access to everything beneath it.
+    await lockService.assertSubtreeVisibleForViewer(auth, id);
     const container = await this.albumContainerRepository.getById(id);
     if (!container) {
       throw new NotFoundException('Folder not found');
@@ -253,7 +269,10 @@ export class AlbumContainerService extends BaseService {
   }
 
   async updateUser(auth: AuthDto, id: string, userId: string, dto: AlbumContainerUserUpdateDto): Promise<void> {
-    await BaseService.create(LockService, this).assertContainerVisibleForViewer(auth, id);
+    const lockService = BaseService.create(LockService, this);
+    await lockService.assertContainerVisibleForViewer(auth, id);
+    // Share changes on an ancestor grant or revoke cascade access to everything beneath it.
+    await lockService.assertSubtreeVisibleForViewer(auth, id);
     const container = await this.albumContainerRepository.getById(id);
     if (!container) {
       throw new NotFoundException('Folder not found');
@@ -272,7 +291,10 @@ export class AlbumContainerService extends BaseService {
   }
 
   async removeUser(auth: AuthDto, id: string, userId: string): Promise<void> {
-    await BaseService.create(LockService, this).assertContainerVisibleForViewer(auth, id);
+    const lockService = BaseService.create(LockService, this);
+    await lockService.assertContainerVisibleForViewer(auth, id);
+    // Share changes on an ancestor grant or revoke cascade access to everything beneath it.
+    await lockService.assertSubtreeVisibleForViewer(auth, id);
     const container = await this.albumContainerRepository.getById(id);
     if (!container) {
       throw new NotFoundException('Folder not found');

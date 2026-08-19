@@ -7,7 +7,7 @@
   import { lockManager } from '$lib/managers/lock-manager.svelte';
   import type { TimelineAsset } from '$lib/managers/timeline-manager/types';
   import { Route } from '$lib/route';
-  import { addAssetsToAlbums } from '$lib/services/album.service';
+  import { moveAssetsToLockedAlbum } from '$lib/services/album.service';
   import { handleError } from '$lib/utils/handle-error';
   import { modalManager } from '@immich/ui';
   import { mdiLockOutline } from '@mdi/js';
@@ -22,8 +22,9 @@
 
   let { asset, onAction, preAction }: Props = $props();
 
-  // Routes to the per-user built-in locked ALBUM (the retired destructive visibility=locked
-  // write removed album memberships; this preserves them). Requires an elevated session.
+  // Routes to the per-user built-in locked ALBUM - and really moves: the asset is also
+  // removed from its other regular albums, since any unlocked membership would rescue it
+  // from the lock and it would reappear on refresh. Requires an elevated session.
   const moveToLockedAlbum = async () => {
     await lockManager.refresh();
     if (!lockManager.isElevated) {
@@ -45,7 +46,7 @@
     try {
       preAction({ type: AssetAction.SET_VISIBILITY_LOCKED, asset });
       const albumId = await lockManager.ensureBuiltInLockedAlbum(authManager.user.id);
-      await addAssetsToAlbums([albumId], [asset.id], { notify: false });
+      await moveAssetsToLockedAlbum(albumId, [asset.id]);
       onAction({ type: AssetAction.SET_VISIBILITY_LOCKED, asset });
     } catch (error) {
       handleError(error, $t('errors.unable_to_save_settings'));

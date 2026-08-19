@@ -37,6 +37,20 @@ describe(AlbumService.name, () => {
       expect(mocks.album.getAll).toHaveBeenCalledWith(authStub.admin.user.id, { isShared: true });
       expect(mocks.album.getAll).toHaveBeenCalledWith(authStub.admin.user.id, { isOwned: true, isShared: false });
     });
+
+    it('excludes albums hidden by the viewer locks from the counts', async () => {
+      const visible = AlbumFactory.create();
+      const hidden = AlbumFactory.create();
+      mocks.album.getAll.mockResolvedValue([getForAlbum(visible), getForAlbum(hidden)]);
+      mocks.lock.hasAnyLocks.mockResolvedValue(true);
+      mocks.lock.getHiddenAlbumIds.mockResolvedValue([hidden.id]);
+
+      await expect(sut.getStatistics(authStub.admin)).resolves.toEqual({
+        owned: 1,
+        shared: 1,
+        notShared: 1,
+      });
+    });
   });
 
   describe('getAll', () => {

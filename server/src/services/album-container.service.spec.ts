@@ -442,6 +442,58 @@ describe(AlbumContainerService.name, () => {
   });
 
   describe('update', () => {
+    it('blocks moving a folder whose subtree contains locked content (non-elevated session)', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const folder = folderForOwner(owner.id);
+      mocks.albumContainer.getById.mockResolvedValue(folder);
+      mocks.lock.isContainerHiddenForViewer.mockResolvedValue(false);
+      mocks.lock.subtreeContainsHiddenContent.mockResolvedValue(true);
+
+      await expect(sut.update(auth, folder.id, { parentId: null })).rejects.toBeInstanceOf(BadRequestException);
+      expect(mocks.albumContainer.move).not.toHaveBeenCalled();
+    });
+
+    it('allows renaming a folder above locked content (no cascade effect)', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const folder = folderForOwner(owner.id);
+      mocks.albumContainer.getById.mockResolvedValue(folder);
+      mocks.lock.isContainerHiddenForViewer.mockResolvedValue(false);
+      mocks.lock.subtreeContainsHiddenContent.mockResolvedValue(true);
+      mocks.albumContainer.rename.mockResolvedValue();
+      mocks.albumContainer.getUsersForContainers.mockResolvedValue([]);
+      mocks.albumContainer.getThumbnailAssetIdsForContainers.mockResolvedValue(new Map());
+
+      await expect(sut.update(auth, folder.id, { name: 'Renamed' })).resolves.toBeDefined();
+      expect(mocks.lock.subtreeContainsHiddenContent).not.toHaveBeenCalled();
+    });
+
+    it('blocks deleting a folder whose subtree contains locked content (non-elevated session)', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const folder = folderForOwner(owner.id);
+      mocks.albumContainer.getById.mockResolvedValue(folder);
+      mocks.lock.isContainerHiddenForViewer.mockResolvedValue(false);
+      mocks.lock.subtreeContainsHiddenContent.mockResolvedValue(true);
+
+      await expect(sut.delete(auth, folder.id)).rejects.toBeInstanceOf(BadRequestException);
+      expect(mocks.albumContainer.delete).not.toHaveBeenCalled();
+    });
+
+    it('allows deleting a locked-descendant subtree in an elevated session', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.from({ id: owner.id }).session({ hasElevatedPermission: true }).build();
+      const folder = folderForOwner(owner.id);
+      mocks.albumContainer.getById.mockResolvedValue(folder);
+      mocks.lock.subtreeContainsHiddenContent.mockResolvedValue(true);
+      mocks.albumContainer.delete.mockResolvedValue();
+
+      await expect(sut.delete(auth, folder.id)).resolves.toBeUndefined();
+      expect(mocks.lock.subtreeContainsHiddenContent).not.toHaveBeenCalled();
+      expect(mocks.albumContainer.delete).toHaveBeenCalledWith(folder.id);
+    });
+
     it('rejects moving a container into its own descendant (cycle)', async () => {
       const owner = UserFactory.create();
       const auth = AuthFactory.create({ id: owner.id });

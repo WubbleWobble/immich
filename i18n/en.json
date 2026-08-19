@@ -1615,7 +1615,7 @@
   "move_to_folder": "Move to folder",
   "move_to_lock_folder_action_prompt": "{count} added to the locked folder",
   "move_to_locked_folder": "Move to locked folder",
-  "move_to_locked_folder_confirmation": "These photos and video will be removed from all albums, and only viewable from the locked folder",
+  "move_to_locked_folder_confirmation": "These photos and videos will be moved to the locked folder and removed from your other albums. They stay in shared albums you cannot edit, and saved searches that match them will still show them.",
   "move_to_root": "Move to root",
   "move_up": "Move up",
   "moved_to_archive": "Moved {count, plural, one {# asset} other {# assets}} to archive",

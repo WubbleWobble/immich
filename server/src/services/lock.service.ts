@@ -63,6 +63,20 @@ export class LockService extends BaseService {
   }
 
   /** Folder counterpart of assertAlbumVisibleForViewer. */
+  /**
+   * Write guard for mutations on a folder whose SUBTREE may contain hidden content: delete
+   * cascades through descendants, and moves/share changes propagate cascade access - so an
+   * unlocked ancestor is not a safe handle on the locked content beneath it.
+   */
+  async assertSubtreeVisibleForViewer(auth: AuthDto, containerId: string): Promise<void> {
+    if (auth.sharedLink || auth.session?.hasElevatedPermission) {
+      return;
+    }
+    if (await this.lockRepository.subtreeContainsHiddenContent(auth.user.id, containerId)) {
+      throw new BadRequestException('Not found or no album.read access');
+    }
+  }
+
   async assertContainerVisibleForViewer(auth: AuthDto, containerId: string): Promise<void> {
     if (auth.sharedLink || auth.session?.hasElevatedPermission) {
       return;

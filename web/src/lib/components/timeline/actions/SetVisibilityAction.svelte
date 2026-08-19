@@ -6,7 +6,7 @@
   import { authManager } from '$lib/managers/auth-manager.svelte';
   import { lockManager } from '$lib/managers/lock-manager.svelte';
   import { Route } from '$lib/route';
-  import { addAssetsToAlbums } from '$lib/services/album.service';
+  import { moveAssetsToLockedAlbum } from '$lib/services/album.service';
   import type { OnSetVisibility } from '$lib/utils/actions';
   import { handleError } from '$lib/utils/handle-error';
   import { Button, modalManager } from '@immich/ui';
@@ -21,10 +21,11 @@
   let { onVisibilitySet, menuItem = false }: Props = $props();
   let loading = $state(false);
 
-  // "Move to locked folder" now routes to the per-user built-in locked ALBUM instead of the
-  // retired destructive visibility=locked write: membership in other albums is preserved,
-  // and the assets hide via the locked-album visibility rule. Requires an elevated session
-  // (the destination is locked content).
+  // "Move to locked folder" routes to the per-user built-in locked ALBUM instead of the
+  // retired destructive visibility=locked write - and it really moves: the assets are
+  // also removed from their other regular albums, since any unlocked membership would
+  // rescue them from the lock and they would reappear on refresh. Requires an elevated
+  // session (the destination is locked content).
   const moveToLockedAlbum = async () => {
     await lockManager.refresh();
     if (!lockManager.isElevated) {
@@ -46,7 +47,7 @@
       loading = true;
       const assetIds = assetMultiSelectManager.assets.map(({ id }) => id);
       const albumId = await lockManager.ensureBuiltInLockedAlbum(authManager.user.id);
-      await addAssetsToAlbums([albumId], assetIds, { notify: false });
+      await moveAssetsToLockedAlbum(albumId, assetIds);
       onVisibilitySet(assetIds);
     } catch (error) {
       handleError(error, $t('errors.unable_to_save_settings'));

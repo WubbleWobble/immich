@@ -1,10 +1,7 @@
 import type { AlbumContainerResponseDto, AlbumResponseDto } from '@immich/sdk';
 
 /** All containers (inclusive of `rootId`) reachable downward via parentId. */
-export const collectDescendantFolderIds = (
-  containers: AlbumContainerResponseDto[],
-  rootId: string,
-): Set<string> => {
+export const collectDescendantFolderIds = (containers: AlbumContainerResponseDto[], rootId: string): Set<string> => {
   const result = new Set<string>([rootId]);
   let added = true;
   while (added) {

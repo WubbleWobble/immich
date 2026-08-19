@@ -4,15 +4,30 @@ import { AuthDto } from 'src/dtos/auth.dto';
 import { StackCreateDto, StackResponseDto, StackSearchDto, StackUpdateDto, mapStack } from 'src/dtos/stack.dto';
 import { Permission } from 'src/enum';
 import { BaseService } from 'src/services/base.service';
+import { OwnerLockVisibility } from 'src/utils/database';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
 import { UUIDAssetIDParamDto } from 'src/validation';
 
 @Injectable()
 export class StackService extends BaseService {
-  async search(auth: AuthDto, dto: StackSearchDto): Promise<StackResponseDto[]> {
-    const stacks = await this.stackRepository.search({
-      ownerId: auth.user.id,
-      primaryAssetId: dto.primaryAssetId,
+  /** Stacks only contain the viewer's own assets, so the only relevant lock owner is the viewer. */
+  private getViewerLockVisibility(auth: AuthDto) {
+    return this.lockRepository.getOwnerLockVisibility({
+      viewerId: auth.user.id,
+      ownerIds: [auth.user.id],
+      revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
+      isElevated: !!auth.session?.hasElevatedPermission,
     });
+  }
+
+  async search(auth: AuthDto, dto: StackSearchDto): Promise<StackResponseDto[]> {
+    const stacks = await this.stackRepository.search(
+      {
+        ownerId: auth.user.id,
+        primaryAssetId: dto.primaryAssetId,
+      },
+      await this.getViewerLockVisibility(auth),
+    );
 
     return stacks.map((stack) => mapStack(stack, { auth }));
   }
@@ -29,18 +44,23 @@ export class StackService extends BaseService {
 
   async get(auth: AuthDto, id: string): Promise<StackResponseDto> {
     await this.requireAccess({ auth, permission: Permission.StackRead, ids: [id] });
-    const stack = await this.findOrFail(id);
+    const stack = await this.findOrFail(id, await this.getViewerLockVisibility(auth));
     return mapStack(stack, { auth });
   }
 
   async update(auth: AuthDto, id: string, dto: StackUpdateDto): Promise<StackResponseDto> {
     await this.requireAccess({ auth, permission: Permission.StackUpdate, ids: [id] });
-    const stack = await this.findOrFail(id);
+    const lockVisibility = await this.getViewerLockVisibility(auth);
+    const stack = await this.findOrFail(id, lockVisibility);
     if (dto.primaryAssetId && !stack.assets.some(({ id }) => id === dto.primaryAssetId)) {
       throw new BadRequestException('Primary asset must be in the stack');
     }
 
-    const updatedStack = await this.stackRepository.update(id, { id, primaryAssetId: dto.primaryAssetId });
+    const updatedStack = await this.stackRepository.update(
+      id,
+      { id, primaryAssetId: dto.primaryAssetId },
+      lockVisibility,
+    );
 
     await this.eventRepository.emit('StackUpdate', { stackId: id, userId: auth.user.id });
 
@@ -77,8 +97,8 @@ export class StackService extends BaseService {
     await this.eventRepository.emit('StackUpdate', { stackId, userId: auth.user.id });
   }
 
-  private async findOrFail(id: string) {
-    const stack = await this.stackRepository.getById(id);
+  private async findOrFail(id: string, lockVisibility?: OwnerLockVisibility[]) {
+    const stack = await this.stackRepository.getById(id, lockVisibility);
     if (!stack) {
       throw new Error('Asset stack not found');
     }

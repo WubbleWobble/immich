@@ -161,19 +161,19 @@
   </Button>
 
   <!-- Create Folder -->
-  <Button leadingIcon={mdiFolderPlusOutline} onclick={handleCreateFolder} size="small" variant="ghost" color="secondary">
+  <Button
+    leadingIcon={mdiFolderPlusOutline}
+    onclick={handleCreateFolder}
+    size="small"
+    variant="ghost"
+    color="secondary"
+  >
     <p class="hidden md:block">{$t('new_folder')}</p>
   </Button>
 {/if}
 
 <!-- Create Smart Album -->
-<Button
-  leadingIcon={mdiAutoFix}
-  onclick={openNewSmartAlbum}
-  size="small"
-  variant="ghost"
-  color="secondary"
->
+<Button leadingIcon={mdiAutoFix} onclick={openNewSmartAlbum} size="small" variant="ghost" color="secondary">
   <p class="hidden md:block">{$t('smart_album_new')}</p>
 </Button>
 

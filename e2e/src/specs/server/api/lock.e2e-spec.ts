@@ -764,4 +764,110 @@ describe('/albums/:id/lock', () => {
     expect(mosaic?.thumbnailAssetIds).toContain(smartAsset.id);
     void smartAlbum;
   });
+
+  it('mutations on a visible ancestor folder are blocked while a descendant is locked', async () => {
+    // Parent (unlocked) > child (locked): deleting the parent would cascade through the
+    // locked child (removing its lock rows and detaching its albums to the root), and
+    // share changes on the parent propagate cascade access - both are writes on hidden
+    // content and need elevation.
+    const parent = await createAlbumContainer(
+      { createAlbumContainerDto: { name: 'Visible Parent' } },
+      { headers: asBearerAuth(owner.accessToken) },
+    );
+    const child = await createAlbumContainer(
+      { createAlbumContainerDto: { name: 'Locked Child', parentId: parent.id } },
+      { headers: asBearerAuth(owner.accessToken) },
+    );
+    const childAsset = await utils.createAsset(owner.accessToken);
+    await utils.createAlbum(owner.accessToken, {
+      albumName: 'Inside Locked Child',
+      assetIds: [childAsset.id],
+      containerId: child.id,
+    });
+
+    const lockResponse = await request(app)
+      .post(`/album-containers/${child.id}/lock`)
+      .set('Authorization', `Bearer ${owner.accessToken}`);
+    expect(lockResponse.status).toBe(204);
+
+    const fresh = await login({
+      loginCredentialDto: { email: 'lock-owner@immich.cloud', password: 'password-lock-owner' },
+    });
+    const headers = { Authorization: `Bearer ${fresh.accessToken}` };
+
+    const deletion = await request(app).delete(`/album-containers/${parent.id}`).set(headers);
+    expect(deletion.status).toBe(400);
+
+    const move = await request(app).put(`/album-containers/${parent.id}`).set(headers).send({ parentId: null });
+    expect(move.status).toBe(400);
+
+    const share = await request(app)
+      .post(`/album-containers/${parent.id}/users`)
+      .set(headers)
+      .send({ userId: partner.userId, role: 'viewer' });
+    expect(share.status).toBe(400);
+
+    // A rename does not touch the subtree's cascade state and stays allowed.
+    const rename = await request(app)
+      .put(`/album-containers/${parent.id}`)
+      .set(headers)
+      .send({ name: 'Visible Parent Renamed' });
+    expect(rename.status).toBe(200);
+
+    // The elevated session can delete the whole subtree.
+    const elevatedDeletion = await request(app)
+      .delete(`/album-containers/${parent.id}`)
+      .set('Authorization', `Bearer ${owner.accessToken}`);
+    expect(elevatedDeletion.status).toBe(204);
+  });
+
+  it('stacks hide locked-away member assets', async () => {
+    const stackPrimary = await utils.createAsset(owner.accessToken);
+    const stackSecondary = await utils.createAsset(owner.accessToken);
+    const stackResponse = await request(app)
+      .post('/stacks')
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .send({ assetIds: [stackPrimary.id, stackSecondary.id] });
+    expect(stackResponse.status).toBe(201);
+    const stackId = stackResponse.body.id;
+
+    const stackAlbum = await utils.createAlbum(owner.accessToken, {
+      albumName: 'Stack Lock Album',
+      assetIds: [stackPrimary.id],
+    });
+    const lockResponse = await request(app)
+      .post(`/albums/${stackAlbum.id}/lock`)
+      .set('Authorization', `Bearer ${owner.accessToken}`);
+    expect(lockResponse.status).toBe(204);
+
+    // A fresh session sees the stack without the hidden member.
+    const fresh = await login({
+      loginCredentialDto: { email: 'lock-owner@immich.cloud', password: 'password-lock-owner' },
+    });
+    const list = await request(app).get('/stacks').set('Authorization', `Bearer ${fresh.accessToken}`);
+    expect(list.status).toBe(200);
+    const listed = list.body.find(({ id }: { id: string }) => id === stackId);
+    expect(listed).toBeDefined();
+    const listedIds = listed.assets.map(({ id }: { id: string }) => id);
+    expect(listedIds).not.toContain(stackPrimary.id);
+    expect(listedIds).toContain(stackSecondary.id);
+
+    const detail = await request(app).get(`/stacks/${stackId}`).set('Authorization', `Bearer ${fresh.accessToken}`);
+    expect(detail.status).toBe(200);
+    const detailIds = detail.body.assets.map(({ id }: { id: string }) => id);
+    expect(detailIds).not.toContain(stackPrimary.id);
+
+    // The elevated session with a reveal header sees the full stack again.
+    const revealed = await request(app)
+      .get(`/stacks/${stackId}`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .set('x-immich-revealed-albums', stackAlbum.id);
+    expect(revealed.status).toBe(200);
+    expect(revealed.body.assets.map(({ id }: { id: string }) => id)).toContain(stackPrimary.id);
+
+    const unlockResponse = await request(app)
+      .delete(`/albums/${stackAlbum.id}/lock`)
+      .set('Authorization', `Bearer ${owner.accessToken}`);
+    expect(unlockResponse.status).toBe(204);
+  });
 });

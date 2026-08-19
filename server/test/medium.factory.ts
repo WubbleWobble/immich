@@ -32,6 +32,7 @@ import { DatabaseRepository } from 'src/repositories/database.repository';
 import { EmailRepository } from 'src/repositories/email.repository';
 import { EventRepository } from 'src/repositories/event.repository';
 import { JobRepository } from 'src/repositories/job.repository';
+import { LockRepository } from 'src/repositories/lock.repository';
 import { LoggingRepository } from 'src/repositories/logging.repository';
 import { MachineLearningRepository } from 'src/repositories/machine-learning.repository';
 import { MapRepository } from 'src/repositories/map.repository';
@@ -360,6 +361,7 @@ export class ExifTestContext extends MediumTestContext<MetadataService> {
     super(MetadataService, {
       database,
       real: [
+        LockRepository,
         AssetRepository,
         AssetJobRepository,
         MediaRepository,
@@ -411,6 +413,7 @@ const newRealRepository = <T>(key: ClassConstructor<T>, db: Kysely<DB>): T => {
   switch (key) {
     case AccessRepository:
     case AlbumContainerRepository:
+    case LockRepository:
     case AlbumRepository:
     case AlbumUserRepository:
     case ActivityRepository:

@@ -5,14 +5,15 @@ import { DummyValue, GenerateSql } from 'src/decorators';
 import { DB } from 'src/schema';
 import { OwnerLockVisibility } from 'src/utils/database';
 import {
+  LockVisibilityRequest,
+  RevealedLocks,
   getHiddenAlbumIdsQuery,
   getHiddenContainerIdsQuery,
   getOwnerLockVisibility,
   hasAnyLocksQuery,
   isAlbumHiddenForViewerQuery,
   isContainerHiddenForViewerQuery,
-  LockVisibilityRequest,
-  RevealedLocks,
+  subtreeContainsHiddenContentQuery,
 } from 'src/utils/lock-visibility';
 
 /**
@@ -95,6 +96,10 @@ export class LockRepository {
 
   isAlbumHiddenForViewer(viewerId: string, albumId: string): Promise<boolean> {
     return isAlbumHiddenForViewerQuery(this.db, viewerId, albumId);
+  }
+
+  subtreeContainsHiddenContent(userId: string, containerId: string): Promise<boolean> {
+    return subtreeContainsHiddenContentQuery(this.db, userId, containerId);
   }
 
   isContainerHiddenForViewer(viewerId: string, containerId: string): Promise<boolean> {

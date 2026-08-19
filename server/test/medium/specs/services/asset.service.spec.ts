@@ -8,6 +8,7 @@ import { AssetJobRepository } from 'src/repositories/asset-job.repository';
 import { AssetRepository } from 'src/repositories/asset.repository';
 import { EventRepository } from 'src/repositories/event.repository';
 import { JobRepository } from 'src/repositories/job.repository';
+import { LockRepository } from 'src/repositories/lock.repository';
 import { LoggingRepository } from 'src/repositories/logging.repository';
 import { OcrRepository } from 'src/repositories/ocr.repository';
 import { SharedLinkAssetRepository } from 'src/repositories/shared-link-asset.repository';
@@ -27,6 +28,7 @@ const setup = (db?: Kysely<DB>) => {
   return newMediumService(AssetService, {
     database: db || defaultDatabase,
     real: [
+      LockRepository,
       AssetRepository,
       AssetEditRepository,
       AssetJobRepository,

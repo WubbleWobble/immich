@@ -208,3 +208,44 @@ export async function isContainerHiddenForViewerQuery(
     .executeTakeFirst();
   return row !== undefined;
 }
+
+/**
+ * True when the folder's subtree (including the folder itself) contains anything the user
+ * has locked: a locked descendant folder, or a directly-locked album inside the subtree.
+ * Reveal sets deliberately do not apply - like the other write guards, elevation is the
+ * only bypass; mutating an unlocked ancestor (delete cascades, moves and share changes
+ * propagate through the closure) is a state change on the hidden content beneath it.
+ */
+export async function subtreeContainsHiddenContentQuery(
+  db: Kysely<DB>,
+  userId: string,
+  containerId: string,
+): Promise<boolean> {
+  const row = await db
+    .selectNoFrom((eb) =>
+      eb
+        .or([
+          eb.exists(
+            eb
+              .selectFrom('album_container_closure as subtree')
+              .innerJoin('locked_container', 'locked_container.containerId', 'subtree.id_descendant')
+              .select('subtree.id_descendant')
+              .where('subtree.id_ancestor', '=', containerId)
+              .where('locked_container.userId', '=', userId),
+          ),
+          eb.exists(
+            eb
+              .selectFrom('album')
+              .innerJoin('album_container_closure as subtree', 'subtree.id_descendant', 'album.containerId')
+              .innerJoin('locked_album', 'locked_album.albumId', 'album.id')
+              .select('album.id')
+              .where('subtree.id_ancestor', '=', containerId)
+              .where('locked_album.userId', '=', userId)
+              .where('album.deletedAt', 'is', null),
+          ),
+        ])
+        .as('hidden'),
+    )
+    .executeTakeFirst();
+  return !!row?.hidden;
+}

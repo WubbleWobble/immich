@@ -14,7 +14,15 @@ export class MapService extends BaseService {
       userIds.push(...partnerIds);
     }
 
-    const albumIds = options.withSharedAlbums ? await this.albumRepository.getAllIds(auth.user.id) : [];
+    let albumIds = options.withSharedAlbums ? await this.albumRepository.getAllIds(auth.user.id) : [];
+    // Album-sourced markers must not reveal albums the viewer has locked away - including
+    // shared albums the viewer locked for themselves (list semantics: reveal only when elevated).
+    if (albumIds.length > 0 && (await this.lockRepository.hasAnyLocks(auth.user.id))) {
+      const isElevated = !!auth.session?.hasElevatedPermission;
+      const revealed = isElevated ? (auth.revealedLocks ?? NO_REVEALED_LOCKS) : NO_REVEALED_LOCKS;
+      const hidden = new Set(await this.lockRepository.getHiddenAlbumIds(auth.user.id, revealed));
+      albumIds = albumIds.filter((id) => !hidden.has(id));
+    }
 
     const lockVisibility = await this.lockRepository.getOwnerLockVisibility({
       viewerId: auth.user.id,
