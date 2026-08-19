@@ -10,6 +10,7 @@ import {
 import { AuthDto } from 'src/dtos/auth.dto';
 import { mapUser } from 'src/dtos/user.dto';
 import { AlbumUserRole } from 'src/enum';
+import { AlbumService } from 'src/services/album.service';
 import { BaseService } from 'src/services/base.service';
 import { LockService } from 'src/services/lock.service';
 import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
@@ -53,6 +54,7 @@ export class AlbumContainerService extends BaseService {
     // Privacy: recipients shouldn't see the full share graph; only fetch users for owned containers.
     const ownedIds = containers.filter((c) => c.ownerId === auth.user.id).map((c) => c.id);
     const usersByContainer = await this.fetchUsersByContainer(ownedIds);
+    await this.warmSmartAlbumCachesForContainers(ids, hiddenAlbumIds);
     const thumbnailsByContainer = await this.albumContainerRepository.getThumbnailAssetIdsForContainers(
       ids,
       hiddenAlbumIds,
@@ -80,9 +82,11 @@ export class AlbumContainerService extends BaseService {
         throw new ForbiddenException('Not allowed');
       }
     }
+    const mosaicHiddenAlbumIds = await this.getViewerHiddenAlbumIdsForMosaic(auth);
+    await this.warmSmartAlbumCachesForContainers([id], mosaicHiddenAlbumIds);
     const thumbnailsByContainer = await this.albumContainerRepository.getThumbnailAssetIdsForContainers(
       [id],
-      await this.getViewerHiddenAlbumIdsForMosaic(auth),
+      mosaicHiddenAlbumIds,
     );
     // Privacy: recipients shouldn't see the full share graph, so only the owner gets albumContainerUsers.
     let albumContainerUsers: AlbumContainerUserResponseDto[] | undefined;
@@ -91,6 +95,21 @@ export class AlbumContainerService extends BaseService {
       albumContainerUsers = usersByContainer.get(id) ?? [];
     }
     return this.mapToResponse(container, albumContainerUsers, thumbnailsByContainer.get(id) ?? []);
+  }
+
+  /**
+   * The mosaic reads smart albums' cachedThumbnailAssetId, but nothing on the folder
+   * path recomputes it - and the web loads albums and folders concurrently, so the
+   * album list cannot be relied on to have warmed it first. Refresh stale caches here
+   * (hidden albums excluded: their covers are excluded from the mosaic anyway).
+   */
+  private async warmSmartAlbumCachesForContainers(containerIds: string[], hiddenAlbumIds: string[]): Promise<void> {
+    const smartAlbums = (await this.albumContainerRepository.getSmartAlbumsForContainers(containerIds)) ?? [];
+    const hidden = new Set(hiddenAlbumIds);
+    const candidates = smartAlbums.filter((album) => !hidden.has(album.id));
+    if (candidates.length > 0) {
+      await BaseService.create(AlbumService, this).warmSmartAlbumCaches(candidates);
+    }
   }
 
   private async fetchUsersByContainer(ids: string[]): Promise<Map<string, AlbumContainerUserResponseDto[]>> {

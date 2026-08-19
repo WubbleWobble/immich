@@ -757,9 +757,8 @@ describe('/albums/:id/lock', () => {
       .set('Authorization', `Bearer ${sharee.accessToken}`);
     expect(direct.status).toBe(200);
 
-    // Folder mosaic: prime the smart-album cache via the album list, then the folder's
-    // thumbnails must include the smart album's cached cover even with no regular albums.
-    await getAllAlbums({}, { headers: asBearerAuth(owner.accessToken) });
+    // Folder mosaic on a COLD cache: no album-list read primes it - the folder endpoint
+    // itself must refresh the stale smart-album cache before building the mosaic.
     const folders = await getAllAlbumContainers({ headers: asBearerAuth(owner.accessToken) });
     const mosaic = folders.find(({ id }) => id === folder.id);
     expect(mosaic?.thumbnailAssetIds).toContain(smartAsset.id);

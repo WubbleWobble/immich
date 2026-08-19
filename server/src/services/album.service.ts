@@ -645,6 +645,29 @@ export class AlbumService extends BaseService {
    * Recompute smart-album list-view metadata against the live search index and persist
    * the result on the album row. Returns the freshly computed values.
    */
+  /**
+   * Refresh the list-view cache of any stale smart albums in the batch. Used by surfaces
+   * that read cachedThumbnailAssetId without going through the album list (e.g. folder
+   * mosaics, which the web loads concurrently with - not after - the album list).
+   */
+  async warmSmartAlbumCaches(
+    albums: {
+      id: string;
+      filter: SmartAlbumFilter | null;
+      ownerId: string;
+      cacheComputedAt: Date | string | null;
+      cacheInvalidatedAt: Date | string | null;
+    }[],
+  ): Promise<void> {
+    for (const album of albums) {
+      if (!album.filter || !isSmartAlbumCacheStale(album)) {
+        continue;
+      }
+      // recomputeSmartAlbumCache fails closed (persists zeros) for unevaluable filters.
+      await this.recomputeSmartAlbumCache(album.id, album.ownerId, album.filter);
+    }
+  }
+
   private async recomputeSmartAlbumCache(
     albumId: string,
     ownerId: string,

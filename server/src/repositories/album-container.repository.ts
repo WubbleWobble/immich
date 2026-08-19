@@ -309,6 +309,31 @@ export class AlbumContainerRepository {
     return result;
   }
 
+  /** Smart albums under the given container subtrees, with the fields needed to judge and refresh their caches. */
+  @GenerateSql({ params: [[DummyValue.UUID]] })
+  getSmartAlbumsForContainers(containerIds: string[]) {
+    if (containerIds.length === 0) {
+      return Promise.resolve([]);
+    }
+    return this.db
+      .selectFrom('album_container_closure as closure')
+      .innerJoin('album', 'album.containerId', 'closure.id_descendant')
+      .innerJoin('album_user as owner', (join) =>
+        join.onRef('owner.albumId', '=', 'album.id').on('owner.role', '=', sql.lit(AlbumUserRole.Owner)),
+      )
+      .where('closure.id_ancestor', 'in', containerIds)
+      .where('album.kind', '=', sql.lit(AlbumKind.Smart))
+      .where('album.deletedAt', 'is', null)
+      .select([
+        'album.id',
+        'album.filter',
+        'album.cacheComputedAt',
+        'album.cacheInvalidatedAt',
+        'owner.userId as ownerId',
+      ])
+      .execute();
+  }
+
   @GenerateSql({ params: [[DummyValue.UUID]] })
   async getUsersForContainers(albumContainerIds: string[]) {
     if (albumContainerIds.length === 0) {

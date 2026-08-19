@@ -27,6 +27,49 @@ describe(AlbumContainerService.name, () => {
   });
 
   describe('list', () => {
+    it('warms stale smart-album caches before fetching mosaics', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const containerId = newUuid();
+      const smartAlbumId = newUuid();
+      mocks.albumContainer.getForUser.mockResolvedValue([
+        {
+          id: containerId,
+          ownerId: owner.id,
+          name: 'Smart Folder',
+          parentId: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          deletedAt: null,
+          updateId: newUuid(),
+        },
+      ]);
+      mocks.albumContainer.getUsersForContainers.mockResolvedValue([]);
+      mocks.albumContainer.getThumbnailAssetIdsForContainers.mockResolvedValue(new Map());
+      // Never computed -> stale; the folder path itself must refresh it (the web loads
+      // albums and folders concurrently, so the album list cannot be relied on).
+      mocks.albumContainer.getSmartAlbumsForContainers.mockResolvedValue([
+        {
+          id: smartAlbumId,
+          filter: { isFavorite: true },
+          ownerId: owner.id,
+          cacheComputedAt: null,
+          cacheInvalidatedAt: null,
+        },
+      ]);
+      mocks.search.searchStatistics.mockResolvedValue({ total: 1 });
+      mocks.search.searchDateRange.mockResolvedValue({ startDate: null, endDate: null });
+      mocks.search.searchMetadata.mockResolvedValue({ items: [], hasNextPage: false });
+
+      await sut.list(auth);
+
+      expect(mocks.albumContainer.getSmartAlbumsForContainers).toHaveBeenCalledWith([containerId]);
+      expect(mocks.album.updateCachedMetadata).toHaveBeenCalledWith(
+        smartAlbumId,
+        expect.objectContaining({ cachedAssetCount: 1 }),
+      );
+    });
+
     it('populates thumbnailAssetIds from the repository', async () => {
       const owner = UserFactory.create();
       const auth = AuthFactory.create({ id: owner.id });
