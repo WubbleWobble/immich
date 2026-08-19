@@ -659,10 +659,14 @@ export class AlbumService extends BaseService {
       cacheInvalidatedAt: Date | string | null;
     }[],
   ): Promise<void> {
+    // Defensive dedupe: an overlapping batch (e.g. a folder subtree queried per ancestor)
+    // must not recompute the same album more than once.
+    const seen = new Set<string>();
     for (const album of albums) {
-      if (!album.filter || !isSmartAlbumCacheStale(album)) {
+      if (seen.has(album.id) || !album.filter || !isSmartAlbumCacheStale(album)) {
         continue;
       }
+      seen.add(album.id);
       // recomputeSmartAlbumCache fails closed (persists zeros) for unevaluable filters.
       await this.recomputeSmartAlbumCache(album.id, album.ownerId, album.filter);
     }

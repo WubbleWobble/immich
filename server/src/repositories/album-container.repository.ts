@@ -324,6 +324,9 @@ export class AlbumContainerRepository {
       .where('closure.id_ancestor', 'in', containerIds)
       .where('album.kind', '=', sql.lit(AlbumKind.Smart))
       .where('album.deletedAt', 'is', null)
+      // The closure yields one row per requested ancestor; when containerIds holds both a
+      // parent and its child, the same descendant album matches once per ancestor.
+      .distinctOn('album.id')
       .select([
         'album.id',
         'album.filter',

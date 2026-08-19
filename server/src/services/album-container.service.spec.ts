@@ -70,6 +70,43 @@ describe(AlbumContainerService.name, () => {
       );
     });
 
+    it('recomputes a duplicated stale smart album only once', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const containerId = newUuid();
+      const smartAlbumId = newUuid();
+      const staleRow = {
+        id: smartAlbumId,
+        filter: { isFavorite: true },
+        ownerId: owner.id,
+        cacheComputedAt: null,
+        cacheInvalidatedAt: null,
+      };
+      mocks.albumContainer.getForUser.mockResolvedValue([
+        {
+          id: containerId,
+          ownerId: owner.id,
+          name: 'Nested Smart Folder',
+          parentId: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          deletedAt: null,
+          updateId: newUuid(),
+        },
+      ]);
+      mocks.albumContainer.getUsersForContainers.mockResolvedValue([]);
+      mocks.albumContainer.getThumbnailAssetIdsForContainers.mockResolvedValue(new Map());
+      // Same album surfaced once per requested ancestor (parent + child in containerIds).
+      mocks.albumContainer.getSmartAlbumsForContainers.mockResolvedValue([staleRow, staleRow]);
+      mocks.search.searchStatistics.mockResolvedValue({ total: 1 });
+      mocks.search.searchDateRange.mockResolvedValue({ startDate: null, endDate: null });
+      mocks.search.searchMetadata.mockResolvedValue({ items: [], hasNextPage: false });
+
+      await sut.list(auth);
+
+      expect(mocks.album.updateCachedMetadata).toHaveBeenCalledTimes(1);
+    });
+
     it('populates thumbnailAssetIds from the repository', async () => {
       const owner = UserFactory.create();
       const auth = AuthFactory.create({ id: owner.id });
