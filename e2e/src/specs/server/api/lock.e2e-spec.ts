@@ -757,6 +757,14 @@ describe('/albums/:id/lock', () => {
       .set('Authorization', `Bearer ${sharee.accessToken}`);
     expect(direct.status).toBe(200);
 
+    // The by-asset album list includes computed smart-album membership (the web locked-move
+    // flow relies on this to detect saved-search rescues).
+    const appearsIn = await getAllAlbums(
+      { assetId: smartAsset.id },
+      { headers: asBearerAuth(owner.accessToken) },
+    );
+    expect(appearsIn.map(({ id }) => id)).toContain(smartAlbum.id);
+
     // Folder mosaic on a COLD cache: no album-list read primes it - the folder endpoint
     // itself must refresh the stale smart-album cache before building the mosaic.
     const folders = await getAllAlbumContainers({ headers: asBearerAuth(owner.accessToken) });

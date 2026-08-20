@@ -1615,6 +1615,8 @@
   "move_to_folder": "Move to folder",
   "move_to_lock_folder_action_prompt": "{count} added to the locked folder",
   "move_to_locked_folder": "Move to locked folder",
+  "move_to_locked_folder_failed_count": "{count, plural, one {# item} other {# items}} could not be moved to the locked folder",
+  "move_to_locked_folder_still_visible_count": "{count, plural, one {# item is} other {# items are}} in the locked folder but still visible elsewhere (a shared album you cannot edit, or a matching saved search)",
   "move_to_locked_folder_confirmation": "These photos and videos will be moved to the locked folder and removed from your other albums. They stay in shared albums you cannot edit, and saved searches that match them will still show them.",
   "move_to_root": "Move to root",
   "move_up": "Move up",

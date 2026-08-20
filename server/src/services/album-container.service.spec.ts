@@ -461,7 +461,6 @@ describe(AlbumContainerService.name, () => {
       mocks.albumContainer.getById.mockResolvedValue(folder);
       mocks.lock.isContainerHiddenForViewer.mockResolvedValue(false);
       mocks.lock.subtreeContainsHiddenContent.mockResolvedValue(true);
-      mocks.albumContainer.rename.mockResolvedValue();
       mocks.albumContainer.getUsersForContainers.mockResolvedValue([]);
       mocks.albumContainer.getThumbnailAssetIdsForContainers.mockResolvedValue(new Map());
 
@@ -487,7 +486,6 @@ describe(AlbumContainerService.name, () => {
       const folder = folderForOwner(owner.id);
       mocks.albumContainer.getById.mockResolvedValue(folder);
       mocks.lock.subtreeContainsHiddenContent.mockResolvedValue(true);
-      mocks.albumContainer.delete.mockResolvedValue();
 
       await expect(sut.delete(auth, folder.id)).resolves.toBeUndefined();
       expect(mocks.lock.subtreeContainsHiddenContent).not.toHaveBeenCalled();

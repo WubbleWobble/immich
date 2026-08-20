@@ -14,11 +14,12 @@ import { InjectKysely } from 'nestjs-kysely';
 import { columns } from 'src/database';
 import { Chunked, ChunkedArray, ChunkedSet, DummyValue, GenerateSql } from 'src/decorators';
 import { AlbumUserCreateDto, MapAlbumDto } from 'src/dtos/album.dto';
+import { toEvaluableSmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
 import { AlbumKind, AlbumUserRole } from 'src/enum';
 import { DB } from 'src/schema';
 import { AlbumTable } from 'src/schema/tables/album.table';
 import { AssetExifTable } from 'src/schema/tables/asset-exif.table';
-import { asUuid, dummy, withDefaultVisibility } from 'src/utils/database';
+import { asUuid, dummy, searchAssetBuilder, withDefaultVisibility } from 'src/utils/database';
 
 export interface AlbumAssetCount {
   albumId: string;
@@ -118,6 +119,52 @@ export class AlbumRepository {
       .where('album_asset.assetId', '=', assetId)
       .where('album.deletedAt', 'is', null)
       .select(withAlbumUsers(ownerId))
+      .orderBy('album.createdAt', 'desc')
+      .execute();
+  }
+
+  /**
+   * Smart albums reachable by the user (directly or via folder share) whose filter matches
+   * the asset. Smart membership is computed, so getByAssetId's album_asset join cannot see
+   * it; callers merging the two get the complete "appears in" answer - which the locked
+   * "move" flow needs to know an unlocked saved search still rescues the asset.
+   */
+  async getMatchingSmartAlbumsByAssetId(ownerId: string, assetId: string): Promise<MapAlbumDto[]> {
+    const candidates = await this.buildAlbumBaseQuery(ownerId, {})
+      .innerJoin('album_user as owner', (join) =>
+        join.onRef('owner.albumId', '=', 'album.id').on('owner.role', '=', sql.lit(AlbumUserRole.Owner)),
+      )
+      .select(['album.id', 'album.filter', 'owner.userId as albumOwnerId'])
+      .where('album.kind', '=', AlbumKind.Smart)
+      .where('album.filter', 'is not', null)
+      .execute();
+
+    const matchingIds: string[] = [];
+    for (const candidate of candidates) {
+      // Fail closed: an unevaluable filter matches nothing.
+      const filter = candidate.filter ? toEvaluableSmartAlbumFilter(candidate.filter) : null;
+      if (!filter) {
+        continue;
+      }
+      const match = await searchAssetBuilder(this.db, { ...filter, userIds: [candidate.albumOwnerId] })
+        .select('asset.id')
+        .where((eb) => eb.or([eb('asset.id', '=', assetId), eb('asset.livePhotoVideoId', '=', assetId)]))
+        .limit(1)
+        .executeTakeFirst();
+      if (match) {
+        matchingIds.push(candidate.id);
+      }
+    }
+    if (matchingIds.length === 0) {
+      return [];
+    }
+
+    return this.db
+      .selectFrom('album')
+      .selectAll('album')
+      .select(withAlbumUsers(ownerId))
+      .where('album.id', 'in', matchingIds)
+      .where('album.deletedAt', 'is', null)
       .orderBy('album.createdAt', 'desc')
       .execute();
   }

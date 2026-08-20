@@ -306,6 +306,7 @@ describe(AlbumService.name, () => {
         .build();
       const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
       mocks.album.getByAssetId.mockResolvedValue([getForAlbum(album)]);
+      mocks.album.getMatchingSmartAlbumsByAssetId.mockResolvedValue([]);
       mocks.album.getMetadataForIds.mockResolvedValue([
         {
           albumId: album.id,

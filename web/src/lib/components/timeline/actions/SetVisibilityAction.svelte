@@ -9,7 +9,7 @@
   import { moveAssetsToLockedAlbum } from '$lib/services/album.service';
   import type { OnSetVisibility } from '$lib/utils/actions';
   import { handleError } from '$lib/utils/handle-error';
-  import { Button, modalManager } from '@immich/ui';
+  import { Button, modalManager, toastManager } from '@immich/ui';
   import { mdiLockOutline } from '@mdi/js';
   import { t } from 'svelte-i18n';
 
@@ -47,8 +47,17 @@
       loading = true;
       const assetIds = assetMultiSelectManager.assets.map(({ id }) => id);
       const albumId = await lockManager.ensureBuiltInLockedAlbum(authManager.user.id);
-      await moveAssetsToLockedAlbum(albumId, assetIds);
-      onVisibilitySet(assetIds);
+      const { moved, stillVisible, failed } = await moveAssetsToLockedAlbum(albumId, assetIds);
+      // Only assets that are actually hidden now leave the view; the rest stay, honestly.
+      if (moved.length > 0) {
+        onVisibilitySet(moved);
+      }
+      if (failed.length > 0) {
+        toastManager.warning($t('move_to_locked_folder_failed_count', { values: { count: failed.length } }));
+      }
+      if (stillVisible.length > 0) {
+        toastManager.info($t('move_to_locked_folder_still_visible_count', { values: { count: stillVisible.length } }));
+      }
     } catch (error) {
       handleError(error, $t('errors.unable_to_save_settings'));
     } finally {

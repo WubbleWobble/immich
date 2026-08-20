@@ -93,7 +93,13 @@ export class AlbumService extends BaseService {
     await this.albumRepository.updateThumbnails();
 
     let albums = assetId
-      ? await this.albumRepository.getByAssetId(ownerId, assetId)
+      ? [
+          ...(await this.albumRepository.getByAssetId(ownerId, assetId)),
+          // Smart membership is computed, not stored: include reachable smart albums whose
+          // filter matches, so "appears in" is complete (the web locked-move flow relies on
+          // this to detect that an unlocked saved search still rescues the asset).
+          ...(await this.albumRepository.getMatchingSmartAlbumsByAssetId(ownerId, assetId)),
+        ]
       : await this.albumRepository.getAll(ownerId, { isOwned, isShared });
 
     // Locked albums (directly, or via a locked folder) vanish from every list surface for

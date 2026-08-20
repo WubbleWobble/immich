@@ -9,7 +9,7 @@
   import { Route } from '$lib/route';
   import { moveAssetsToLockedAlbum } from '$lib/services/album.service';
   import { handleError } from '$lib/utils/handle-error';
-  import { modalManager } from '@immich/ui';
+  import { modalManager, toastManager } from '@immich/ui';
   import { mdiLockOutline } from '@mdi/js';
   import { t } from 'svelte-i18n';
   import type { OnAction, PreAction } from './action';
@@ -44,9 +44,18 @@
     }
 
     try {
-      preAction({ type: AssetAction.SET_VISIBILITY_LOCKED, asset });
       const albumId = await lockManager.ensureBuiltInLockedAlbum(authManager.user.id);
-      await moveAssetsToLockedAlbum(albumId, [asset.id]);
+      const { stillVisible, failed } = await moveAssetsToLockedAlbum(albumId, [asset.id]);
+      if (failed.length > 0) {
+        toastManager.warning($t('move_to_locked_folder_failed_count', { values: { count: failed.length } }));
+        return;
+      }
+      if (stillVisible.length > 0) {
+        toastManager.info($t('move_to_locked_folder_still_visible_count', { values: { count: stillVisible.length } }));
+        return;
+      }
+      // Fully hidden - only now does the asset leave the viewer.
+      preAction({ type: AssetAction.SET_VISIBILITY_LOCKED, asset });
       onAction({ type: AssetAction.SET_VISIBILITY_LOCKED, asset });
     } catch (error) {
       handleError(error, $t('errors.unable_to_save_settings'));

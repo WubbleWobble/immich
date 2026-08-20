@@ -95,39 +95,96 @@ export const getAlbumAssetsActions = ($t: MessageFormatter, album: AlbumResponse
   return { AddAssets, Upload };
 };
 
+export interface MoveToLockedAlbumResult {
+  /** Fully moved: in the locked album and no longer visible anywhere else - safe to hide in the UI. */
+  moved: string[];
+  /** In the locked album, but still visible elsewhere (unremovable membership or a matching saved search). */
+  stillVisible: string[];
+  /** Never made it into the locked album; their existing memberships were left untouched. */
+  failed: string[];
+}
+
 /**
  * True "move" semantics for the built-in locked album: add the assets, then remove them
  * from every other visible regular album (an unlocked membership would otherwise rescue
- * them from the lock and they would reappear on refresh). Removals from albums the user
- * cannot edit (e.g. viewer-role shares) are skipped; smart-album matches cannot be removed
- * at all (membership is computed) - the confirmation copy warns about both.
+ * them from the lock and they would reappear on refresh). Per-asset outcomes are tracked:
+ * only assets that were actually added get their memberships removed, removal failures
+ * (e.g. viewer-role shares) and matching smart albums (computed membership, nothing to
+ * remove) mark an asset as still visible rather than pretending it is hidden.
  */
-export const moveAssetsToLockedAlbum = async (lockedAlbumId: string, assetIds: string[]): Promise<boolean> => {
-  const added = await addAssetsToAlbums([lockedAlbumId], assetIds, { notify: false });
-  if (!added) {
-    return false;
+export const moveAssetsToLockedAlbum = async (
+  lockedAlbumId: string,
+  assetIds: string[],
+): Promise<MoveToLockedAlbumResult> => {
+  let addResults: BulkIdResponseDto[];
+  try {
+    addResults = await addToAlbum({ ...authManager.params, id: lockedAlbumId, bulkIdsDto: { ids: assetIds } });
+  } catch (error) {
+    const $t = await getFormatter();
+    handleError(error, $t('errors.error_adding_assets_to_album'));
+    return { moved: [], stillVisible: [], failed: assetIds };
   }
 
-  const albumsPerAsset = await Promise.all(
-    assetIds.map((assetId) => getAllAlbums({ ...authManager.params, assetId }).catch(() => [])),
+  // Already-in-the-locked-album counts as added; anything else was NOT added and must keep
+  // its existing memberships (removing them would leave the asset neither locked nor filed).
+  const added = new Set(
+    addResults.filter(({ success, error }) => success || error === BulkIdErrorReason.Duplicate).map(({ id }) => id),
   );
+  const failed = assetIds.filter((id) => !added.has(id));
+  const addedIds = assetIds.filter((id) => added.has(id));
+
+  // The by-asset album list includes matching smart albums (computed membership), so a
+  // fetch failure means we cannot know what still shows the asset - treat as still visible.
+  const albumsPerAsset = await Promise.all(
+    addedIds.map((assetId) => getAllAlbums({ ...authManager.params, assetId }).catch(() => null)),
+  );
+
   const removals = new Map<string, string[]>();
+  const smartRescued = new Set<string>();
+  const unverifiable = new Set<string>();
   for (const [index, albums] of albumsPerAsset.entries()) {
+    const assetId = addedIds[index];
+    if (albums === null) {
+      unverifiable.add(assetId);
+      continue;
+    }
     for (const album of albums) {
-      if (album.id === lockedAlbumId || album.kind === AlbumKind.Smart) {
+      if (album.id === lockedAlbumId) {
+        continue;
+      }
+      if (album.kind === AlbumKind.Smart) {
+        smartRescued.add(assetId);
         continue;
       }
       const ids = removals.get(album.id) ?? [];
-      ids.push(assetIds[index]);
+      ids.push(assetId);
       removals.set(album.id, ids);
     }
   }
+
+  const removalFailed = new Set<string>();
   await Promise.all(
-    [...removals.entries()].map(([albumId, ids]) =>
-      removeAssetFromAlbum({ ...authManager.params, id: albumId, bulkIdsDto: { ids } }).catch(() => undefined),
-    ),
+    [...removals.entries()].map(async ([albumId, ids]) => {
+      try {
+        const results = await removeAssetFromAlbum({ ...authManager.params, id: albumId, bulkIdsDto: { ids } });
+        const removed = new Set(results.filter(({ success }) => success).map(({ id }) => id));
+        for (const id of ids) {
+          if (!removed.has(id)) {
+            removalFailed.add(id);
+          }
+        }
+      } catch {
+        for (const id of ids) {
+          removalFailed.add(id);
+        }
+      }
+    }),
   );
-  return true;
+
+  const stillVisible = addedIds.filter((id) => smartRescued.has(id) || removalFailed.has(id) || unverifiable.has(id));
+  const moved = addedIds.filter((id) => !stillVisible.includes(id));
+  eventManager.emit('AlbumAddAssets', { assetIds: addedIds, albumIds: [lockedAlbumId] });
+  return { moved, stillVisible, failed };
 };
 
 export const addAssetsToAlbums = async (albumIds: string[], assetIds: string[], { notify }: { notify: boolean }) => {
