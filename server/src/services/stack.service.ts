@@ -66,20 +66,29 @@ export class StackService extends BaseService {
     return mapStack(stack, { auth });
   }
 
-  /** Hidden-only stacks are unreachable for reads AND mutations outside an elevated session. */
-  private async assertStackVisibleForViewer(auth: AuthDto, id: string): Promise<void> {
+  /**
+   * Mutation guard: a stack containing ANY locked-away member is immutable outside an
+   * elevated session - deleting or editing it is a state change touching hidden content
+   * (removing a known hidden member, un-stacking hidden assets on delete). Read paths are
+   * softer (they filter members); mutations refuse outright.
+   */
+  private async assertStackMutableForViewer(auth: AuthDto, id: string): Promise<void> {
     const lockVisibility = await this.getViewerLockVisibility(auth);
     if (lockVisibility.length === 0) {
       return;
     }
-    const stack = await this.stackRepository.getById(id, lockVisibility);
-    if (stack && stack.assets.length === 0) {
+    const [full, visible] = await Promise.all([
+      this.stackRepository.getById(id),
+      this.stackRepository.getById(id, lockVisibility),
+    ]);
+    if (full && (visible?.assets.length ?? 0) < full.assets.length) {
       throw new BadRequestException('Asset stack not found');
     }
   }
 
   async update(auth: AuthDto, id: string, dto: StackUpdateDto): Promise<StackResponseDto> {
     await this.requireAccess({ auth, permission: Permission.StackUpdate, ids: [id] });
+    await this.assertStackMutableForViewer(auth, id);
     const lockVisibility = await this.getViewerLockVisibility(auth);
     const stack = await this.findOrFail(id, lockVisibility);
     if (dto.primaryAssetId && !stack.assets.some(({ id }) => id === dto.primaryAssetId)) {
@@ -94,12 +103,13 @@ export class StackService extends BaseService {
 
     await this.eventRepository.emit('StackUpdate', { stackId: id, userId: auth.user.id });
 
-    return mapStack(updatedStack, { auth });
+    // Normalize like the read paths: never expose a hidden primary through the response.
+    return mapStack(this.toVisibleStack(updatedStack) ?? updatedStack, { auth });
   }
 
   async delete(auth: AuthDto, id: string): Promise<void> {
     await this.requireAccess({ auth, permission: Permission.StackDelete, ids: [id] });
-    await this.assertStackVisibleForViewer(auth, id);
+    await this.assertStackMutableForViewer(auth, id);
     await this.stackRepository.delete(id);
     await this.eventRepository.emit('StackDelete', { stackId: id, userId: auth.user.id });
   }
@@ -107,7 +117,7 @@ export class StackService extends BaseService {
   async deleteAll(auth: AuthDto, dto: BulkIdsDto): Promise<void> {
     await this.requireAccess({ auth, permission: Permission.StackDelete, ids: dto.ids });
     for (const id of dto.ids) {
-      await this.assertStackVisibleForViewer(auth, id);
+      await this.assertStackMutableForViewer(auth, id);
     }
     await this.stackRepository.deleteAll(dto.ids);
     await this.eventRepository.emit('StackDeleteAll', { stackIds: dto.ids, userId: auth.user.id });
@@ -116,6 +126,7 @@ export class StackService extends BaseService {
   async removeAsset(auth: AuthDto, dto: UUIDAssetIDParamDto): Promise<void> {
     const { id: stackId, assetId } = dto;
     await this.requireAccess({ auth, permission: Permission.StackUpdate, ids: [stackId] });
+    await this.assertStackMutableForViewer(auth, stackId);
 
     const stack = await this.stackRepository.getForAssetRemoval(assetId);
 

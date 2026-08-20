@@ -1,7 +1,9 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
+import { BulkIdErrorReason } from 'src/dtos/asset-ids.response.dto';
 import { AuthDto } from 'src/dtos/auth.dto';
-import { LocksResponseDto } from 'src/dtos/lock.dto';
+import { LocksResponseDto, MoveToLockedAlbumDto, MoveToLockedAlbumResponseDto } from 'src/dtos/lock.dto';
 import { Permission } from 'src/enum';
+import { AlbumService } from 'src/services/album.service';
 import { BaseService } from 'src/services/base.service';
 import { requireElevatedPermission } from 'src/utils/access';
 
@@ -44,6 +46,75 @@ export class LockService extends BaseService {
   async getLocks(auth: AuthDto): Promise<LocksResponseDto> {
     requireElevatedPermission(auth);
     return this.lockRepository.getLocks(auth.user.id);
+  }
+
+  /**
+   * Server-side "move to locked album": add the assets, remove their other viewer-visible
+   * regular memberships (an unlocked membership would rescue them from the lock), and
+   * report which assets a viewer-reachable unlocked smart album still matches - all in one
+   * request, with smart filters evaluated once over the whole batch rather than per asset.
+   * Requires an elevated session and a destination the user has actually locked.
+   */
+  async moveAssetsToLockedAlbum(auth: AuthDto, dto: MoveToLockedAlbumDto): Promise<MoveToLockedAlbumResponseDto> {
+    requireElevatedPermission(auth);
+    const hidden = await this.lockRepository.isAlbumHiddenForViewer(auth.user.id, dto.albumId);
+    if (!hidden) {
+      throw new BadRequestException('Destination album is not locked');
+    }
+
+    const albumService = BaseService.create(AlbumService, this);
+    // addAssets validates access (owner/editor), rejects smart-album targets, and returns
+    // per-asset results; "duplicate" means already filed in the locked album.
+    const addResults = await albumService.addAssets(auth, dto.albumId, { ids: dto.assetIds });
+    const added = new Set(
+      addResults.filter(({ success, error }) => success || error === BulkIdErrorReason.DUPLICATE).map(({ id }) => id),
+    );
+    const failed = dto.assetIds.filter((id) => !added.has(id));
+    const addedIds = dto.assetIds.filter((id) => added.has(id));
+    if (addedIds.length === 0) {
+      return { moved: [], stillVisible: [], failed };
+    }
+
+    // Remove the other viewer-visible regular memberships, album by album. A removal the
+    // viewer is not allowed to make (e.g. viewer-role share) leaves the asset visible there.
+    const stillVisible = new Set<string>();
+    const memberships = await this.albumRepository.getVisibleMembershipsByAssetIds(auth.user.id, addedIds);
+    const removalsPerAlbum = new Map<string, string[]>();
+    for (const { assetId, albumId } of memberships) {
+      if (albumId === dto.albumId) {
+        continue;
+      }
+      const ids = removalsPerAlbum.get(albumId) ?? [];
+      ids.push(assetId);
+      removalsPerAlbum.set(albumId, ids);
+    }
+    for (const [albumId, ids] of removalsPerAlbum) {
+      try {
+        const results = await albumService.removeAssets(auth, albumId, { ids });
+        for (const result of results) {
+          if (!result.success) {
+            stillVisible.add(result.id);
+          }
+        }
+      } catch {
+        for (const id of ids) {
+          stillVisible.add(id);
+        }
+      }
+    }
+
+    // Saved-search rescues, evaluated once for the whole batch: each viewer-reachable
+    // unlocked smart album's filter runs a single query over all moved ids.
+    const smartMatched = await this.accessRepository.asset.checkSmartAlbumAccess(auth.user.id, new Set(addedIds));
+    for (const id of smartMatched) {
+      stillVisible.add(id);
+    }
+
+    return {
+      moved: addedIds.filter((id) => !stillVisible.has(id)),
+      stillVisible: addedIds.filter((id) => stillVisible.has(id)),
+      failed,
+    };
   }
 
   /**

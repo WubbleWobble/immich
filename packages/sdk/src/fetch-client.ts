@@ -1396,6 +1396,20 @@ export type LocksResponseDto = {
     /** Folders the requesting user has locked */
     lockedContainerIds: string[];
 };
+export type MoveToLockedAlbumDto = {
+    /** The locked destination album (must be locked by the requesting user) */
+    albumId: string;
+    /** Assets to move into the locked album */
+    assetIds: string[];
+};
+export type MoveToLockedAlbumResponseDto = {
+    /** Never made it into the locked album; existing memberships were left untouched */
+    failed: string[];
+    /** Fully moved: in the locked album and no longer visible anywhere else */
+    moved: string[];
+    /** In the locked album, but still visible elsewhere (unremovable membership or a matching saved search) */
+    stillVisible: string[];
+};
 export type MapReverseGeocodeResponseDto = {
     /** City name */
     city: string | null;
@@ -4887,6 +4901,21 @@ export function getLocks(opts?: Oazapfts.RequestOpts) {
     }>("/locks", {
         ...opts
     }));
+}
+/**
+ * Move assets into a locked album: add them and detach their other memberships (requires an elevated session)
+ */
+export function moveAssetsToLockedAlbum({ moveToLockedAlbumDto }: {
+    moveToLockedAlbumDto: MoveToLockedAlbumDto;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchJson<{
+        status: 201;
+        data: MoveToLockedAlbumResponseDto;
+    }>("/locks/move-assets", oazapfts.json({
+        ...opts,
+        method: "POST",
+        body: moveToLockedAlbumDto
+    })));
 }
 /**
  * Retrieve map markers

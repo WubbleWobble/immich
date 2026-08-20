@@ -124,6 +124,26 @@ export class AlbumRepository {
   }
 
   /**
+   * Viewer-visible regular-album memberships (direct share or folder cascade) for a batch
+   * of assets, as (assetId, albumId) rows. Powers the server-side locked-album move: the
+   * assets' other memberships must be removed or the lock never bites.
+   */
+  @Chunked({ paramIndex: 1 })
+  async getVisibleMembershipsByAssetIds(
+    ownerId: string,
+    assetIds: string[],
+  ): Promise<{ assetId: string; albumId: string }[]> {
+    if (assetIds.length === 0) {
+      return [];
+    }
+    return this.buildAlbumBaseQuery(ownerId, {})
+      .innerJoin('album_asset', 'album_asset.albumId', 'album.id')
+      .where('album_asset.assetId', 'in', assetIds)
+      .select(['album_asset.assetId as assetId', 'album.id as albumId'])
+      .execute();
+  }
+
+  /**
    * Smart albums reachable by the user (directly or via folder share) whose filter matches
    * the asset. Smart membership is computed, so getByAssetId's album_asset join cannot see
    * it; callers merging the two get the complete "appears in" answer - which the locked

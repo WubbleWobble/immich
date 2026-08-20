@@ -150,6 +150,25 @@ describe(LockService.name, () => {
     });
   });
 
+  describe('moveAssetsToLockedAlbum', () => {
+    it('rejects a non-elevated session before anything else', async () => {
+      await expect(
+        sut.moveAssetsToLockedAlbum(notElevated(), { albumId: newUuid(), assetIds: [newUuid()] }),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(mocks.lock.isAlbumHiddenForViewer).not.toHaveBeenCalled();
+    });
+
+    it('rejects a destination the user has not locked', async () => {
+      const auth = elevated();
+      mocks.lock.isAlbumHiddenForViewer.mockResolvedValue(false);
+
+      await expect(
+        sut.moveAssetsToLockedAlbum(auth, { albumId: newUuid(), assetIds: [newUuid()] }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(mocks.album.getVisibleMembershipsByAssetIds).not.toHaveBeenCalled();
+    });
+  });
+
   describe('getLocks', () => {
     it('rejects a non-elevated session (locks must not be enumerable without the PIN)', async () => {
       await expect(sut.getLocks(notElevated())).rejects.toBeInstanceOf(UnauthorizedException);

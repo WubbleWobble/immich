@@ -773,6 +773,90 @@ describe('/albums/:id/lock', () => {
     void smartAlbum;
   });
 
+  it('the server-side move endpoint files assets and detaches their other memberships', async () => {
+    // M1 lives in another album (membership must be detached), M2 is unalbumed, M3 matches
+    // the unlocked 'Cascade Smart Album' saved search from the previous test (unremovable
+    // computed membership -> still visible).
+    const m1 = await utils.createAsset(owner.accessToken);
+    const m2 = await utils.createAsset(owner.accessToken);
+    const m3 = await utils.createAsset(owner.accessToken);
+    const otherAlbum = await utils.createAlbum(owner.accessToken, {
+      albumName: 'Move Source Album',
+      assetIds: [m1.id],
+    });
+    const tags = await request(app).get('/tags').set('Authorization', `Bearer ${owner.accessToken}`);
+    const cascadeTag = tags.body.find(({ name }: { name: string }) => name === 'cascade-smart-tag');
+    expect(cascadeTag).toBeDefined();
+    const deadline = Date.now() + 10_000;
+    while (true) {
+      await tagAssets(
+        { id: cascadeTag.id, bulkIdsDto: { ids: [m3.id] } },
+        { headers: asBearerAuth(owner.accessToken) },
+      );
+      const { body } = await request(app)
+        .post('/search/metadata')
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .send({ tagIds: [cascadeTag.id] });
+      if (body.assets.items.some(({ id }: { id: string }) => id === m3.id)) {
+        break;
+      }
+      if (Date.now() > deadline) {
+        throw new Error('Tagged asset never became searchable');
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+
+    const target = await utils.createAlbum(owner.accessToken, { albumName: 'Move Target' });
+    const lockResponse = await request(app)
+      .post(`/albums/${target.id}/lock`)
+      .set('Authorization', `Bearer ${owner.accessToken}`);
+    expect(lockResponse.status).toBe(204);
+
+    // A fresh (non-elevated) session cannot use the endpoint at all.
+    const fresh = await login({
+      loginCredentialDto: { email: 'lock-owner@immich.cloud', password: 'password-lock-owner' },
+    });
+    const denied = await request(app)
+      .post('/locks/move-assets')
+      .set('Authorization', `Bearer ${fresh.accessToken}`)
+      .send({ albumId: target.id, assetIds: [m1.id] });
+    expect(denied.status).toBe(401);
+
+    // An unlocked destination is refused.
+    const unlockedTarget = await request(app)
+      .post('/locks/move-assets')
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .send({ albumId: otherAlbum.id, assetIds: [m1.id] });
+    expect(unlockedTarget.status).toBe(400);
+
+    const move = await request(app)
+      .post('/locks/move-assets')
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .send({ albumId: target.id, assetIds: [m1.id, m2.id, m3.id] });
+    expect(move.status).toBe(201);
+    expect(move.body.moved.sort()).toEqual([m1.id, m2.id].sort());
+    expect(move.body.stillVisible).toEqual([m3.id]);
+    expect(move.body.failed).toEqual([]);
+
+    // The fresh session no longer sees the moved assets - but the saved-search match stays.
+    const ids = await timelineAssetIds(fresh.accessToken);
+    expect(ids).not.toContain(m1.id);
+    expect(ids).not.toContain(m2.id);
+    expect(ids).toContain(m3.id);
+
+    // The source album membership is really gone (checked with reveal, in the elevated session).
+    const sourceAlbum = await request(app)
+      .get(`/albums/${otherAlbum.id}`)
+      .set('Authorization', `Bearer ${owner.accessToken}`);
+    expect(sourceAlbum.status).toBe(200);
+    expect((sourceAlbum.body.assets ?? []).map(({ id }: { id: string }) => id)).not.toContain(m1.id);
+
+    const unlockResponse = await request(app)
+      .delete(`/albums/${target.id}/lock`)
+      .set('Authorization', `Bearer ${owner.accessToken}`);
+    expect(unlockResponse.status).toBe(204);
+  });
+
   it('mutations on a visible ancestor folder are blocked while a descendant is locked', async () => {
     // Parent (unlocked) > child (locked): deleting the parent would cascade through the
     // locked child (removing its lock rows and detaching its albums to the root), and
