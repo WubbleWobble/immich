@@ -752,7 +752,11 @@ export class AssetRepository {
   @GenerateSql({
     params: [DummyValue.UUID, { from: DummyValue.DATE, to: DummyValue.DATE, type: CalendarHeatmapType.Upload }],
   })
-  getCalendarHeatmap(ownerId: string, dto: { from: Date; to: Date; type: CalendarHeatmapType }) {
+  getCalendarHeatmap(
+    ownerId: string,
+    dto: { from: Date; to: Date; type: CalendarHeatmapType },
+    lockVisibility?: OwnerLockVisibility[],
+  ) {
     const dateColumns: Record<CalendarHeatmapType, { order: AssetOrderBy; column: 'createdAt' | 'localDateTime' }> = {
       [CalendarHeatmapType.Upload]: { order: AssetOrderBy.CreatedAt, column: 'createdAt' },
       [CalendarHeatmapType.Taken]: { order: AssetOrderBy.TakenAt, column: 'localDateTime' },
@@ -762,17 +766,24 @@ export class AssetRepository {
 
     const date = truncatedDate<Date>(order, 'DAY');
 
-    return this.db
-      .selectFrom('asset')
-      .select(date.as('date'))
-      .select((eb) => eb.fn.countAll<number>().as('count'))
-      .where('ownerId', '=', asUuid(ownerId))
-      .where(column, '>=', dto.from)
-      .where(column, '<', dto.to)
-      .where('deletedAt', 'is', null)
-      .groupBy(date)
-      .orderBy('date', 'asc')
-      .execute();
+    return (
+      this.db
+        .selectFrom('asset')
+        .select(date.as('date'))
+        .select((eb) => eb.fn.countAll<number>().as('count'))
+        .where('ownerId', '=', asUuid(ownerId))
+        .where(column, '>=', dto.from)
+        .where(column, '<', dto.to)
+        .where('deletedAt', 'is', null)
+        // Per-day counts must not reveal locked-away content; the embedded subqueries rely
+        // on the root query for join deduplication.
+        .$if(!!lockVisibility?.length, (qb) =>
+          withLockVisibility(qb, this.db, lockVisibility!).withPlugin(joinDeduplicationPlugin),
+        )
+        .groupBy(date)
+        .orderBy('date', 'asc')
+        .execute()
+    );
   }
 
   @GenerateSql({ params: [{}] })

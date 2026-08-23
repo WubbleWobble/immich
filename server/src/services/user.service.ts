@@ -19,6 +19,7 @@ import { BaseService } from 'src/services/base.service';
 import { getCalendarHeatmap } from 'src/services/shared/user-methods';
 import { JobOf, UserMetadataItem } from 'src/types';
 import { ImmichFileResponse } from 'src/utils/file';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
 import { mimeTypes } from 'src/utils/mime-types';
 import { getPreferences, getPreferencesPartial, mergePreferences } from 'src/utils/preferences';
 import { generateProfileImage } from 'src/utils/profile-image';
@@ -48,8 +49,16 @@ export class UserService extends BaseService {
     return mapUserAdmin(user);
   }
 
-  getCalendarHeatmap(auth: AuthDto, dto: CalendarHeatmapDto): Promise<CalendarHeatmapResponseDto> {
-    return getCalendarHeatmap(auth.user.id, dto, { asset: this.assetRepository });
+  async getCalendarHeatmap(auth: AuthDto, dto: CalendarHeatmapDto): Promise<CalendarHeatmapResponseDto> {
+    // Per-day counts are a list-like surface: locked-away content is excluded for the
+    // viewer (reveal applies only in an elevated session).
+    const lockVisibility = await this.lockRepository.getOwnerLockVisibility({
+      viewerId: auth.user.id,
+      ownerIds: [auth.user.id],
+      revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
+      isElevated: !!auth.session?.hasElevatedPermission,
+    });
+    return getCalendarHeatmap(auth.user.id, dto, { asset: this.assetRepository }, lockVisibility);
   }
 
   async updateMe({ user }: AuthDto, dto: UserUpdateMeDto): Promise<UserAdminResponseDto> {
