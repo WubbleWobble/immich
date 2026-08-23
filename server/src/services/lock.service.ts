@@ -6,6 +6,7 @@ import { Permission } from 'src/enum';
 import { AlbumService } from 'src/services/album.service';
 import { BaseService } from 'src/services/base.service';
 import { requireElevatedPermission } from 'src/utils/access';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
 
 /**
  * Per-user lock toggles for albums and folders. Every operation - including reads - requires
@@ -62,26 +63,39 @@ export class LockService extends BaseService {
       throw new BadRequestException('Destination album is not locked');
     }
 
+    // Only the viewer's OWN assets can be moved: their locks do not govern partner-owned
+    // assets (the partner's do), so a foreign asset filed here would stay visible through
+    // partner sharing while being reported hidden. Non-owned ids fail without side effects.
+    const owned = await this.accessRepository.asset.checkOwnerAccess(auth.user.id, new Set(dto.assetIds), true);
+    const ownedIds = dto.assetIds.filter((id) => owned.has(id));
+    const notOwned = dto.assetIds.filter((id) => !owned.has(id));
+    if (ownedIds.length === 0) {
+      return { moved: [], stillVisible: [], failed: notOwned };
+    }
+
     const albumService = BaseService.create(AlbumService, this);
     // addAssets validates access (owner/editor), rejects smart-album targets, and returns
     // per-asset results; "duplicate" means already filed in the locked album.
-    const addResults = await albumService.addAssets(auth, dto.albumId, { ids: dto.assetIds });
+    const addResults = await albumService.addAssets(auth, dto.albumId, { ids: ownedIds });
     const added = new Set(
       addResults.filter(({ success, error }) => success || error === BulkIdErrorReason.DUPLICATE).map(({ id }) => id),
     );
-    const failed = dto.assetIds.filter((id) => !added.has(id));
-    const addedIds = dto.assetIds.filter((id) => added.has(id));
+    const failed = [...notOwned, ...ownedIds.filter((id) => !added.has(id))];
+    const addedIds = ownedIds.filter((id) => added.has(id));
     if (addedIds.length === 0) {
       return { moved: [], stillVisible: [], failed };
     }
 
     // Remove the other viewer-visible regular memberships, album by album. A removal the
     // viewer is not allowed to make (e.g. viewer-role share) leaves the asset visible there.
+    // Memberships in albums the viewer has hidden are skipped outright: a hidden membership
+    // cannot rescue the asset, so it neither needs removal nor counts as still-visible.
+    const hiddenAlbumIds = new Set(await this.lockRepository.getHiddenAlbumIds(auth.user.id, NO_REVEALED_LOCKS));
     const stillVisible = new Set<string>();
     const memberships = await this.albumRepository.getVisibleMembershipsByAssetIds(auth.user.id, addedIds);
     const removalsPerAlbum = new Map<string, string[]>();
     for (const { assetId, albumId } of memberships) {
-      if (albumId === dto.albumId) {
+      if (albumId === dto.albumId || hiddenAlbumIds.has(albumId)) {
         continue;
       }
       const ids = removalsPerAlbum.get(albumId) ?? [];

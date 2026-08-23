@@ -829,14 +829,29 @@ describe('/albums/:id/lock', () => {
       .send({ albumId: otherAlbum.id, assetIds: [m1.id] });
     expect(unlockedTarget.status).toBe(400);
 
+    // m1 is ALSO in a second, already-locked album: that hidden membership cannot rescue
+    // it, so it must neither be "removed" nor count as still-visible.
+    const alsoLocked = await utils.createAlbum(owner.accessToken, {
+      albumName: 'Also Locked',
+      assetIds: [m1.id],
+    });
+    const alsoLockedResponse = await request(app)
+      .post(`/albums/${alsoLocked.id}/lock`)
+      .set('Authorization', `Bearer ${owner.accessToken}`);
+    expect(alsoLockedResponse.status).toBe(204);
+
+    // A partner-owned asset is refused per id: the viewer's locks do not govern it, so
+    // "moving" it would falsely report it hidden while partner sharing keeps it visible.
+    const partnerAsset = await utils.createAsset(partner.accessToken);
+
     const move = await request(app)
       .post('/locks/move-assets')
       .set('Authorization', `Bearer ${owner.accessToken}`)
-      .send({ albumId: target.id, assetIds: [m1.id, m2.id, m3.id] });
+      .send({ albumId: target.id, assetIds: [m1.id, m2.id, m3.id, partnerAsset.id] });
     expect(move.status).toBe(201);
     expect(move.body.moved.sort()).toEqual([m1.id, m2.id].sort());
     expect(move.body.stillVisible).toEqual([m3.id]);
-    expect(move.body.failed).toEqual([]);
+    expect(move.body.failed).toEqual([partnerAsset.id]);
 
     // The fresh session no longer sees the moved assets - but the saved-search match stays.
     const ids = await timelineAssetIds(fresh.accessToken);
@@ -956,6 +971,19 @@ describe('/albums/:id/lock', () => {
       .set('x-immich-revealed-albums', stackAlbum.id);
     expect(revealed.status).toBe(200);
     expect(revealed.body.assets.map(({ id }: { id: string }) => id)).toContain(stackPrimary.id);
+
+    // Mutations: the fresh session is blocked (hidden member), while the elevated session
+    // needs NO reveal header - elevation itself is the mutation bypass.
+    const freshUpdate = await request(app)
+      .put(`/stacks/${stackId}`)
+      .set('Authorization', `Bearer ${fresh.accessToken}`)
+      .send({});
+    expect(freshUpdate.status).toBe(400);
+    const elevatedUpdate = await request(app)
+      .put(`/stacks/${stackId}`)
+      .set('Authorization', `Bearer ${owner.accessToken}`)
+      .send({});
+    expect(elevatedUpdate.status).toBe(200);
 
     const unlockResponse = await request(app)
       .delete(`/albums/${stackAlbum.id}/lock`)

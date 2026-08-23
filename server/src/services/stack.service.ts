@@ -73,6 +73,10 @@ export class StackService extends BaseService {
    * softer (they filter members); mutations refuse outright.
    */
   private async assertStackMutableForViewer(auth: AuthDto, id: string): Promise<void> {
+    // Elevation itself is the bypass for mutations; reveal headers are presentation state.
+    if (auth.sharedLink || auth.session?.hasElevatedPermission) {
+      return;
+    }
     const lockVisibility = await this.getViewerLockVisibility(auth);
     if (lockVisibility.length === 0) {
       return;
@@ -89,7 +93,9 @@ export class StackService extends BaseService {
   async update(auth: AuthDto, id: string, dto: StackUpdateDto): Promise<StackResponseDto> {
     await this.requireAccess({ auth, permission: Permission.StackUpdate, ids: [id] });
     await this.assertStackMutableForViewer(auth, id);
-    const lockVisibility = await this.getViewerLockVisibility(auth);
+    // Mutations bypass list-style filtering entirely when elevated (no reveal needed) -
+    // otherwise an elevated user could not re-pick a primary on a stack with hidden members.
+    const lockVisibility = auth.session?.hasElevatedPermission ? [] : await this.getViewerLockVisibility(auth);
     const stack = await this.findOrFail(id, lockVisibility);
     if (dto.primaryAssetId && !stack.assets.some(({ id }) => id === dto.primaryAssetId)) {
       throw new BadRequestException('Primary asset must be in the stack');

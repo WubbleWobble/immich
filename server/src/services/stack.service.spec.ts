@@ -117,6 +117,23 @@ describe(StackService.name, () => {
   });
 
   describe('update', () => {
+    it('lets an elevated session mutate a stack with hidden members without reveal headers', async () => {
+      const auth = AuthFactory.from().session({ hasElevatedPermission: true }).build();
+      const asset = AssetFactory.from().exif().build();
+      const stack = StackFactory.from()
+        .primaryAsset(asset, (builder) => builder.exif())
+        .build();
+      mocks.access.stack.checkOwnerAccess.mockResolvedValue(new Set([stack.id]));
+      mocks.stack.getById.mockResolvedValue(getForStack(stack));
+      mocks.stack.update.mockResolvedValue(getForStack(stack));
+
+      await expect(sut.update(auth, stack.id, {})).resolves.toBeDefined();
+
+      // Elevated mutations bypass lock filtering entirely: no list-style visibility computed.
+      expect(mocks.lock.getOwnerLockVisibility).not.toHaveBeenCalled();
+      expect(mocks.stack.getById).toHaveBeenCalledWith(stack.id, []);
+    });
+
     it('should require stack.update permissions', async () => {
       await expect(sut.update(AuthFactory.create(), 'stack-id', {})).rejects.toBeInstanceOf(BadRequestException);
 

@@ -158,6 +158,19 @@ describe(LockService.name, () => {
       expect(mocks.lock.isAlbumHiddenForViewer).not.toHaveBeenCalled();
     });
 
+    it('fails non-owned assets without side effects (viewer locks do not govern partner assets)', async () => {
+      const auth = elevated();
+      const foreignAssetId = newUuid();
+      mocks.lock.isAlbumHiddenForViewer.mockResolvedValue(true);
+      mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set());
+
+      await expect(
+        sut.moveAssetsToLockedAlbum(auth, { albumId: newUuid(), assetIds: [foreignAssetId] }),
+      ).resolves.toEqual({ moved: [], stillVisible: [], failed: [foreignAssetId] });
+      expect(mocks.album.getVisibleMembershipsByAssetIds).not.toHaveBeenCalled();
+      expect(mocks.album.addAssetIds).not.toHaveBeenCalled();
+    });
+
     it('rejects a destination the user has not locked', async () => {
       const auth = elevated();
       mocks.lock.isAlbumHiddenForViewer.mockResolvedValue(false);
