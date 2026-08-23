@@ -11,7 +11,7 @@ A 2.x fork database has applied, in order: upstream migrations up to
 `1778614946174-UpdateWorkflowTables`, then the fork's
 `1779487447243-AddAlbumSmartKind`, `1779549231508-AddAlbumSmartAlbumCache`,
 `1779574778179-AddAlbumContainers`, and `1786957000000-AddLockedContent`.
-Upstream v3.1.0 adds migrations numbered `1779806699547`…`1787148183729` — all
+Upstream v3.1.0 adds migrations numbered `1779806699547`…`1784836013770` — all
 of which sort **before** the applied `1786957000000-AddLockedContent` row, so an
 unmodified upgrade refuses to migrate.
 
@@ -42,8 +42,10 @@ WHERE name = '1786957000000-AddLockedContent';
 SQL
 ```
 
-Then start the 3.x server normally: the pending upstream v3.1.0 migrations
-(`1779806699547` onwards) all sort after every applied row and run in order.
+Then start the 3.x server normally: the pending migrations - the fork's
+`1779580000001-RetireWorkflowLockSteps` bridge first, then upstream v3.1.0's
+`1779806699547`…`1784836013770` - all sort after every applied row and run in
+order.
 
 Fresh installations need nothing: all migrations (upstream and fork,
 interleaved by timestamp) run in one ordered pass — `AddLockedContent` only
@@ -55,10 +57,20 @@ upstream migrations is safe.
 Package versions track upstream (v3.1.0) so mobile-client version checks keep
 working; fork identity lives in the docker image tag (e.g. `v3.1.0-wobble.1`).
 
-## Workflow `assetLock` / `assetUnlock`
+## Workflow lock automation
 
-The upstream core-plugin workflow actions `assetLock`/`assetUnlock` set the
-retired per-asset `visibility: locked`, which this fork rejects (locked albums
-replaced it, and filing into a locked album requires an elevated session that a
-background workflow cannot hold). The fork removes both actions from the core
-plugin; workflows referencing them must be edited.
+The upstream core plugin offered two ways to set the retired per-asset
+`visibility: locked`, which this fork rejects (locked albums replaced it, and
+filing into a locked album requires an elevated session that a background
+workflow cannot hold): the `assetLock` action (whose `inverse` config was the
+unlock), and the `assetVisibility` action's `locked` option. The fork removes
+`assetLock` entirely and drops `locked` from `assetVisibility`.
+
+Existing workflows are bridged by the `1779580000001-RetireWorkflowLockSteps`
+migration on first 3.x start, BEFORE plugin sync can cascade-delete anything
+silently: workflows containing either step form are **disabled**, `assetLock`
+steps are removed (deliberately and logged - the plugin method they reference is
+about to disappear), and `assetVisibility(visibility=locked)` steps are kept for
+manual re-pointing. A `[fork upgrade]` warning in the server log reports the
+counts. Review the disabled workflows and rebuild the lock behaviour manually if
+wanted (e.g. add-to-album steps targeting an album you lock).

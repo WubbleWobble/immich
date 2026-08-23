@@ -1,22 +1,20 @@
 import {
   AlbumKind,
+  AlbumResponseDto,
   AlbumUserRole,
   AssetVisibility,
-  AlbumResponseDto,
   createAlbumContainer,
   createTag,
   getAllAlbumContainers,
   getAllAlbums,
   getLocks,
   getTimeBuckets,
-  lockAlbum,
   login,
   LoginResponseDto,
   setupPinCode,
   tagAssets,
   unlockAuthSession,
 } from '@immich/sdk';
-import { errorDto } from 'src/responses';
 import { app, asBearerAuth, utils } from 'src/utils';
 import request from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -245,7 +243,10 @@ describe('/albums/:id/lock', () => {
   it('locked smart albums hide their exclusive matches; unlocked containers rescue', async () => {
     // Tagged asset matched only by the smart album's filter.
     const smartOnlyAsset = await utils.createAsset(owner.accessToken);
-    const tag = await createTag({ tagCreateDto: { name: 'lock-smart-tag' } }, { headers: asBearerAuth(owner.accessToken) });
+    const tag = await createTag(
+      { tagCreateDto: { name: 'lock-smart-tag' } },
+      { headers: asBearerAuth(owner.accessToken) },
+    );
     // Barrier: metadata extraction can transiently wipe the manual tag (sidecar round-trip
     // restores it); re-tag and poll until the tag is actually searchable.
     const deadline = Date.now() + 10_000;
@@ -717,7 +718,10 @@ describe('/albums/:id/lock', () => {
     );
     const deadline = Date.now() + 10_000;
     while (true) {
-      await tagAssets({ id: tag.id, bulkIdsDto: { ids: [smartAsset.id] } }, { headers: asBearerAuth(owner.accessToken) });
+      await tagAssets(
+        { id: tag.id, bulkIdsDto: { ids: [smartAsset.id] } },
+        { headers: asBearerAuth(owner.accessToken) },
+      );
       const { body } = await request(app)
         .post('/search/metadata')
         .set('Authorization', `Bearer ${owner.accessToken}`)
@@ -759,10 +763,7 @@ describe('/albums/:id/lock', () => {
 
     // The by-asset album list includes computed smart-album membership (the web locked-move
     // flow relies on this to detect saved-search rescues).
-    const appearsIn = await getAllAlbums(
-      { assetId: smartAsset.id },
-      { headers: asBearerAuth(owner.accessToken) },
-    );
+    const appearsIn = await getAllAlbums({ assetId: smartAsset.id }, { headers: asBearerAuth(owner.accessToken) });
     expect(appearsIn.map(({ id }) => id)).toContain(smartAlbum.id);
 
     // Folder mosaic on a COLD cache: no album-list read primes it - the folder endpoint
@@ -849,7 +850,9 @@ describe('/albums/:id/lock', () => {
       .set('Authorization', `Bearer ${owner.accessToken}`)
       .send({ albumId: target.id, assetIds: [m1.id, m2.id, m3.id, partnerAsset.id] });
     expect(move.status).toBe(201);
-    expect(move.body.moved.sort()).toEqual([m1.id, m2.id].sort());
+    expect(move.body.moved.toSorted((a: string, b: string) => a.localeCompare(b))).toEqual(
+      [m1.id, m2.id].toSorted((a, b) => a.localeCompare(b)),
+    );
     expect(move.body.stillVisible).toEqual([m3.id]);
     expect(move.body.failed).toEqual([partnerAsset.id]);
 

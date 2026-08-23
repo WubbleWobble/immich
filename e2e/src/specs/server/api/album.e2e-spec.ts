@@ -1051,17 +1051,11 @@ describe('/albums', () => {
       expect(recipientAlbums.map((a) => a.id)).toContain(album.id);
 
       // Recipient can read the album via per-album access cascade.
-      const recipientView = await getAlbumInfo(
-        { id: album.id },
-        { headers: asBearerAuth(user2.accessToken) },
-      );
+      const recipientView = await getAlbumInfo({ id: album.id }, { headers: asBearerAuth(user2.accessToken) });
       expect(recipientView).toMatchObject({ id: album.id });
 
       // Asset cascade (H3 regression): recipient can fetch metadata for assets in the cascaded album.
-      const recipientAssetView = await getAssetInfo(
-        { id: asset1.id },
-        { headers: asBearerAuth(user2.accessToken) },
-      );
+      const recipientAssetView = await getAssetInfo({ id: asset1.id }, { headers: asBearerAuth(user2.accessToken) });
       expect(recipientAssetView).toMatchObject({ id: asset1.id });
 
       // Asset cascade also reachable via HTTP (covers 403 path that was broken before H3 fix).
