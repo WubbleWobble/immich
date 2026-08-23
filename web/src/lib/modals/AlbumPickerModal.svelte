@@ -107,6 +107,7 @@
         }
         break;
       }
+      // no default
     }
 
     selectedRowIndex = -1;
@@ -138,6 +139,7 @@
         break;
       }
       case 'Control': {
+        // eslint-disable-next-line unicorn/no-late-event-control
         e.preventDefault();
         handleMultiSelect();
         break;

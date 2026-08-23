@@ -2,7 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { OnEvent } from 'src/decorators';
 import { mapAsset } from 'src/dtos/asset-response.dto';
 import { JobCreateDto } from 'src/dtos/job.dto';
-import { AssetType, AssetVisibility, JobName, JobStatus, ManualJobName } from 'src/enum';
+import { AssetType, AssetVisibility, IntegrityReport, JobName, JobStatus, ManualJobName } from 'src/enum';
 import { ArgsOf } from 'src/repositories/event.repository';
 import { AlbumService } from 'src/services/album.service';
 import { BaseService } from 'src/services/base.service';
@@ -33,6 +33,42 @@ const asJobItem = (dto: JobCreateDto): JobItem => {
 
     case ManualJobName.BackupDatabase: {
       return { name: JobName.DatabaseBackup };
+    }
+
+    case ManualJobName.IntegrityMissingFiles: {
+      return { name: JobName.IntegrityMissingFilesQueueAll };
+    }
+
+    case ManualJobName.IntegrityUntrackedFiles: {
+      return { name: JobName.IntegrityUntrackedFilesQueueAll };
+    }
+
+    case ManualJobName.IntegrityChecksumFiles: {
+      return { name: JobName.IntegrityChecksumFiles };
+    }
+
+    case ManualJobName.IntegrityMissingFilesRefresh: {
+      return { name: JobName.IntegrityMissingFilesQueueAll, data: { refreshOnly: true } };
+    }
+
+    case ManualJobName.IntegrityUntrackedFilesRefresh: {
+      return { name: JobName.IntegrityUntrackedFilesQueueAll, data: { refreshOnly: true } };
+    }
+
+    case ManualJobName.IntegrityChecksumFilesRefresh: {
+      return { name: JobName.IntegrityChecksumFiles, data: { refreshOnly: true } };
+    }
+
+    case ManualJobName.IntegrityMissingFilesDeleteAll: {
+      return { name: JobName.IntegrityDeleteReportType, data: { type: IntegrityReport.MissingFile } };
+    }
+
+    case ManualJobName.IntegrityUntrackedFilesDeleteAll: {
+      return { name: JobName.IntegrityDeleteReportType, data: { type: IntegrityReport.UntrackedFile } };
+    }
+
+    case ManualJobName.IntegrityChecksumFilesDeleteAll: {
+      return { name: JobName.IntegrityDeleteReportType, data: { type: IntegrityReport.ChecksumFail } };
     }
 
     default: {
@@ -227,6 +263,8 @@ export class JobService extends BaseService {
         }
         break;
       }
+
+      // no default
     }
   }
 }

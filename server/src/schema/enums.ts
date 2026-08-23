@@ -6,7 +6,7 @@ import {
   AssetVisibility,
   ChecksumAlgorithm,
   SourceType,
-  VideoSegmentCodec,
+  VideoCodec,
 } from 'src/enum';
 
 export const album_user_role_enum = registerEnum({
@@ -41,5 +41,5 @@ export const asset_checksum_algorithm_enum = registerEnum({
 
 export const video_stream_variant_codec_enum = registerEnum({
   name: 'video_stream_variant_codec_enum',
-  values: Object.values(VideoSegmentCodec),
+  values: [VideoCodec.Av1, VideoCodec.Hevc, VideoCodec.H264],
 });

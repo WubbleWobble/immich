@@ -128,9 +128,7 @@
                       ? []
                       : [{ label: $t('role_editor'), value: AlbumUserRole.Editor }]),
                     { label: $t('role_viewer'), value: AlbumUserRole.Viewer },
-                    ...(album.kind !== AlbumKind.Smart || role === AlbumUserRole.Owner
-                      ? [{ label: $t('owner'), value: AlbumUserRole.Owner }]
-                      : []),
+                    { label: $t('owner'), value: AlbumUserRole.Owner, disabled: true },
                     { label: $t('remove_user'), value: 'none' },
                   ] as SelectOption<AlbumUserRole | 'none'>[]}
                   onChange={(value) => handleRoleSelect(user, value)}

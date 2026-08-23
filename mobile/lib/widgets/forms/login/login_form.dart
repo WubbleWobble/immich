@@ -15,16 +15,19 @@ import 'package:immich_mobile/domain/models/store.model.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
-import 'package:immich_mobile/infrastructure/repositories/metadata.repository.dart';
+import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
 import 'package:immich_mobile/providers/auth.provider.dart';
 import 'package:immich_mobile/providers/background_sync.provider.dart';
+import 'package:immich_mobile/providers/feature_message.provider.dart';
 import 'package:immich_mobile/providers/gallery_permission.provider.dart';
 import 'package:immich_mobile/providers/oauth.provider.dart';
 import 'package:immich_mobile/providers/server_info.provider.dart';
+import 'package:immich_mobile/providers/view_intent/view_intent_handler.provider.dart';
 import 'package:immich_mobile/providers/websocket.provider.dart';
 import 'package:immich_mobile/repositories/permission.repository.dart';
 import 'package:immich_mobile/routing/router.dart';
 import 'package:immich_mobile/utils/provider_utils.dart';
+import 'package:immich_mobile/utils/semver.dart';
 import 'package:immich_mobile/utils/url_helper.dart';
 import 'package:immich_mobile/utils/version_compatibility.dart';
 import 'package:immich_mobile/widgets/common/immich_logo.dart';
@@ -40,18 +43,7 @@ class LoginForm extends HookConsumerWidget {
 
   final log = Logger('LoginForm');
 
-  String? _validateUrl(String? url) {
-    if (url == null || url.isEmpty) {
-      return null;
-    }
-
-    final parsedUrl = Uri.tryParse(url);
-    if (parsedUrl == null || !parsedUrl.isAbsolute || !parsedUrl.scheme.startsWith("http") || parsedUrl.host.isEmpty) {
-      return 'login_form_err_invalid_url'.tr();
-    }
-
-    return null;
-  }
+  String? _validateUrl(String? url) => normalizeAndValidateServerUrl(url) ? null : 'login_form_err_invalid_url'.tr();
 
   String? _validateEmail(String? email) {
     if (email == null || email == '') {
@@ -87,18 +79,9 @@ class LoginForm extends HookConsumerWidget {
     checkVersionMismatch() async {
       try {
         final packageInfo = await PackageInfo.fromPlatform();
-        final appVersion = packageInfo.version;
-        final appMajorVersion = int.parse(appVersion.split('.')[0]);
-        final appMinorVersion = int.parse(appVersion.split('.')[1]);
-        final serverMajorVersion = serverInfo.serverVersion.major;
-        final serverMinorVersion = serverInfo.serverVersion.minor;
-
-        warningMessage.value = getVersionCompatibilityMessage(
-          appMajorVersion,
-          appMinorVersion,
-          serverMajorVersion,
-          serverMinorVersion,
-        );
+        final appSemVer = SemVer.fromString(packageInfo.version);
+        final serverSemVer = serverInfo.serverVersion;
+        warningMessage.value = getVersionCompatibilityMessage(serverVersion: serverSemVer, appVersion: appSemVer);
       } catch (error) {
         warningMessage.value = 'Error checking version compatibility';
       }
@@ -107,7 +90,7 @@ class LoginForm extends HookConsumerWidget {
     /// Fetch the server login credential and enables oAuth login if necessary
     /// Returns true if successful, false otherwise
     Future<void> getServerAuthSettings() async {
-      final sanitizeServerUrl = sanitizeUrl(serverEndpointController.text);
+      final sanitizeServerUrl = normalizeServerUrl(serverEndpointController.text);
       final serverUrl = punycodeEncodeUrl(sanitizeServerUrl);
 
       // Guard empty URL
@@ -182,12 +165,14 @@ class LoginForm extends HookConsumerWidget {
 
     Future<void> handleSyncFlow() async {
       final backgroundManager = ref.read(backgroundSyncProvider);
+      final viewIntentHandler = ref.read(viewIntentHandlerProvider);
 
       await backgroundManager.syncLocal(full: true);
       await backgroundManager.syncRemote();
+      await viewIntentHandler.flushDeferredViewIntent();
       await backgroundManager.hashAssets();
 
-      if (MetadataRepository.instance.appConfig.backup.syncAlbums) {
+      if (SettingsRepository.instance.appConfig.backup.syncAlbums) {
         await backgroundManager.syncLinkedAlbum();
       }
     }
@@ -259,7 +244,8 @@ class LoginForm extends HookConsumerWidget {
           }
           unawaited(handleSyncFlow());
           ref.read(websocketProvider.notifier).connect();
-          unawaited(context.replaceRoute(const TabShellRoute()));
+          unawaited(ref.read(featureMessageServiceProvider).markSeen());
+          unawaited(context.router.replaceAll([const TabShellRoute()]));
           return;
         }
       } catch (error) {
@@ -307,7 +293,7 @@ class LoginForm extends HookConsumerWidget {
 
       try {
         oAuthServerUrl = await oAuthService.getOAuthServerUrl(
-          sanitizeUrl(serverEndpointController.text),
+          normalizeServerUrl(serverEndpointController.text),
           state,
           codeChallenge,
         );
@@ -346,7 +332,8 @@ class LoginForm extends HookConsumerWidget {
               await getManageMediaPermission();
             }
             unawaited(handleSyncFlow());
-            unawaited(context.replaceRoute(const TabShellRoute()));
+            unawaited(ref.read(featureMessageServiceProvider).markSeen());
+            unawaited(context.router.replaceAll([const TabShellRoute()]));
             return;
           }
         } catch (error, stack) {
@@ -382,11 +369,21 @@ class LoginForm extends HookConsumerWidget {
         child: Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            color: context.isDarkTheme ? Colors.red.shade700 : Colors.red.shade100,
-            borderRadius: const BorderRadius.all(Radius.circular(8)),
-            border: Border.all(color: context.isDarkTheme ? Colors.red.shade900 : Colors.red[200]!),
+            color: context.isDarkTheme ? Colors.amber.shade700 : Colors.amber.shade100,
+            borderRadius: const BorderRadius.all(Radius.circular(12)),
+            border: Border.all(color: context.isDarkTheme ? Colors.amber.shade800 : Colors.amber[200]!, width: 2),
           ),
-          child: Text(warningMessage.value!, textAlign: TextAlign.center),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Colors.amber.shade800),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Padding(padding: const EdgeInsets.only(top: 2), child: Text(warningMessage.value!)),
+              ),
+            ],
+          ),
         ),
       );
     }
@@ -428,7 +425,7 @@ class LoginForm extends HookConsumerWidget {
                 Padding(
                   padding: const EdgeInsets.only(bottom: ImmichSpacing.md),
                   child: Text(
-                    sanitizeUrl(serverEndpointController.text),
+                    normalizeServerUrl(serverEndpointController.text),
                     style: context.textTheme.displaySmall,
                     textAlign: TextAlign.center,
                   ),

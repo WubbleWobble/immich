@@ -5,9 +5,6 @@
   import { listNavigation } from '$lib/actions/list-navigation';
   import { scrollMemoryClearer } from '$lib/actions/scroll-memory';
   import ImageThumbnail from '$lib/components/assets/thumbnail/ImageThumbnail.svelte';
-  import EditNameInput from './EditNameInput.svelte';
-  import MergeFaceSelector from './MergeFaceSelector.svelte';
-  import UnmergeFaceSelector from './UnmergeFaceSelector.svelte';
   import OnEvents from '$lib/components/OnEvents.svelte';
   import ButtonContextMenu from '$lib/components/shared-components/context-menu/ButtonContextMenu.svelte';
   import MenuOption from '$lib/components/shared-components/context-menu/MenuOption.svelte';
@@ -39,6 +36,7 @@
   import { getPeopleThumbnailUrl } from '$lib/utils';
   import { handleError } from '$lib/utils/handle-error';
   import { isExternalUrl } from '$lib/utils/navigation';
+  import { normalizeSearchString } from '$lib/utils/string-utils';
   import { AssetVisibility, searchPerson, updatePerson, type PersonResponseDto } from '@immich/sdk';
   import {
     ActionButton,
@@ -54,6 +52,9 @@
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
   import type { PageData } from './$types';
+  import EditNameInput from './EditNameInput.svelte';
+  import MergeFaceSelector from './MergeFaceSelector.svelte';
+  import UnmergeFaceSelector from './UnmergeFaceSelector.svelte';
 
   interface Props {
     data: PageData;
@@ -94,6 +95,8 @@
     const getPreviousRoute = $page.url.searchParams.get(QueryParameter.PREVIOUS_ROUTE);
     if (getPreviousRoute && !isExternalUrl(getPreviousRoute)) {
       previousRoute = getPreviousRoute;
+    } else if ($page.params.assetId) {
+      previousRoute = Route.viewPerson(data.person);
     }
     if (action == 'merge') {
       viewMode = PersonPageViewMode.MERGE_PEOPLE;
@@ -236,8 +239,10 @@
 
     const result = await searchPerson({ name: personName, withHidden: true });
 
+    const normalizedPersonName = normalizeSearchString(personName);
     const existingPerson = result.find(
-      ({ name, id }: PersonResponseDto) => name.toLowerCase() === personName.toLowerCase() && id !== person.id && name,
+      ({ name, id }: PersonResponseDto) =>
+        normalizeSearchString(name) === normalizedPersonName && id !== person.id && name,
     );
     if (existingPerson) {
       personMerge2 = existingPerson;
@@ -245,8 +250,8 @@
       potentialMergePeople = result
         .filter(
           (person: PersonResponseDto) =>
-            personMerge2?.name.toLowerCase() === person.name.toLowerCase() &&
-            person.id !== personMerge2.id &&
+            normalizeSearchString(personMerge2?.name ?? '') === normalizeSearchString(person.name) &&
+            person.id !== personMerge2?.id &&
             person.id !== personMerge1?.id &&
             !person.isHidden,
         )
@@ -326,6 +331,7 @@
   onPersonAssetDelete={handlePersonAssetDelete}
   onAssetsDelete={updateAssetCount}
   onAssetsArchive={updateAssetCount}
+  onAssetsUnarchive={updateAssetCount}
 />
 
 <main
@@ -493,7 +499,7 @@
     </AssetSelectControlBar>
   {:else}
     {#if viewMode === PersonPageViewMode.VIEW_ASSETS}
-      <ControlAppBar showBackButton backIcon={mdiArrowLeft} onClose={() => goto(previousRoute)}>
+      <ControlAppBar backIcon={mdiArrowLeft} onClose={() => goto(previousRoute)}>
         {#snippet trailing()}
           <ContextMenuButton
             items={[SelectFeaturePhoto, HidePerson, ShowPerson, SetDateOfBirth, Merge, Favorite, Unfavorite]}

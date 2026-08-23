@@ -97,8 +97,9 @@ export class MapRepository {
     );
   }
 
-  @GenerateSql({ params: [[DummyValue.UUID], [DummyValue.UUID]] })
+  @GenerateSql({ params: [DummyValue.UUID, [DummyValue.UUID], [DummyValue.UUID]] })
   getMapMarkers(
+    authUserId: string,
     ownerIds: string[],
     albumIds: string[],
     { isArchived, isFavorite, fileCreatedAfter, fileCreatedBefore }: MapMarkerSearchOptions = {},
@@ -114,7 +115,7 @@ export class MapRepository {
         qb.where((eb) =>
           eb.or([
             eb('asset.visibility', '=', AssetVisibility.Timeline),
-            eb('asset.visibility', '=', AssetVisibility.Archive),
+            eb.and([eb('asset.ownerId', '=', authUserId), eb('asset.visibility', '=', AssetVisibility.Archive)]),
           ]),
         ),
       )
@@ -315,8 +316,8 @@ export class MapRepository {
         id: Number.parseInt(lineSplit[0]),
         name: lineSplit[1],
         alternateNames: lineSplit[3],
-        latitude: Number.parseFloat(lineSplit[4]),
-        longitude: Number.parseFloat(lineSplit[5]),
+        latitude: Number(lineSplit[4]),
+        longitude: Number(lineSplit[5]),
         countryCode: lineSplit[8],
         admin1Code: lineSplit[10],
         admin2Code: lineSplit[11],
@@ -332,6 +333,7 @@ export class MapRepository {
             .insertInto('geodata_places')
             .values(bufferGeodata)
             .execute()
+
             .then(() => {
               count += curLength;
               if (count % 10_000 === 0) {

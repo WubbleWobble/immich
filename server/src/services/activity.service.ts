@@ -48,7 +48,7 @@ export class ActivityService extends BaseService {
     };
 
     let activity: Activity | undefined;
-    let duplicate = false;
+    let isDuplicate = false;
 
     if (dto.type === ReactionType.LIKE) {
       delete dto.comment;
@@ -58,7 +58,7 @@ export class ActivityService extends BaseService {
         assetId: dto.assetId ?? null,
         isLiked: true,
       });
-      duplicate = !!activity;
+      isDuplicate = !!activity;
     }
 
     if (!activity) {
@@ -69,7 +69,7 @@ export class ActivityService extends BaseService {
       });
     }
 
-    return { duplicate, value: mapActivity(activity) };
+    return { duplicate: isDuplicate, value: mapActivity(activity) };
   }
 
   async delete(auth: AuthDto, id: string): Promise<void> {

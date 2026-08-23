@@ -31,7 +31,7 @@ export class MapService extends BaseService {
       isElevated: !!auth.session?.hasElevatedPermission,
     });
 
-    return this.mapRepository.getMapMarkers(userIds, albumIds, options, lockVisibility);
+    return this.mapRepository.getMapMarkers(auth.user.id, userIds, albumIds, options, lockVisibility);
   }
 
   async reverseGeocode(dto: MapReverseGeocodeDto) {

@@ -12,6 +12,8 @@ import { DatabaseBackupService } from 'src/services/database-backup.service';
 import { DatabaseService } from 'src/services/database.service';
 import { DownloadService } from 'src/services/download.service';
 import { DuplicateService } from 'src/services/duplicate.service';
+import { HlsService } from 'src/services/hls.service';
+import { IntegrityService } from 'src/services/integrity.service';
 import { JobService } from 'src/services/job.service';
 import { LibraryService } from 'src/services/library.service';
 import { LockService } from 'src/services/lock.service';
@@ -41,6 +43,7 @@ import { SystemMetadataService } from 'src/services/system-metadata.service';
 import { TagService } from 'src/services/tag.service';
 import { TelemetryService } from 'src/services/telemetry.service';
 import { TimelineService } from 'src/services/timeline.service';
+import { TranscodingService } from 'src/services/transcoding.service';
 import { TrashService } from 'src/services/trash.service';
 import { UserAdminService } from 'src/services/user-admin.service';
 import { UserService } from 'src/services/user.service';
@@ -65,6 +68,8 @@ export const services = [
   DatabaseService,
   DownloadService,
   DuplicateService,
+  IntegrityService,
+  HlsService,
   JobService,
   LibraryService,
   MaintenanceService,
@@ -93,6 +98,7 @@ export const services = [
   TagService,
   TelemetryService,
   TimelineService,
+  TranscodingService,
   TrashService,
   UserAdminService,
   UserService,

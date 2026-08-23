@@ -7,7 +7,7 @@ import 'package:immich_mobile/infrastructure/repositories/network.repository.dar
 import 'package:immich_mobile/models/server_info/server_version.model.dart';
 import 'package:immich_mobile/providers/auth.provider.dart';
 import 'package:immich_mobile/providers/background_sync.provider.dart';
-import 'package:immich_mobile/providers/infrastructure/metadata.provider.dart';
+import 'package:immich_mobile/providers/infrastructure/settings.provider.dart';
 import 'package:immich_mobile/providers/server_info.provider.dart';
 import 'package:immich_mobile/utils/debounce.dart';
 import 'package:immich_mobile/utils/debug_print.dart';
@@ -103,6 +103,7 @@ class WebsocketNotifier extends StateNotifier<WebsocketState> {
         socket.on('AssetUploadReadyV2', _handleSyncAssetUploadReadyV2);
         socket.on('AssetEditReadyV1', _handleSyncAssetEditReadyV1);
         socket.on('AssetEditReadyV2', _handleSyncAssetEditReadyV2);
+        socket.on('on_album_update', _handleAlbumUpdate);
         socket.on('on_config_update', _handleOnConfigUpdate);
         socket.on('on_new_release', _handleReleaseUpdates);
       } catch (e) {
@@ -184,6 +185,10 @@ class WebsocketNotifier extends StateNotifier<WebsocketState> {
     unawaited(_ref.read(backgroundSyncProvider).syncWebsocketEditV1(data));
   }
 
+  void _handleAlbumUpdate(dynamic _) {
+    unawaited(_ref.read(backgroundSyncProvider).syncRemote());
+  }
+
   void _handleSyncAssetEditReadyV2(dynamic data) {
     unawaited(_ref.read(backgroundSyncProvider).syncWebsocketEditV2(data));
   }
@@ -193,7 +198,7 @@ class WebsocketNotifier extends StateNotifier<WebsocketState> {
       return;
     }
 
-    final isSyncAlbumEnabled = _ref.read(metadataProvider).appConfig.backup.syncAlbums;
+    final isSyncAlbumEnabled = _ref.read(appConfigProvider).backup.syncAlbums;
     try {
       unawaited(
         _ref.read(backgroundSyncProvider).syncWebsocketBatchV1(_batchedAssetUploadReady.toList()).then((_) {
@@ -214,7 +219,7 @@ class WebsocketNotifier extends StateNotifier<WebsocketState> {
       return;
     }
 
-    final isSyncAlbumEnabled = _ref.read(metadataProvider).appConfig.backup.syncAlbums;
+    final isSyncAlbumEnabled = _ref.read(appConfigProvider).backup.syncAlbums;
     try {
       unawaited(
         _ref.read(backgroundSyncProvider).syncWebsocketBatchV2(_batchedAssetUploadReady.toList()).then((_) {

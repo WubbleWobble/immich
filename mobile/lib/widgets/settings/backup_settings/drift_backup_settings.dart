@@ -1,19 +1,19 @@
 import 'dart:async';
 
-import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/album/local_album.model.dart';
 import 'package:immich_mobile/domain/models/config/app_config.dart';
-import 'package:immich_mobile/domain/models/metadata_key.dart';
+import 'package:immich_mobile/domain/models/settings_key.dart';
 import 'package:immich_mobile/domain/services/sync_linked_album.service.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
 import 'package:immich_mobile/extensions/platform_extensions.dart';
 import 'package:immich_mobile/extensions/translate_extensions.dart';
+import 'package:immich_mobile/generated/translations.g.dart';
 import 'package:immich_mobile/providers/background_sync.provider.dart';
 import 'package:immich_mobile/providers/backup/backup_album.provider.dart';
-import 'package:immich_mobile/providers/infrastructure/metadata.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
+import 'package:immich_mobile/providers/infrastructure/settings.provider.dart';
 import 'package:immich_mobile/providers/user.provider.dart';
 import 'package:immich_mobile/widgets/settings/setting_group_title.dart';
 import 'package:immich_mobile/widgets/settings/setting_list_tile.dart';
@@ -112,7 +112,7 @@ class _AlbumSyncActionButtonState extends ConsumerState<_AlbumSyncActionButton> 
                 trailing: Switch(
                   value: albumSyncEnable,
                   onChanged: (bool newValue) async {
-                    await ref.read(metadataProvider).write(MetadataKey.backupSyncAlbums, newValue);
+                    await ref.read(settingsProvider).write(.backupSyncAlbums, newValue);
 
                     if (newValue == true) {
                       await _manageLinkedAlbums();
@@ -158,7 +158,7 @@ class _AlbumSyncActionButtonState extends ConsumerState<_AlbumSyncActionButton> 
 }
 
 class _BackupSwitchTile extends ConsumerWidget {
-  final MetadataKey<bool> metadataKey;
+  final SettingsKey<bool> metadataKey;
   final bool Function(AppConfig) selector;
   final String titleKey;
   final String subtitleKey;
@@ -183,7 +183,7 @@ class _BackupSwitchTile extends ConsumerWidget {
         trailing: Switch(
           value: value,
           onChanged: (bool newValue) async {
-            await ref.read(metadataProvider).write(metadataKey, newValue);
+            await ref.read(settingsProvider).write(metadataKey, newValue);
             onChanged?.call(newValue);
           },
         ),
@@ -198,7 +198,7 @@ class _UseCellularForVideosButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _BackupSwitchTile(
-      metadataKey: MetadataKey.backupUseCellularForVideos,
+      metadataKey: SettingsKey.backupUseCellularForVideos,
       selector: (c) => c.backup.useCellularForVideos,
       titleKey: "videos",
       subtitleKey: "network_requirement_videos_upload",
@@ -212,7 +212,7 @@ class _UseCellularForPhotosButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _BackupSwitchTile(
-      metadataKey: MetadataKey.backupUseCellularForPhotos,
+      metadataKey: SettingsKey.backupUseCellularForPhotos,
       selector: (c) => c.backup.useCellularForPhotos,
       titleKey: "photos",
       subtitleKey: "network_requirement_photos_upload",
@@ -227,7 +227,7 @@ class _BackupOnlyWhenChargingButton extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final fgService = ref.read(backgroundWorkerFgServiceProvider);
     return _BackupSwitchTile(
-      metadataKey: MetadataKey.backupRequireCharging,
+      metadataKey: SettingsKey.backupRequireCharging,
       selector: (c) => c.backup.requireCharging,
       titleKey: "charging",
       subtitleKey: "charging_requirement_mobile_backup",
@@ -255,11 +255,11 @@ class _BackupDelaySlider extends ConsumerWidget {
     _ => 600,
   };
 
-  static String formatBackupDelaySliderValue(int v) => switch (v) {
-    0 => 'setting_notifications_notify_seconds'.tr(namedArgs: {'count': '5'}),
-    1 => 'setting_notifications_notify_seconds'.tr(namedArgs: {'count': '30'}),
-    2 => 'setting_notifications_notify_minutes'.tr(namedArgs: {'count': '2'}),
-    _ => 'setting_notifications_notify_minutes'.tr(namedArgs: {'count': '10'}),
+  static String formatBackupDelaySliderValue(BuildContext context, int v) => switch (v) {
+    0 => context.t.setting_notifications_notify_seconds(count: 5),
+    1 => context.t.setting_notifications_notify_seconds(count: 30),
+    2 => context.t.setting_notifications_notify_minutes(count: 2),
+    _ => context.t.setting_notifications_notify_minutes(count: 10),
   };
 
   @override
@@ -272,8 +272,8 @@ class _BackupDelaySlider extends ConsumerWidget {
         Padding(
           padding: const EdgeInsets.only(left: 24.0, top: 8.0),
           child: Text(
-            'backup_controller_page_background_delay'.tr(
-              namedArgs: {'duration': formatBackupDelaySliderValue(currentValue)},
+            context.t.backup_controller_page_background_delay(
+              duration: formatBackupDelaySliderValue(context, currentValue),
             ),
             style: context.textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w500),
           ),
@@ -282,16 +282,16 @@ class _BackupDelaySlider extends ConsumerWidget {
           value: currentValue.toDouble(),
           onChanged: (double v) async {
             final seconds = backupDelayToSeconds(v.toInt());
-            await ref.read(metadataProvider).write(MetadataKey.backupTriggerDelay, seconds);
+            await ref.read(settingsProvider).write(SettingsKey.backupTriggerDelay, seconds);
           },
           onChangeEnd: (double v) async {
             final seconds = backupDelayToSeconds(v.toInt());
-            await ref.read(metadataProvider).write(MetadataKey.backupTriggerDelay, seconds);
+            await ref.read(settingsProvider).write(SettingsKey.backupTriggerDelay, seconds);
           },
           max: 3.0,
           min: 0.0,
           divisions: 3,
-          label: formatBackupDelaySliderValue(currentValue),
+          label: formatBackupDelaySliderValue(context, currentValue),
         ),
       ],
     );

@@ -127,11 +127,13 @@ export class TagService extends BaseService {
 
     const taggedAssetIds: string[] = [];
     for (const { id: assetId, success } of results) {
-      if (success) {
-        await this.updateTags(assetId);
-        await this.eventRepository.emit('AssetTag', { assetId });
-        taggedAssetIds.push(assetId);
+      if (!success) {
+        continue;
       }
+
+      await this.updateTags(assetId);
+      await this.eventRepository.emit('AssetTag', { assetId });
+      taggedAssetIds.push(assetId);
     }
 
     await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetIdsSafe(taggedAssetIds);
@@ -150,11 +152,13 @@ export class TagService extends BaseService {
 
     const untaggedAssetIds: string[] = [];
     for (const { id: assetId, success } of results) {
-      if (success) {
-        await this.updateTags(assetId);
-        await this.eventRepository.emit('AssetUntag', { assetId });
-        untaggedAssetIds.push(assetId);
+      if (!success) {
+        continue;
       }
+
+      await this.updateTags(assetId);
+      await this.eventRepository.emit('AssetUntag', { assetId });
+      untaggedAssetIds.push(assetId);
     }
 
     await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetIdsSafe(untaggedAssetIds);

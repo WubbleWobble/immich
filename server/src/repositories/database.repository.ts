@@ -24,7 +24,7 @@ import { DB } from 'src/schema';
 import { immich_uuid_v7 } from 'src/schema/functions';
 import { ExtensionVersion, VectorExtension } from 'src/types';
 import { vectorIndexQuery } from 'src/utils/database';
-import { isValidInteger } from 'src/validation';
+import z from 'zod';
 
 export let cachedVectorExtension: VectorExtension | undefined;
 export async function getVectorExtension(runner: Kysely<DB>): Promise<VectorExtension> {
@@ -192,9 +192,8 @@ export class DatabaseRepository {
               ) {
                 probes[indexName] = this.targetProbeCount(targetLists);
                 return this.reindexVectors(indexName, { lists: targetLists });
-              } else {
-                probes[indexName] = this.targetProbeCount(lists);
               }
+              probes[indexName] = this.targetProbeCount(lists);
             }),
           );
           break;
@@ -228,7 +227,7 @@ export class DatabaseRepository {
       if (table === 'smart_search') {
         await sql`ALTER TABLE ${sql.raw(table)} DROP CONSTRAINT IF EXISTS dim_size_constraint`.execute(tx);
       }
-      if (!rows.some((row) => row.columnName === 'embedding')) {
+      if (rows.every((row) => row.columnName !== 'embedding')) {
         this.logger.warn(`Column 'embedding' does not exist in table '${table}', truncating and adding column.`);
         await sql`TRUNCATE TABLE ${sql.raw(table)}`.execute(tx);
         await sql`ALTER TABLE ${sql.raw(table)} ADD COLUMN embedding real[] NOT NULL`.execute(tx);
@@ -274,6 +273,7 @@ export class DatabaseRepository {
       columns: { ignoreExtra: true },
       functions: { ignoreExtra: false },
       parameters: { ignoreExtra: true },
+      extensions: { ignoreExtra: true },
     });
 
     return drift;
@@ -291,7 +291,13 @@ export class DatabaseRepository {
     `.execute(this.db);
 
     const dimSize = rows[0]?.dimsize;
-    if (!isValidInteger(dimSize, { min: 1, max: 2 ** 16 })) {
+    if (
+      !z
+        .int()
+        .min(1)
+        .max(2 ** 16)
+        .safeParse(dimSize).success
+    ) {
       this.logger.warn(`Could not retrieve dimension size of column '${column}' in table '${table}', assuming 512`);
       return 512;
     }
@@ -299,7 +305,13 @@ export class DatabaseRepository {
   }
 
   async setDimensionSize(dimSize: number): Promise<void> {
-    if (!isValidInteger(dimSize, { min: 1, max: 2 ** 16 })) {
+    if (
+      !z
+        .int()
+        .min(1)
+        .max(2 ** 16)
+        .safeParse(dimSize).success
+    ) {
       throw new Error(`Invalid CLIP dimension size: ${dimSize}`);
     }
 
@@ -336,11 +348,9 @@ export class DatabaseRepository {
   private targetListCount(count: number) {
     if (count < 128_000) {
       return 1;
-    } else if (count < 2_048_000) {
-      return 1 << (32 - Math.clz32(count / 1000));
-    } else {
-      return 1 << (33 - Math.clz32(Math.sqrt(count)));
     }
+    // eslint-disable-next-line unicorn/prefer-minimal-ternary
+    return count < 2_048_000 ? 1 << (32 - Math.clz32(count / 1000)) : 1 << (33 - Math.clz32(Math.sqrt(count)));
   }
 
   private targetProbeCount(lists: number) {
@@ -365,9 +375,7 @@ export class DatabaseRepository {
     for (const result of results ?? []) {
       if (result.status === 'Success') {
         this.logger.log(`Migration "${result.migrationName}" succeeded`);
-      }
-
-      if (result.status === 'Error') {
+      } else if (result.status === 'Error') {
         this.logger.warn(`Migration "${result.migrationName}" failed`);
       }
     }
@@ -472,9 +480,7 @@ export class DatabaseRepository {
     for (const result of results ?? []) {
       if (result.status === 'Success') {
         this.logger.log(`Reverted migration "${result.migrationName}"`);
-      }
-
-      if (result.status === 'Error') {
+      } else if (result.status === 'Error') {
         this.logger.warn(`Failed to revert migration "${result.migrationName}"`);
       }
     }

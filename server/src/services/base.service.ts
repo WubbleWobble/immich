@@ -23,6 +23,7 @@ import { DownloadRepository } from 'src/repositories/download.repository';
 import { DuplicateRepository } from 'src/repositories/duplicate.repository';
 import { EmailRepository } from 'src/repositories/email.repository';
 import { EventRepository } from 'src/repositories/event.repository';
+import { IntegrityRepository } from 'src/repositories/integrity.repository';
 import { JobRepository } from 'src/repositories/job.repository';
 import { LibraryRepository } from 'src/repositories/library.repository';
 import { LockRepository } from 'src/repositories/lock.repository';
@@ -84,6 +85,7 @@ export const BASE_SERVICE_DEPENDENCIES = [
   DuplicateRepository,
   EmailRepository,
   EventRepository,
+  IntegrityRepository,
   JobRepository,
   LibraryRepository,
   LockRepository,
@@ -145,6 +147,7 @@ export class BaseService {
     protected duplicateRepository: DuplicateRepository,
     protected emailRepository: EmailRepository,
     protected eventRepository: EventRepository,
+    protected integrityRepository: IntegrityRepository,
     protected jobRepository: JobRepository,
     protected libraryRepository: LibraryRepository,
     protected lockRepository: LockRepository,
@@ -215,6 +218,7 @@ export class BaseService {
       ctx.duplicateRepository,
       ctx.emailRepository,
       ctx.eventRepository,
+      ctx.integrityRepository,
       ctx.jobRepository,
       ctx.libraryRepository,
       ctx.lockRepository,
@@ -251,7 +255,7 @@ export class BaseService {
       ctx.workflowRepository,
     );
 
-    service.logger.setContext(this.name);
+    service.logger.setContext(BaseService.name);
 
     return service as T;
   }

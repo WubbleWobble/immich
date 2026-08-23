@@ -97,7 +97,7 @@ export class StackService extends BaseService {
     // otherwise an elevated user could not re-pick a primary on a stack with hidden members.
     const lockVisibility = auth.session?.hasElevatedPermission ? [] : await this.getViewerLockVisibility(auth);
     const stack = await this.findOrFail(id, lockVisibility);
-    if (dto.primaryAssetId && !stack.assets.some(({ id }) => id === dto.primaryAssetId)) {
+    if (dto.primaryAssetId && stack.assets.every(({ id }) => id !== dto.primaryAssetId)) {
       throw new BadRequestException('Primary asset must be in the stack');
     }
 

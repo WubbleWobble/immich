@@ -30,7 +30,9 @@
         ...rootAlbums.map((a): AlbumEntry => ({ kind: 'album', data: a })),
         ...rootContainers.map((c): FolderEntry => ({ kind: 'folder', data: c })),
       ];
-      entries = mixed.sort((a, b) => (a.data.updatedAt > b.data.updatedAt ? -1 : 1)).slice(0, 3);
+      entries = mixed
+        .sort((a, b) => new Date(b.data.updatedAt).getTime() - new Date(a.data.updatedAt).getTime())
+        .slice(0, 3);
       userInteraction.recentAlbums = entries.filter((e): e is AlbumEntry => e.kind === 'album').map((e) => e.data);
     } catch (error) {
       handleError(error, $t('failed_to_load_assets'));

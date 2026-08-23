@@ -24,7 +24,7 @@ import { AlbumAssetCount, AlbumInfoOptions } from 'src/repositories/album.reposi
 import { BaseService } from 'src/services/base.service';
 import { LockService } from 'src/services/lock.service';
 import { addAssets, removeAssets } from 'src/utils/asset.util';
-import { asDateString } from 'src/utils/date';
+import { asDateString, asDateTimeString } from 'src/utils/date';
 import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
 import { getPreferences } from 'src/utils/preferences';
 
@@ -88,7 +88,7 @@ export class AlbumService extends BaseService {
     };
   }
 
-  async getAll(auth: AuthDto, { assetId, isOwned, isShared }: GetAlbumsDto): Promise<AlbumResponseDto[]> {
+  async getAll(auth: AuthDto, { assetId, ...rest }: GetAlbumsDto): Promise<AlbumResponseDto[]> {
     const ownerId = auth.user.id;
     await this.albumRepository.updateThumbnails();
 
@@ -100,7 +100,7 @@ export class AlbumService extends BaseService {
           // this to detect that an unlocked saved search still rescues the asset).
           ...(await this.albumRepository.getMatchingSmartAlbumsByAssetId(ownerId, assetId)),
         ]
-      : await this.albumRepository.getAll(ownerId, { isOwned, isShared });
+      : await this.albumRepository.getAll(ownerId, rest);
 
     // Locked albums (directly, or via a locked folder) vanish from every list surface for
     // their locker until revealed in an elevated session. Other users are unaffected.
@@ -149,11 +149,11 @@ export class AlbumService extends BaseService {
         ...mapAlbum(album),
         sharedLinks: undefined,
         albumThumbnailAssetId: isSmart ? (album.cachedThumbnailAssetId ?? null) : album.albumThumbnailAssetId,
-        startDate: asDateString((isSmart ? album.cachedStartDate : albumMetadata[album.id]?.startDate) ?? undefined),
-        endDate: asDateString((isSmart ? album.cachedEndDate : albumMetadata[album.id]?.endDate) ?? undefined),
+        startDate: asDateTimeString((isSmart ? album.cachedStartDate : albumMetadata[album.id]?.startDate) ?? undefined),
+        endDate: asDateTimeString((isSmart ? album.cachedEndDate : albumMetadata[album.id]?.endDate) ?? undefined),
         assetCount: isSmart ? (album.cachedAssetCount ?? 0) : (albumMetadata[album.id]?.assetCount ?? 0),
         // lastModifiedAssetTimestamp is only used in mobile app, please remove if not need
-        lastModifiedAssetTimestamp: asDateString(albumMetadata[album.id]?.lastModifiedAssetTimestamp ?? undefined),
+        lastModifiedAssetTimestamp: asDateTimeString(albumMetadata[album.id]?.lastModifiedAssetTimestamp ?? undefined),
       };
     });
   }
@@ -192,10 +192,10 @@ export class AlbumService extends BaseService {
     return {
       ...mapAlbum(album),
       albumThumbnailAssetId: isSmart ? (album.cachedThumbnailAssetId ?? null) : album.albumThumbnailAssetId,
-      startDate: asDateString((isSmart ? album.cachedStartDate : albumMetadataForIds?.startDate) ?? undefined),
-      endDate: asDateString((isSmart ? album.cachedEndDate : albumMetadataForIds?.endDate) ?? undefined),
+      startDate: asDateTimeString((isSmart ? album.cachedStartDate : albumMetadataForIds?.startDate) ?? undefined),
+      endDate: asDateTimeString((isSmart ? album.cachedEndDate : albumMetadataForIds?.endDate) ?? undefined),
       assetCount: isSmart ? (album.cachedAssetCount ?? 0) : (albumMetadataForIds?.assetCount ?? 0),
-      lastModifiedAssetTimestamp: asDateString(albumMetadataForIds?.lastModifiedAssetTimestamp ?? undefined),
+      lastModifiedAssetTimestamp: asDateTimeString(albumMetadataForIds?.lastModifiedAssetTimestamp ?? undefined),
       contributorCounts: isShared ? await this.albumRepository.getContributorCounts(album.id) : undefined,
     };
   }
@@ -228,7 +228,7 @@ export class AlbumService extends BaseService {
   }
 
   async create(auth: AuthDto, dto: CreateAlbumDto): Promise<AlbumResponseDto> {
-    const albumUsers = dto.albumUsers || [];
+    const albumUsers = (dto.albumUsers || []).filter(({ userId }) => userId !== auth.user.id);
     const kind = dto.kind ?? AlbumKind.Regular;
     const filter = kind === AlbumKind.Smart ? (dto.filter ?? null) : null;
 
@@ -263,10 +263,6 @@ export class AlbumService extends BaseService {
       if (!exists) {
         this.logger.debug('Album creation failed: user not found');
         throw new BadRequestException('Invalid user');
-      }
-
-      if (userId == auth.user.id) {
-        throw new BadRequestException('Cannot share album with owner');
       }
     }
 
@@ -421,11 +417,9 @@ export class AlbumService extends BaseService {
         auth.user.id,
       );
 
-      const allUsersExceptUs = album.albumUsers.map(({ user }) => user.id).filter((userId) => userId !== auth.user.id);
-
-      for (const recipientId of allUsersExceptUs) {
-        await this.eventRepository.emit('AlbumUpdate', { id, recipientId });
-      }
+      const userIds = album.albumUsers.map(({ user }) => user.id);
+      const recipientIds = userIds.filter((userId) => userId !== auth.user.id);
+      await this.eventRepository.emit('AlbumUpdate', { id, userIds, recipientIds });
     }
 
     return results;
@@ -476,11 +470,11 @@ export class AlbumService extends BaseService {
     }
 
     const albumAssetValues: { albumId: string; assetId: string }[] = [];
-    const events: { id: string; recipients: string[] }[] = [];
+    const events: { id: string; userIds: string[]; recipientIds: string[] }[] = [];
     for (const album of targetAlbums) {
       const albumId = album.id;
       const existingAssetIds = await this.albumRepository.getAssetIds(albumId, [...allowedAssetIds]);
-      const notPresentAssetIds = [...allowedAssetIds].filter((id) => !existingAssetIds.has(id));
+      const notPresentAssetIds = [...allowedAssetIds.difference(existingAssetIds)];
       if (notPresentAssetIds.length === 0) {
         continue;
       }
@@ -499,15 +493,14 @@ export class AlbumService extends BaseService {
         },
         auth.user.id,
       );
-      const allUsersExceptUs = album.albumUsers.map(({ user }) => user.id).filter((userId) => userId !== auth.user.id);
-      events.push({ id: albumId, recipients: allUsersExceptUs });
+      const userIds = album.albumUsers.map(({ user }) => user.id);
+      const recipientIds = userIds.filter((userId) => userId !== auth.user.id);
+      events.push({ id: albumId, userIds, recipientIds });
     }
 
     await this.albumRepository.addAssetIdsToAlbums(albumAssetValues);
     for (const event of events) {
-      for (const recipientId of event.recipients) {
-        await this.eventRepository.emit('AlbumUpdate', { id: event.id, recipientId });
-      }
+      await this.eventRepository.emit('AlbumUpdate', event);
     }
 
     return results;
@@ -530,8 +523,16 @@ export class AlbumService extends BaseService {
     );
 
     const removedIds = results.filter(({ success }) => success).map(({ id }) => id);
-    if (removedIds.length > 0 && album.albumThumbnailAssetId && removedIds.includes(album.albumThumbnailAssetId)) {
-      await this.albumRepository.updateThumbnails();
+    if (removedIds.length > 0) {
+      if (album.albumThumbnailAssetId && removedIds.includes(album.albumThumbnailAssetId)) {
+        await this.albumRepository.updateThumbnails();
+      }
+
+      await this.eventRepository.emit('AlbumUpdate', {
+        id,
+        userIds: album.albumUsers.map(({ user }) => user.id),
+        recipientIds: [],
+      });
     }
 
     return results;
@@ -558,9 +559,9 @@ export class AlbumService extends BaseService {
       }
       const effectiveRole = role ?? (isSmart ? AlbumUserRole.Viewer : undefined);
 
-      const exists = album.albumUsers.find(({ user: { id } }) => id === userId);
+      const exists = album.albumUsers.some(({ user: { id } }) => id === userId);
       if (exists) {
-        throw new BadRequestException('User already added');
+        continue;
       }
 
       const user = await this.userRepository.get(userId, {});
@@ -573,7 +574,7 @@ export class AlbumService extends BaseService {
       await this.eventRepository.emit('AlbumInvite', { id, userId, senderName: auth.user.name });
     }
 
-    return this.findOrFail(id, auth.user.id, { withAssets: true }).then(mapAlbum);
+    return mapAlbum(await this.findOrFail(id, auth.user.id, { withAssets: true }));
   }
 
   async removeUser(auth: AuthDto, id: string, userId: string | 'me'): Promise<void> {
@@ -619,12 +620,12 @@ export class AlbumService extends BaseService {
       if (dto.role !== AlbumUserRole.Viewer) {
         throw new BadRequestException('Smart albums only support the viewer role');
       }
-      // ... and by the same assumption, the owner row itself is immutable: demoting the sole
-      // owner to viewer would leave the album with no library to evaluate against.
-      const target = album.albumUsers.find(({ user: { id: albumUserId } }) => albumUserId === userId);
-      if (target?.role === AlbumUserRole.Owner) {
-        throw new BadRequestException('Cannot change the role of the smart album owner');
-      }
+    }
+
+    // The owner row is immutable for regular and smart albums alike.
+    const target = album.albumUsers.find(({ user: { id: albumUserId } }) => albumUserId === userId);
+    if (target?.role === AlbumUserRole.Owner) {
+      throw new BadRequestException('User is owner');
     }
 
     await this.albumUserRepository.update({ albumId: id, userId }, { role: dto.role });

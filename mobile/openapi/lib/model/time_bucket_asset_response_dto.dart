@@ -13,8 +13,8 @@ part of openapi.api;
 class TimeBucketAssetResponseDto {
   /// Returns a new [TimeBucketAssetResponseDto] instance.
   TimeBucketAssetResponseDto({
-    this.city = const [],
-    this.country = const [],
+    this.city = const Optional.present(const []),
+    this.country = const Optional.present(const []),
     this.createdAt = const [],
     this.duration = const [],
     this.fileCreatedAt = const [],
@@ -22,23 +22,23 @@ class TimeBucketAssetResponseDto {
     this.isFavorite = const [],
     this.isImage = const [],
     this.isTrashed = const [],
-    this.latitude = const [],
+    this.latitude = const Optional.present(const []),
     this.livePhotoVideoId = const [],
     this.localOffsetHours = const [],
-    this.longitude = const [],
+    this.longitude = const Optional.present(const []),
     this.ownerId = const [],
     this.projectionType = const [],
     this.ratio = const [],
-    this.stack = const [],
+    this.stack = const Optional.present(const []),
     this.thumbhash = const [],
     this.visibility = const [],
   });
 
   /// Array of city names extracted from EXIF GPS data
-  List<String?> city;
+  Optional<List<String?>?> city;
 
   /// Array of country names extracted from EXIF GPS data
-  List<String?> country;
+  Optional<List<String?>?> country;
 
   /// Array of UTC timestamps when each asset was originally uploaded to Immich
   List<String> createdAt;
@@ -62,7 +62,7 @@ class TimeBucketAssetResponseDto {
   List<bool> isTrashed;
 
   /// Array of latitude coordinates extracted from EXIF GPS data
-  List<num?> latitude;
+  Optional<List<num?>?> latitude;
 
   /// Array of live photo video asset IDs (null for non-live photos)
   List<String?> livePhotoVideoId;
@@ -71,7 +71,7 @@ class TimeBucketAssetResponseDto {
   List<num> localOffsetHours;
 
   /// Array of longitude coordinates extracted from EXIF GPS data
-  List<num?> longitude;
+  Optional<List<num?>?> longitude;
 
   /// Array of owner IDs for each asset
   List<String> ownerId;
@@ -83,7 +83,7 @@ class TimeBucketAssetResponseDto {
   List<num> ratio;
 
   /// Array of stack information as [stackId, assetCount] tuples (null for non-stacked assets)
-  List<List<String>?> stack;
+  Optional<List<List<String>?>?> stack;
 
   /// Array of BlurHash strings for generating asset previews (base64 encoded)
   List<String?> thumbhash;
@@ -141,8 +141,14 @@ class TimeBucketAssetResponseDto {
 
   Map<String, dynamic> toJson() {
     final json = <String, dynamic>{};
-      json[r'city'] = this.city;
-      json[r'country'] = this.country;
+    if (this.city.isPresent) {
+      final value = this.city.value;
+      json[r'city'] = value;
+    }
+    if (this.country.isPresent) {
+      final value = this.country.value;
+      json[r'country'] = value;
+    }
       json[r'createdAt'] = this.createdAt;
       json[r'duration'] = this.duration;
       json[r'fileCreatedAt'] = this.fileCreatedAt;
@@ -150,14 +156,23 @@ class TimeBucketAssetResponseDto {
       json[r'isFavorite'] = this.isFavorite;
       json[r'isImage'] = this.isImage;
       json[r'isTrashed'] = this.isTrashed;
-      json[r'latitude'] = this.latitude;
+    if (this.latitude.isPresent) {
+      final value = this.latitude.value;
+      json[r'latitude'] = value;
+    }
       json[r'livePhotoVideoId'] = this.livePhotoVideoId;
       json[r'localOffsetHours'] = this.localOffsetHours;
-      json[r'longitude'] = this.longitude;
+    if (this.longitude.isPresent) {
+      final value = this.longitude.value;
+      json[r'longitude'] = value;
+    }
       json[r'ownerId'] = this.ownerId;
       json[r'projectionType'] = this.projectionType;
       json[r'ratio'] = this.ratio;
-      json[r'stack'] = this.stack;
+    if (this.stack.isPresent) {
+      final value = this.stack.value;
+      json[r'stack'] = value;
+    }
       json[r'thumbhash'] = this.thumbhash;
       json[r'visibility'] = this.visibility;
     return json;
@@ -172,12 +187,12 @@ class TimeBucketAssetResponseDto {
       final json = value.cast<String, dynamic>();
 
       return TimeBucketAssetResponseDto(
-        city: json[r'city'] is Iterable
+        city: json.containsKey(r'city') ? Optional.present(json[r'city'] is Iterable
             ? (json[r'city'] as Iterable).cast<String>().toList(growable: false)
-            : const [],
-        country: json[r'country'] is Iterable
+            : const []) : const Optional.absent(),
+        country: json.containsKey(r'country') ? Optional.present(json[r'country'] is Iterable
             ? (json[r'country'] as Iterable).cast<String>().toList(growable: false)
-            : const [],
+            : const []) : const Optional.absent(),
         createdAt: json[r'createdAt'] is Iterable
             ? (json[r'createdAt'] as Iterable).cast<String>().toList(growable: false)
             : const [],
@@ -199,18 +214,18 @@ class TimeBucketAssetResponseDto {
         isTrashed: json[r'isTrashed'] is Iterable
             ? (json[r'isTrashed'] as Iterable).cast<bool>().toList(growable: false)
             : const [],
-        latitude: json[r'latitude'] is Iterable
+        latitude: json.containsKey(r'latitude') ? Optional.present(json[r'latitude'] is Iterable
             ? (json[r'latitude'] as Iterable).cast<num>().toList(growable: false)
-            : const [],
+            : const []) : const Optional.absent(),
         livePhotoVideoId: json[r'livePhotoVideoId'] is Iterable
             ? (json[r'livePhotoVideoId'] as Iterable).cast<String>().toList(growable: false)
             : const [],
         localOffsetHours: json[r'localOffsetHours'] is Iterable
             ? (json[r'localOffsetHours'] as Iterable).cast<num>().toList(growable: false)
             : const [],
-        longitude: json[r'longitude'] is Iterable
+        longitude: json.containsKey(r'longitude') ? Optional.present(json[r'longitude'] is Iterable
             ? (json[r'longitude'] as Iterable).cast<num>().toList(growable: false)
-            : const [],
+            : const []) : const Optional.absent(),
         ownerId: json[r'ownerId'] is Iterable
             ? (json[r'ownerId'] as Iterable).cast<String>().toList(growable: false)
             : const [],
@@ -220,11 +235,11 @@ class TimeBucketAssetResponseDto {
         ratio: json[r'ratio'] is Iterable
             ? (json[r'ratio'] as Iterable).cast<num>().toList(growable: false)
             : const [],
-        stack: json[r'stack'] is List
+        stack: json.containsKey(r'stack') ? Optional.present(json[r'stack'] is List
           ? (json[r'stack'] as List).map((e) =>
-              e == null ? null : (e as List).cast<String>()
+              e == null ? null : (e as List).map((value) => value as String).toList(growable: false)
             ).toList()
-          :  const [],
+          :  const []) : const Optional.absent(),
         thumbhash: json[r'thumbhash'] is Iterable
             ? (json[r'thumbhash'] as Iterable).cast<String>().toList(growable: false)
             : const [],
@@ -276,8 +291,6 @@ class TimeBucketAssetResponseDto {
 
   /// The list of required keys that must be present in a JSON.
   static const requiredKeys = <String>{
-    'city',
-    'country',
     'createdAt',
     'duration',
     'fileCreatedAt',
