@@ -268,7 +268,10 @@ export class AlbumContainerService extends BaseService {
     await this.albumContainerRepository.addUser(id, dto.userId, dto.role);
   }
 
-  async updateUser(auth: AuthDto, id: string, userId: string, dto: AlbumContainerUserUpdateDto): Promise<void> {
+  async updateUser(auth: AuthDto, id: string, userId: string | 'me', dto: AlbumContainerUserUpdateDto): Promise<void> {
+    if (userId === 'me') {
+      userId = auth.user.id;
+    }
     const lockService = BaseService.create(LockService, this);
     await lockService.assertContainerVisibleForViewer(auth, id);
     // Share changes on an ancestor grant or revoke cascade access to everything beneath it.
@@ -290,16 +293,22 @@ export class AlbumContainerService extends BaseService {
     await this.albumContainerRepository.updateUserRole(id, userId, dto.role);
   }
 
-  async removeUser(auth: AuthDto, id: string, userId: string): Promise<void> {
+  async removeUser(auth: AuthDto, id: string, userId: string | 'me'): Promise<void> {
+    if (userId === 'me') {
+      userId = auth.user.id;
+    }
     const lockService = BaseService.create(LockService, this);
     await lockService.assertContainerVisibleForViewer(auth, id);
-    // Share changes on an ancestor grant or revoke cascade access to everything beneath it.
+    // Share changes on an ancestor grant or revoke cascade access to everything beneath it -
+    // and self-removal is a state change on hidden content too (leaving a locked folder can
+    // un-hide cascade-only content), so the guards apply to both paths.
     await lockService.assertSubtreeVisibleForViewer(auth, id);
     const container = await this.albumContainerRepository.getById(id);
     if (!container) {
       throw new NotFoundException('Folder not found');
     }
-    if (container.ownerId !== auth.user.id) {
+    // The owner manages shares; a shared user may remove only themselves (leave the folder).
+    if (container.ownerId !== auth.user.id && userId !== auth.user.id) {
       throw new ForbiddenException('Not allowed');
     }
     const existing = await this.albumContainerRepository.getUser(id, userId);

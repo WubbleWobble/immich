@@ -106,8 +106,7 @@ export const sanitizeSmartAlbumFilter = <
 ): T => {
   const validVisibility =
     filter.visibility === undefined ||
-    filter.visibility === AssetVisibility.Timeline ||
-    filter.visibility === AssetVisibility.Archive;
+    ([AssetVisibility.Timeline, AssetVisibility.Archive] as string[]).includes(filter.visibility);
   if (
     validVisibility &&
     filter.trashedBefore === undefined &&

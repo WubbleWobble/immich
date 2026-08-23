@@ -24,7 +24,7 @@ import { AlbumAssetCount, AlbumInfoOptions } from 'src/repositories/album.reposi
 import { BaseService } from 'src/services/base.service';
 import { LockService } from 'src/services/lock.service';
 import { addAssets, removeAssets } from 'src/utils/asset.util';
-import { asDateString, asDateTimeString } from 'src/utils/date';
+import { asDateTimeString } from 'src/utils/date';
 import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
 import { getPreferences } from 'src/utils/preferences';
 

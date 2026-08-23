@@ -157,18 +157,6 @@ const methods = wrapper<Manifest>({
     return { workflow: { continue: assetDate >= startDate && assetDate < endDate } };
   },
 
-  assetLock: ({ config, data }) => {
-    if (!config.inverse && data.asset.visibility !== AssetVisibility.Locked) {
-      return { changes: { asset: { visibility: AssetVisibility.Locked } } };
-    }
-
-    if (config.inverse && data.asset.visibility === AssetVisibility.Locked) {
-      return { changes: { asset: { visibility: AssetVisibility.Timeline } } };
-    }
-
-    return {};
-  },
-
   assetMissingTimeZoneFilter: ({ config, data }) => {
     const hasTimeZone = !!data.asset?.exifInfo?.timeZone;
     const needsTimeZone = config.inverse ? true : false;
@@ -214,7 +202,6 @@ const {
   assetLocationFilter,
   assetExifFilter,
   assetDateFilter,
-  assetLock,
   assetMissingTimeZoneFilter,
   assetTypeFilter,
   assetVisibility,
@@ -232,7 +219,6 @@ export {
   assetLocationFilter,
   assetExifFilter,
   assetDateFilter,
-  assetLock,
   assetMissingTimeZoneFilter,
   assetTypeFilter,
   assetVisibility,

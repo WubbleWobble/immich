@@ -7,10 +7,11 @@ export const collectDescendantFolderIds = (containers: AlbumContainerResponseDto
   while (added) {
     added = false;
     for (const c of containers) {
-      if (c.parentId && result.has(c.parentId) && !result.has(c.id)) {
-        result.add(c.id);
-        added = true;
+      if (!c.parentId || !result.has(c.parentId) || result.has(c.id)) {
+        continue;
       }
+      result.add(c.id);
+      added = true;
     }
   }
   return result;

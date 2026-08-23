@@ -133,7 +133,7 @@ class LockManager {
   }
 
   private syncHeaders() {
-    defaults.headers = defaults.headers ?? {};
+    defaults.headers ??= {};
     if (this.revealedAlbumIds.size > 0) {
       defaults.headers[REVEALED_ALBUMS_HEADER] = [...this.revealedAlbumIds].join(',');
     } else {

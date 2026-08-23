@@ -38,7 +38,7 @@
     if (key === 'queryType' || value === undefined || value === '' || (Array.isArray(value) && value.length === 0)) {
       return false;
     }
-    return !(key in baseFilter);
+    return !Object.hasOwn(baseFilter, key);
   });
 
   let name = $state(initialName);

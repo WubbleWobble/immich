@@ -168,41 +168,10 @@ describe('core plugin', () => {
     });
   });
 
-  describe('assetLock', () => {
-    it('should lock an asset', async () => {
-      const { user } = await ctx.newUser();
-      const { asset } = await ctx.newAsset({ ownerId: user.id });
-
-      const workflow = await createWorkflow({
-        ownerId: user.id,
-        trigger: WorkflowTrigger.AssetCreate,
-        steps: [{ method: 'immich-plugin-core#assetLock' }],
-      });
-
-      await expect(ctx.sut.handleAssetTrigger({ workflowId: workflow.id, assetId: asset.id })).resolves.toBeUndefined();
-
-      await expect(ctx.get(AssetRepository).getById(asset.id)).resolves.toMatchObject({
-        visibility: AssetVisibility.Locked,
-      });
-    });
-
-    it('should unlock an asset', async () => {
-      const { user } = await ctx.newUser();
-      const { asset } = await ctx.newAsset({ ownerId: user.id, visibility: AssetVisibility.Locked });
-
-      const workflow = await createWorkflow({
-        ownerId: user.id,
-        trigger: WorkflowTrigger.AssetCreate,
-        steps: [{ method: 'immich-plugin-core#assetLock', config: { inverse: true } }],
-      });
-
-      await expect(ctx.sut.handleAssetTrigger({ workflowId: workflow.id, assetId: asset.id })).resolves.toBeUndefined();
-
-      await expect(ctx.get(AssetRepository).getById(asset.id)).resolves.toMatchObject({
-        visibility: AssetVisibility.Timeline,
-      });
-    });
-  });
+  // The fork removes the core plugin's assetLock action (and the 'locked' option of
+  // assetVisibility): per-asset visibility=locked is retired in favour of locked albums,
+  // and filing into a locked album requires an elevated session that a background
+  // workflow cannot hold. The server rejects visibility=locked writes outright.
 
   describe('assetFavorite', () => {
     it('should favorite an asset', async () => {
