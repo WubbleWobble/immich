@@ -106,6 +106,14 @@ where
 order by
   "asset_face"."boundingBoxX1" asc
 
+-- PersonRepository.getFaceAssetId
+select
+  "assetId"
+from
+  "asset_face"
+where
+  "id" = $1
+
 -- PersonRepository.getFaceById
 select
   "asset_face".*,
@@ -240,12 +248,12 @@ where
 select
   count(distinct ("asset"."id")) as "count"
 from
-  "asset_face"
-  left join "asset" on "asset"."id" = "asset_face"."assetId"
-  and "asset"."visibility" = 'timeline'
-  and "asset"."deletedAt" is null
+  "asset"
+  inner join "asset_face" on "asset_face"."assetId" = "asset"."id"
 where
-  "asset_face"."deletedAt" is null
+  "asset"."visibility" = 'timeline'
+  and "asset"."deletedAt" is null
+  and "asset_face"."deletedAt" is null
   and "asset_face"."isVisible" is true
   and "asset_face"."personId" = $1
 

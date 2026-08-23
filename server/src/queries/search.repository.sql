@@ -60,6 +60,24 @@ where
   and "asset"."isFavorite" = $4
   and "asset"."deletedAt" is null
 
+-- SearchRepository.searchDateRange
+select
+  min(
+    coalesce(asset."localDateTime", asset."fileCreatedAt")
+  ) as "startDate",
+  max(
+    coalesce(asset."localDateTime", asset."fileCreatedAt")
+  ) as "endDate"
+from
+  "asset"
+  inner join "asset_exif" on "asset"."id" = "asset_exif"."assetId"
+where
+  "asset"."fileCreatedAt" >= $1
+  and "asset_exif"."lensModel" = $2
+  and "asset"."ownerId" = any ($3::uuid[])
+  and "asset"."isFavorite" = $4
+  and "asset"."deletedAt" is null
+
 -- SearchRepository.searchRandom
 select
   "asset"."id",
@@ -361,45 +379,6 @@ where
   and "deletedAt" is null
   and "state" is not null
   and "state" != $3
-
--- SearchRepository.getCities
-select distinct
-  on ("city") "city"
-from
-  "asset_exif"
-  inner join "asset" on "asset"."id" = "asset_exif"."assetId"
-where
-  "ownerId" = any ($1::uuid[])
-  and "visibility" = $2
-  and "deletedAt" is null
-  and "city" is not null
-  and "city" != $3
-
--- SearchRepository.getCameraMakes
-select distinct
-  on ("make") "make"
-from
-  "asset_exif"
-  inner join "asset" on "asset"."id" = "asset_exif"."assetId"
-where
-  "ownerId" = any ($1::uuid[])
-  and "visibility" = $2
-  and "deletedAt" is null
-  and "make" is not null
-  and "make" != $3
-
--- SearchRepository.getCameraModels
-select distinct
-  on ("model") "model"
-from
-  "asset_exif"
-  inner join "asset" on "asset"."id" = "asset_exif"."assetId"
-where
-  "ownerId" = any ($1::uuid[])
-  and "visibility" = $2
-  and "deletedAt" is null
-  and "model" is not null
-  and "model" != $3
 
 -- SearchRepository.getCameraLensModels
 select distinct

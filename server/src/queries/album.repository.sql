@@ -240,11 +240,36 @@ select
   ) as "sharedLinks"
 from
   "album"
-  inner join "album_user" on "album_user"."albumId" = "album"."id"
-  and "album_user"."userId" = $2
 where
   "album"."deletedAt" is null
-  and "album_user"."role" = 'owner'
+  and (
+    exists (
+      select
+      from
+        "album_user"
+      where
+        "album_user"."albumId" = "album"."id"
+        and "album_user"."userId" = $2
+    )
+    or exists (
+      select
+      from
+        "album_container_closure" as "c"
+        inner join "album_container_user" as "acu" on "acu"."albumContainerId" = "c"."id_ancestor"
+      where
+        "c"."id_descendant" = "album"."containerId"
+        and "acu"."userId" = $3
+    )
+  )
+  and exists (
+    select
+    from
+      "album_user"
+    where
+      "album_user"."albumId" = "album"."id"
+      and "album_user"."userId" = $4
+      and "album_user"."role" = 'owner'
+  )
   and (
     exists (
       select
@@ -260,6 +285,14 @@ where
         "shared_link"
       where
         "shared_link"."albumId" = "album"."id"
+    )
+    or exists (
+      select
+      from
+        "album_container_closure" as "c"
+        inner join "album_container_user" as "acu" on "acu"."albumContainerId" = "c"."id_ancestor"
+      where
+        "c"."id_descendant" = "album"."containerId"
     )
   )
 order by
@@ -270,11 +303,36 @@ select
   "album"."id"
 from
   "album"
-  inner join "album_user" on "album_user"."albumId" = "album"."id"
-  and "album_user"."userId" = $1
 where
   "album"."deletedAt" is null
-  and "album_user"."role" = 'owner'
+  and (
+    exists (
+      select
+      from
+        "album_user"
+      where
+        "album_user"."albumId" = "album"."id"
+        and "album_user"."userId" = $1
+    )
+    or exists (
+      select
+      from
+        "album_container_closure" as "c"
+        inner join "album_container_user" as "acu" on "acu"."albumContainerId" = "c"."id_ancestor"
+      where
+        "c"."id_descendant" = "album"."containerId"
+        and "acu"."userId" = $2
+    )
+  )
+  and exists (
+    select
+    from
+      "album_user"
+    where
+      "album_user"."albumId" = "album"."id"
+      and "album_user"."userId" = $3
+      and "album_user"."role" = 'owner'
+  )
   and (
     exists (
       select
@@ -290,6 +348,14 @@ where
         "shared_link"
       where
         "shared_link"."albumId" = "album"."id"
+    )
+    or exists (
+      select
+      from
+        "album_container_closure" as "c"
+        inner join "album_container_user" as "acu" on "acu"."albumContainerId" = "c"."id_ancestor"
+      where
+        "c"."id_descendant" = "album"."containerId"
     )
   )
 order by
@@ -434,6 +500,149 @@ group by
   "asset"."ownerId"
 order by
   "assetCount" desc
+
+-- AlbumRepository.getSmartAlbumsForOwner
+select
+  "album"."id",
+  "album"."filter",
+  "album"."cachedThumbnailAssetId"
+from
+  "album"
+where
+  "album"."kind" = 'smart'
+  and "album"."deletedAt" is null
+  and exists (
+    select
+    from
+      "album_user"
+    where
+      "album_user"."albumId" = "album"."id"
+      and "album_user"."role" = 'owner'
+      and "album_user"."userId" = $1
+  )
+
+-- AlbumRepository.getSmartAlbumsForOwnerByPersonIds
+select
+  "album"."id"
+from
+  "album"
+where
+  "album"."kind" = 'smart'
+  and "album"."deletedAt" is null
+  and exists (
+    select
+    from
+      "album_user"
+    where
+      "album_user"."albumId" = "album"."id"
+      and "album_user"."role" = 'owner'
+      and "album_user"."userId" = $1
+  )
+  and album.filter -> 'personIds' ?| $2::text[]
+
+-- AlbumRepository.markCacheInvalidated
+update "album"
+set
+  "cacheInvalidatedAt" = $1
+where
+  "album"."id" in ($2)
+
+-- AlbumRepository.markAllSmartAlbumsWithPersonFilterInvalidated
+update "album"
+set
+  "cacheInvalidatedAt" = $1
+where
+  "album"."kind" = 'smart'
+  and "album"."deletedAt" is null
+  and album.filter ? 'personIds'
+
+-- AlbumRepository.prunePersonIdsFromSmartAlbums
+update "album"
+set
+  "filter" = CASE
+    WHEN (
+      SELECT
+        jsonb_agg(elem)
+      FROM
+        jsonb_array_elements_text(album.filter -> $1) AS elem
+      WHERE
+        NOT (elem = ANY ($2::text[]))
+    ) IS NULL
+    OR jsonb_array_length(
+      (
+        SELECT
+          jsonb_agg(elem)
+        FROM
+          jsonb_array_elements_text(album.filter -> $3) AS elem
+        WHERE
+          NOT (elem = ANY ($4::text[]))
+      )
+    ) = 0 THEN album.filter - $5
+    ELSE jsonb_set(
+      album.filter,
+      ARRAY[$6],
+      (
+        SELECT
+          jsonb_agg(elem)
+        FROM
+          jsonb_array_elements_text(album.filter -> $7) AS elem
+        WHERE
+          NOT (elem = ANY ($8::text[]))
+      )
+    )
+  END,
+  "cacheInvalidatedAt" = $9
+where
+  "album"."kind" = 'smart'
+  and "album"."deletedAt" is null
+  and album.filter ? $10
+  and album.filter -> $11 ?| $12::text[]
+returning
+  "album"."id"
+
+-- AlbumRepository.pruneTagIdsFromSmartAlbums
+update "album"
+set
+  "filter" = CASE
+    WHEN (
+      SELECT
+        jsonb_agg(elem)
+      FROM
+        jsonb_array_elements_text(album.filter -> $1) AS elem
+      WHERE
+        NOT (elem = ANY ($2::text[]))
+    ) IS NULL
+    OR jsonb_array_length(
+      (
+        SELECT
+          jsonb_agg(elem)
+        FROM
+          jsonb_array_elements_text(album.filter -> $3) AS elem
+        WHERE
+          NOT (elem = ANY ($4::text[]))
+      )
+    ) = 0 THEN album.filter - $5
+    ELSE jsonb_set(
+      album.filter,
+      ARRAY[$6],
+      (
+        SELECT
+          jsonb_agg(elem)
+        FROM
+          jsonb_array_elements_text(album.filter -> $7) AS elem
+        WHERE
+          NOT (elem = ANY ($8::text[]))
+      )
+    )
+  END,
+  "cacheInvalidatedAt" = $9
+where
+  "album"."kind" = 'smart'
+  and "album"."deletedAt" is null
+  and album.filter ? $10
+  and album.filter -> $11 ?| $12::text[]
+returning
+  "album"."id"
 
 -- AlbumRepository.copyAlbums
 insert into

@@ -61,6 +61,24 @@ where
   and "album"."deletedAt" is null
   and "user"."id" = $2
   and "album_user"."role" in ($3, $4)
+select
+  "album"."id"
+from
+  "album"
+where
+  "album"."id" in ($1)
+  and "album"."deletedAt" is null
+  and "album"."containerId" is not null
+  and exists (
+    select
+    from
+      "album_container_closure" as "c"
+      inner join "album_container_user" as "acu" on "acu"."albumContainerId" = "c"."id_ancestor"
+    where
+      "c"."id_descendant" = "album"."containerId"
+      and "acu"."userId" = $2
+      and "acu"."role" in ($3, $4)
+  )
 
 -- AccessRepository.album.checkSharedLinkAccess
 select
@@ -72,6 +90,30 @@ where
   and "shared_link"."albumId" in ($2)
 
 -- AccessRepository.asset.checkAlbumAccess
+select
+  "albumId" as "id"
+from
+  "locked_album"
+where
+  "userId" = $1
+  and not "albumId" = any ($2::uuid[])
+union
+select
+  "album"."id" as "id"
+from
+  "album"
+where
+  "album"."deletedAt" is null
+  and "album"."containerId" in (
+    select
+      "album_container_closure"."id_descendant"
+    from
+      "locked_container"
+      inner join "album_container_closure" on "album_container_closure"."id_ancestor" = "locked_container"."containerId"
+    where
+      "locked_container"."userId" = $3
+      and not "locked_container"."containerId" = any ($4::uuid[])
+  )
 with
   "target" as (
     select
@@ -96,6 +138,36 @@ where
   )
   and "user"."id" = $2
   and "album"."deletedAt" is null
+with
+  "target" as (
+    select
+      array[$1]::uuid[] as "ids"
+  )
+select
+  "asset"."id",
+  "asset"."livePhotoVideoId"
+from
+  "album"
+  inner join "album_asset" as "albumAssets" on "album"."id" = "albumAssets"."albumId"
+  inner join "asset" on "asset"."id" = "albumAssets"."assetId"
+  and "asset"."deletedAt" is null
+  cross join "target"
+where
+  (
+    "asset"."id" = any (target.ids)
+    or "asset"."livePhotoVideoId" = any (target.ids)
+  )
+  and "album"."deletedAt" is null
+  and "album"."containerId" is not null
+  and exists (
+    select
+    from
+      "album_container_closure" as "c"
+      inner join "album_container_user" as "acu" on "acu"."albumContainerId" = "c"."id_ancestor"
+    where
+      "c"."id_descendant" = "album"."containerId"
+      and "acu"."userId" = $2
+  )
 
 -- AccessRepository.asset.checkOwnerAccess
 select
@@ -109,7 +181,8 @@ where
 
 -- AccessRepository.asset.checkPartnerAccess
 select
-  "asset"."id"
+  "asset"."id",
+  "asset"."ownerId"
 from
   "partner"
   inner join "user" as "sharedBy" on "sharedBy"."id" = "partner"."sharedById"
