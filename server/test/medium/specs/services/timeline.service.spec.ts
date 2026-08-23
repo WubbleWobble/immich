@@ -2,6 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { Kysely } from 'kysely';
 import { AssetVisibility, SharedLinkType } from 'src/enum';
 import { AccessRepository } from 'src/repositories/access.repository';
+import { AlbumRepository } from 'src/repositories/album.repository';
 import { AssetRepository } from 'src/repositories/asset.repository';
 import { LockRepository } from 'src/repositories/lock.repository';
 import { LoggingRepository } from 'src/repositories/logging.repository';
@@ -18,7 +19,7 @@ let defaultDatabase: Kysely<DB>;
 const setup = (db?: Kysely<DB>) => {
   return newMediumService(TimelineService, {
     database: db || defaultDatabase,
-    real: [AssetRepository, AccessRepository, LockRepository, PartnerRepository],
+    real: [AlbumRepository, AssetRepository, AccessRepository, LockRepository, PartnerRepository],
     mock: [LoggingRepository],
   });
 };
