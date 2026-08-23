@@ -274,7 +274,7 @@ export class SearchRepository {
     ],
   })
   searchDateRange(options: AssetSearchOptions) {
-    return searchAssetBuilder(this.db, options)
+    return searchAssetBuilderLegacy(this.db, options)
       .select((qb) => [
         qb.fn.min(sql<Date | null>`coalesce(asset."localDateTime", asset."fileCreatedAt")`).as('startDate'),
         qb.fn.max(sql<Date | null>`coalesce(asset."localDateTime", asset."fileCreatedAt")`).as('endDate'),

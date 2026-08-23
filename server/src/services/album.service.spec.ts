@@ -724,6 +724,7 @@ describe(AlbumService.name, () => {
       await sut.create(auth, {
         albumName: 'Empty album',
         albumUsers: [{ userId: auth.user.id, role: AlbumUserRole.Editor }],
+        kind: AlbumKind.Regular,
       });
 
       expect(mocks.user.get).not.toHaveBeenCalled();
@@ -1183,6 +1184,8 @@ describe(AlbumService.name, () => {
         userId: user.id,
         albumId: album.id,
         role: AlbumUserRole.Viewer,
+      });
+    });
 
     it('should add new users when already-added users are included', async () => {
       const existingUserId = newUuid();

@@ -56,7 +56,7 @@ describe(PersonService.name, () => {
           }),
         ],
       });
-expect(mocks.person.getAllForUser).toHaveBeenCalledWith(
+      expect(mocks.person.getAllForUser).toHaveBeenCalledWith(
         { skip: 0, take: 10 },
         auth.user.id,
         {
@@ -87,7 +87,7 @@ expect(mocks.person.getAllForUser).toHaveBeenCalledWith(
           expect.objectContaining({ id: person.id, isFavorite: false }),
         ],
       });
-expect(mocks.person.getAllForUser).toHaveBeenCalledWith(
+      expect(mocks.person.getAllForUser).toHaveBeenCalledWith(
         { skip: 0, take: 10 },
         auth.user.id,
         {

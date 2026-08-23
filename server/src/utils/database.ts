@@ -406,7 +406,13 @@ export function searchAssetIdSubquery(
   kysely: Kysely<DB>,
   options: AssetSearchBuilderOptions,
 ): SelectQueryBuilder<DB, 'asset', { id: string }> {
-  return searchAssetBuilder(kysely, options).select('asset.id').$castTo<{ id: string }>();
+  // Smart-album filters are stored in the legacy options shape, so they evaluate via the
+  // legacy builder (kept by upstream for the v1 search APIs).
+  return searchAssetBuilderLegacy(kysely, options).select('asset.id').$castTo<{ id: string }>() as SelectQueryBuilder<
+    DB,
+    'asset',
+    { id: string }
+  >;
 }
 
 /**

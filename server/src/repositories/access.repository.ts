@@ -5,7 +5,13 @@ import { ChunkedSet, DummyValue, GenerateSql } from 'src/decorators';
 import { SmartAlbumFilter, toEvaluableSmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
 import { AlbumKind, AlbumUserRole, AssetVisibility } from 'src/enum';
 import { DB } from 'src/schema';
-import { anyUuid, asUuid, joinDeduplicationPlugin, searchAssetBuilder, withLockVisibility } from 'src/utils/database';
+import {
+  anyUuid,
+  asUuid,
+  joinDeduplicationPlugin,
+  searchAssetBuilderLegacy,
+  withLockVisibility,
+} from 'src/utils/database';
 import { NO_REVEALED_LOCKS, getHiddenAlbumIdsQuery, getOwnerLockVisibility } from 'src/utils/lock-visibility';
 
 class ActivityAccess {
@@ -350,7 +356,7 @@ class AssetAccess {
         continue;
       }
       const candidateIds = [...remaining];
-      const matches = await searchAssetBuilder(this.db, {
+      const matches = await searchAssetBuilderLegacy(this.db, {
         ...filter,
         userIds: [album.ownerId],
       })
@@ -359,10 +365,12 @@ class AssetAccess {
         .execute();
       for (const match of matches) {
         for (const id of [match.id, match.livePhotoVideoId]) {
-          if (id && remaining.has(id)) {
-            allowedIds.add(id);
-            remaining.delete(id);
+          if (!(id && remaining.has(id))) {
+            continue;
           }
+
+          allowedIds.add(id);
+          remaining.delete(id);
         }
       }
     }

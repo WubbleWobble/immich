@@ -9,8 +9,15 @@ import {
   MetadataSearchSchema,
   RandomSearchSchema,
 } from 'src/dtos/search-base.dto';
-import { AssetOrder, AssetOrderSchema, SearchOrderField, SearchOrderFieldSchema } from 'src/enum';
-import { nonEmptyPartial, stringToBool } from 'src/validation';
+import {
+  AssetOrder,
+  AssetOrderSchema,
+  AssetTypeSchema,
+  AssetVisibilitySchema,
+  SearchOrderField,
+  SearchOrderFieldSchema,
+} from 'src/enum';
+import { isoDatetimeToDate, nonEmptyPartial, stringToBool } from 'src/validation';
 import z from 'zod';
 
 const LargeAssetSearchSchema = BaseSearchWithResultsSchema.extend({

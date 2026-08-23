@@ -63,3 +63,15 @@ export class AlbumContainerUserCreateDto extends createZodDto(AlbumContainerUser
 export class AlbumContainerUserUpdateDto extends createZodDto(AlbumContainerUserUpdateSchema) {}
 export class AlbumContainerUserResponseDto extends createZodDto(AlbumContainerUserResponseSchema) {}
 export class AlbumContainerResponseDto extends createZodDto(AlbumContainerResponseSchema) {}
+
+const AlbumContainerUserParamSchema = z.object({
+  id: z.uuidv4().describe('Folder ID'),
+  userId: z
+    .string()
+    .refine((value) => value === 'me' || z.uuidv4().safeParse(value).success, {
+      error: 'Must be a UUID v4 or "me"',
+    })
+    .describe('Folder user ID, or "me" to reference the current user.'),
+});
+
+export class AlbumContainerUserParamDto extends createZodDto(AlbumContainerUserParamSchema) {}

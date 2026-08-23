@@ -20,6 +20,7 @@ import {
 } from 'src/dtos/search.dto';
 import { AssetOrder, AssetVisibility, Permission } from 'src/enum';
 import { BaseService } from 'src/services/base.service';
+import { LockService } from 'src/services/lock.service';
 import { requireElevatedPermission } from 'src/utils/access';
 import { getMyPartnerIds } from 'src/utils/asset.util';
 import { OwnerLockVisibility } from 'src/utils/database';
@@ -89,6 +90,12 @@ export class SearchService extends BaseService {
 
     if (dto.albumIds && dto.albumIds.length > 0) {
       await this.requireAccess({ auth, ids: dto.albumIds, permission: Permission.AlbumRead });
+      // Album-scoped search follows the album-scoped timeline rule: a hidden album is
+      // unreachable by known id outside an elevated session.
+      const lockService = BaseService.create(LockService, this);
+      for (const albumId of dto.albumIds) {
+        await lockService.assertAlbumVisibleForViewer(auth, albumId);
+      }
     } else if (auth.sharedLink) {
       throw new BadRequestException('Shared link access is only allowed in combination with an albumIds filter');
     } else {
@@ -105,7 +112,7 @@ export class SearchService extends BaseService {
         visibility: dto.visibility ?? (auth.session?.hasElevatedPermission ? undefined : 'not-locked'),
         userIds,
         orderDirection: dto.order ?? AssetOrder.Desc,
-        lockVisibility: await this.getLockVisibility(auth, userIds),
+        lockVisibility: userIds ? await this.getLockVisibility(auth, userIds) : undefined,
       },
     );
 
@@ -146,7 +153,7 @@ export class SearchService extends BaseService {
       requireElevatedPermission(auth);
     }
 
-const userIds = await this.getUserIdsToSearch(auth, dto.visibility);
+    const userIds = await this.getUserIdsToSearch(auth, dto.visibility);
     const items = await this.searchRepository.searchLargeAssets(dto.size || 250, {
       ...dto,
       visibility: dto.visibility ?? (auth.session?.hasElevatedPermission ? undefined : 'not-locked'),

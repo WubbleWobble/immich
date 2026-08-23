@@ -4,6 +4,7 @@ import { Endpoint, HistoryBuilder } from 'src/decorators';
 import {
   AlbumContainerResponseDto,
   AlbumContainerUserCreateDto,
+  AlbumContainerUserParamDto,
   AlbumContainerUserUpdateDto,
   CreateAlbumContainerDto,
   UpdateAlbumContainerDto,
@@ -13,7 +14,7 @@ import { ApiTag } from 'src/enum';
 import { Auth, Authenticated } from 'src/middleware/auth.guard';
 import { AlbumContainerService } from 'src/services/album-container.service';
 import { LockService } from 'src/services/lock.service';
-import { ParseMeUUIDPipe, UUIDParamDto } from 'src/validation';
+import { UUIDParamDto } from 'src/validation';
 
 @ApiTags(ApiTag.AlbumContainers)
 @Controller('album-containers')
@@ -84,8 +85,7 @@ export class AlbumContainerController {
   @Endpoint({ summary: 'Update folder user role', history: new HistoryBuilder().added('v2').alpha('v2') })
   updateAlbumContainerUser(
     @Auth() auth: AuthDto,
-    @Param() { id }: UUIDParamDto,
-    @Param('userId', new ParseMeUUIDPipe({ version: '4' })) userId: string,
+    @Param() { id, userId }: AlbumContainerUserParamDto,
     @Body() dto: AlbumContainerUserUpdateDto,
   ): Promise<void> {
     return this.service.updateUser(auth, id, userId, dto);
@@ -97,8 +97,7 @@ export class AlbumContainerController {
   @Endpoint({ summary: 'Remove user from folder', history: new HistoryBuilder().added('v2').alpha('v2') })
   removeUserFromAlbumContainer(
     @Auth() auth: AuthDto,
-    @Param() { id }: UUIDParamDto,
-    @Param('userId', new ParseMeUUIDPipe({ version: '4' })) userId: string,
+    @Param() { id, userId }: AlbumContainerUserParamDto,
   ): Promise<void> {
     return this.service.removeUser(auth, id, userId);
   }

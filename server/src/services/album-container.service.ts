@@ -327,7 +327,7 @@ export class AlbumContainerService extends BaseService {
       ownerId: container.ownerId,
       parentId: container.parentId,
       thumbnailAssetIds,
-      ...(albumContainerUsers === undefined ? {} : { albumContainerUsers }),
+      ...(albumContainerUsers !== undefined && { albumContainerUsers }),
       createdAt: container.createdAt instanceof Date ? container.createdAt.toISOString() : container.createdAt,
       updatedAt: container.updatedAt instanceof Date ? container.updatedAt.toISOString() : container.updatedAt,
     };

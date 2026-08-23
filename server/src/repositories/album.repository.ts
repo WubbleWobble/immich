@@ -19,7 +19,7 @@ import { AlbumKind, AlbumUserRole } from 'src/enum';
 import { DB } from 'src/schema';
 import { AlbumTable } from 'src/schema/tables/album.table';
 import { AssetExifTable } from 'src/schema/tables/asset-exif.table';
-import { asUuid, dummy, searchAssetBuilder, withDefaultVisibility } from 'src/utils/database';
+import { asUuid, dummy, searchAssetBuilderLegacy, withDefaultVisibility } from 'src/utils/database';
 
 export interface AlbumAssetCount {
   albumId: string;
@@ -166,7 +166,7 @@ export class AlbumRepository {
       if (!filter) {
         continue;
       }
-      const match = await searchAssetBuilder(this.db, { ...filter, userIds: [candidate.albumOwnerId] })
+      const match = await searchAssetBuilderLegacy(this.db, { ...filter, userIds: [candidate.albumOwnerId] })
         .select('asset.id')
         .where((eb) => eb.or([eb('asset.id', '=', assetId), eb('asset.livePhotoVideoId', '=', assetId)]))
         .limit(1)

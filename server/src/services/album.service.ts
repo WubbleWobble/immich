@@ -149,7 +149,9 @@ export class AlbumService extends BaseService {
         ...mapAlbum(album),
         sharedLinks: undefined,
         albumThumbnailAssetId: isSmart ? (album.cachedThumbnailAssetId ?? null) : album.albumThumbnailAssetId,
-        startDate: asDateTimeString((isSmart ? album.cachedStartDate : albumMetadata[album.id]?.startDate) ?? undefined),
+        startDate: asDateTimeString(
+          (isSmart ? album.cachedStartDate : albumMetadata[album.id]?.startDate) ?? undefined,
+        ),
         endDate: asDateTimeString((isSmart ? album.cachedEndDate : albumMetadata[album.id]?.endDate) ?? undefined),
         assetCount: isSmart ? (album.cachedAssetCount ?? 0) : (albumMetadata[album.id]?.assetCount ?? 0),
         // lastModifiedAssetTimestamp is only used in mobile app, please remove if not need
@@ -367,7 +369,7 @@ export class AlbumService extends BaseService {
         albumThumbnailAssetId: dto.albumThumbnailAssetId,
         isActivityEnabled: dto.isActivityEnabled,
         order: dto.order,
-        ...(dto.filter === undefined ? {} : { filter: dto.filter }),
+        ...(dto.filter !== undefined && { filter: dto.filter }),
         containerId: dto.containerId,
       },
       auth.user.id,
@@ -613,13 +615,11 @@ export class AlbumService extends BaseService {
     await BaseService.create(LockService, this).assertAlbumVisibleForViewer(auth, id);
 
     const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
-    if (album.kind === AlbumKind.Smart) {
-      // Viewer is the only sharable role on a smart album: an Editor could broaden the filter,
-      // and a second Owner breaks the single-owner assumption every smart-album evaluation
-      // path relies on when resolving whose library the filter runs against.
-      if (dto.role !== AlbumUserRole.Viewer) {
-        throw new BadRequestException('Smart albums only support the viewer role');
-      }
+    // Viewer is the only sharable role on a smart album: an Editor could broaden the filter,
+    // and a second Owner breaks the single-owner assumption every smart-album evaluation
+    // path relies on when resolving whose library the filter runs against.
+    if (album.kind === AlbumKind.Smart && dto.role !== AlbumUserRole.Viewer) {
+      throw new BadRequestException('Smart albums only support the viewer role');
     }
 
     // The owner row is immutable for regular and smart albums alike.

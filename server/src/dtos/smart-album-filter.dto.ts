@@ -89,7 +89,7 @@ const isEffectiveCriterion = (key: string, value: unknown): boolean => {
  * or empty arrays.
  */
 export const isEmptySmartAlbumFilter = (filter: SmartAlbumFilter): boolean =>
-  !Object.entries(filter).some(([key, value]) => isEffectiveCriterion(key, value));
+  Object.entries(filter).every(([key, value]) => !isEffectiveCriterion(key, value));
 
 /**
  * Runtime guard for filters loaded from the database. Rows written before the schema
