@@ -1154,5 +1154,37 @@ describe('/albums', () => {
       expect(status).toBe(400);
       expect(body).toEqual(errorDto.badRequest('Folder depth exceeds limit of 16'));
     });
+
+    it("resolves 'me' so a shared user can leave a folder, while share management stays owner-only", async () => {
+      const folderResponse = await request(app)
+        .post('/album-containers')
+        .set('Authorization', `Bearer ${user1.accessToken}`)
+        .send({ name: 'Leaveable Folder' });
+      expect(folderResponse.status).toBe(201);
+      const folderId = folderResponse.body.id;
+
+      const share = await request(app)
+        .post(`/album-containers/${folderId}/users`)
+        .set('Authorization', `Bearer ${user1.accessToken}`)
+        .send({ userId: user2.userId, role: 'viewer' });
+      expect([200, 201, 204]).toContain(share.status);
+
+      // The sharee cannot manage other users...
+      const foreignRemove = await request(app)
+        .delete(`/album-containers/${folderId}/users/${user1.userId}`)
+        .set('Authorization', `Bearer ${user2.accessToken}`);
+      expect(foreignRemove.status).toBe(403);
+
+      // ... but can leave via 'me'.
+      const leave = await request(app)
+        .delete(`/album-containers/${folderId}/users/me`)
+        .set('Authorization', `Bearer ${user2.accessToken}`);
+      expect(leave.status).toBe(204);
+
+      const after = await request(app)
+        .get(`/album-containers/${folderId}`)
+        .set('Authorization', `Bearer ${user2.accessToken}`);
+      expect(after.status).toBe(403);
+    });
   });
 });
