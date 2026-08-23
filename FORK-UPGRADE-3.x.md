@@ -42,10 +42,13 @@ WHERE name = '1786957000000-AddLockedContent';
 SQL
 ```
 
-Then start the 3.x server normally: the pending migrations - the fork's
-`1779580000001-RetireWorkflowLockSteps` bridge first, then upstream v3.1.0's
-`1779806699547`…`1784836013770` - all sort after every applied row and run in
-order.
+Then start the 3.x server normally: the pending migrations - upstream v3.1.0's
+`1779806699547`…`1784836013770`, then the fork's
+`1784900000000-RetireWorkflowLockSteps` bridge - all sort after every applied
+row and run in order. The bridge deliberately sorts last: it only needs to run
+before plugin synchronization (a post-migration startup step), and sorting after
+upstream's migrations also keeps databases that already started on earlier
+`integration-3.x` commits (applied through `1784836013770`) upgradeable.
 
 Fresh installations need nothing: all migrations (upstream and fork,
 interleaved by timestamp) run in one ordered pass — `AddLockedContent` only
@@ -66,7 +69,7 @@ workflow cannot hold): the `assetLock` action (whose `inverse` config was the
 unlock), and the `assetVisibility` action's `locked` option. The fork removes
 `assetLock` entirely and drops `locked` from `assetVisibility`.
 
-Existing workflows are bridged by the `1779580000001-RetireWorkflowLockSteps`
+Existing workflows are bridged by the `1784900000000-RetireWorkflowLockSteps`
 migration on first 3.x start, BEFORE plugin sync can cascade-delete anything
 silently: workflows containing either step form are **disabled**, `assetLock`
 steps are removed (deliberately and logged - the plugin method they reference is
@@ -74,3 +77,18 @@ about to disappear), and `assetVisibility(visibility=locked)` steps are kept for
 manual re-pointing. A `[fork upgrade]` warning in the server log reports the
 counts. Review the disabled workflows and rebuild the lock behaviour manually if
 wanted (e.g. add-to-album steps targeting an album you lock).
+
+### Caveat: interim integration-3.x commits
+
+Commits `df8a3e579`…`c31655d9b` shipped the bridge under a backdated name
+(`1779580000001`), which a database already migrated through `1784836013770`
+refuses to run in production ("New migrations must always have a name that
+comes alphabetically after the last executed migration"). That failure aborted
+startup BEFORE plugin synchronization, so `assetLock` steps on such databases
+were not cascade-deleted - upgrading to the renamed bridge proceeds normally.
+The exception is a database started on those commits with
+`IMMICH_ENV=development` (unordered migrations allowed): there the backdated
+bridge already ran, and re-running the renamed bridge is harmless (workflows
+already disabled, no assetLock steps left to remove). If a database somehow ran
+plugin sync with the scrubbed manifest before any bridge executed, its
+assetLock steps are unrecoverable except from backup.

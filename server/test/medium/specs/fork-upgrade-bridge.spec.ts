@@ -1,10 +1,10 @@
 import { WorkflowStepConfig } from '@immich/plugin-sdk';
 import { Kysely } from 'kysely';
 import { DB } from 'src/schema';
-import { up } from 'src/schema/migrations/1779580000001-RetireWorkflowLockSteps';
+import { up } from 'src/schema/migrations/1784900000000-RetireWorkflowLockSteps';
 import { getKyselyDB } from 'test/utils';
 
-// Validates the 2.x -> 3.x workflow bridge (1779580000001-RetireWorkflowLockSteps) against
+// Validates the 2.x -> 3.x workflow bridge (1784900000000-RetireWorkflowLockSteps) against
 // rows shaped like a live 2.x fork database: assetLock steps must be removed deliberately
 // (not left for the plugin-sync FK cascade), assetVisibility(visibility=locked) steps must
 // survive for manual re-pointing, both parent workflows must be disabled, and untouched
