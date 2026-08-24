@@ -22,6 +22,7 @@ import { LoggingRepository } from 'src/repositories/logging.repository';
 import 'src/schema'; // make sure all schema definitions are imported for schemaFromCode
 import { DB } from 'src/schema';
 import { immich_uuid_v7 } from 'src/schema/functions';
+import { up as retireWorkflowLockSteps } from 'src/schema/migrations/1784900000000-RetireWorkflowLockSteps';
 import { ExtensionVersion, VectorExtension } from 'src/types';
 import { vectorIndexQuery } from 'src/utils/database';
 import z from 'zod';
@@ -51,6 +52,36 @@ export const probes: Record<VectorIndex, number> = {
   [VectorIndex.Clip]: 1,
   [VectorIndex.Face]: 1,
 };
+
+// Obsolete fork migration names and their current replacements (see
+// normalizeForkLedger). Shared with the rolling-upgrade retry in runMigrations.
+const FORK_LEDGER_RENAMES: Array<{ oldName: string; newName: string; anchor: string }> = [
+  {
+    oldName: '1779580000001-RetireWorkflowLockSteps',
+    newName: '1784900000000-RetireWorkflowLockSteps',
+    anchor: '1784836013770-MinFacePreferenceMigration',
+  },
+  {
+    oldName: '1779487447243-AddAlbumSmartKind',
+    newName: '1784910000001-AddAlbumSmartKind',
+    anchor: '1784900000000-RetireWorkflowLockSteps',
+  },
+  {
+    oldName: '1779549231508-AddAlbumSmartAlbumCache',
+    newName: '1784910000002-AddAlbumSmartAlbumCache',
+    anchor: '1784910000001-AddAlbumSmartKind',
+  },
+  {
+    oldName: '1779574778179-AddAlbumContainers',
+    newName: '1784910000003-AddAlbumContainers',
+    anchor: '1784910000002-AddAlbumSmartAlbumCache',
+  },
+  {
+    oldName: '1779580000000-AddLockedContent',
+    newName: '1784910000004-AddLockedContent',
+    anchor: '1784910000003-AddAlbumContainers',
+  },
+];
 
 @Injectable()
 export class DatabaseRepository {
@@ -376,7 +407,8 @@ export class DatabaseRepository {
     // row AFTER our normalization ran but before our migrator acquired its lock, making
     // the migrator fail on a row that is missing from the current manifest. The ledger
     // state itself is repairable, so re-normalize and retry once.
-    if (error instanceof Error && error.message.includes('1779580000001-RetireWorkflowLockSteps')) {
+    const migrationErrorMessage = error instanceof Error ? error.message : '';
+    if (FORK_LEDGER_RENAMES.some(({ oldName }) => migrationErrorMessage.includes(oldName))) {
       this.logger.warn(
         '[fork upgrade] Migration failed on the backdated bridge row (racing older instance?); re-normalizing the ledger and retrying.',
       );
@@ -534,6 +566,37 @@ export class DatabaseRepository {
       return;
     }
 
+    // Pre-bridge interim ledgers (commits df8a3e579..c31655d9b) executed the four old
+    // feature rows but predate the bridge migration entirely. Renaming the features is not
+    // enough there: the PENDING bridge would still sort before the renamed executed rows
+    // and kysely would refuse. The bridge is idempotent and self-contained, so it is
+    // executed inline and recorded, anchored at the upstream predecessor's timestamp;
+    // the chained renames below then find their anchors. (Note: startups on those commits
+    // already ran plugin sync with the scrubbed manifest, so legacy assetLock steps were
+    // cascade-deleted then - the bridge cannot recover them, only handle what remains.)
+    const preBridge = await sql<{ needed: boolean }>`
+      SELECT EXISTS (SELECT 1 FROM kysely_migrations WHERE name = '1779487447243-AddAlbumSmartKind')
+         AND NOT EXISTS (
+           SELECT 1 FROM kysely_migrations
+           WHERE name IN ('1784900000000-RetireWorkflowLockSteps', '1779580000001-RetireWorkflowLockSteps')
+         )
+         AND EXISTS (SELECT 1 FROM kysely_migrations WHERE name = '1784836013770-MinFacePreferenceMigration')
+         AS needed
+    `.execute(this.db);
+    if (preBridge.rows[0]?.needed) {
+      await retireWorkflowLockSteps(this.db);
+      await sql`
+        INSERT INTO kysely_migrations (name, timestamp)
+        SELECT '1784900000000-RetireWorkflowLockSteps', timestamp
+        FROM kysely_migrations
+        WHERE name = '1784836013770-MinFacePreferenceMigration'
+      `.execute(this.db);
+      this.logger.warn(
+        '[fork upgrade] Pre-bridge ledger detected: executed the workflow-lock bridge inline and recorded it. ' +
+          'Note: startups on the pre-bridge commits may already have cascade-deleted legacy assetLock workflow steps; those are only recoverable from backup.',
+      );
+    }
+
     // Interim integration-3.x ledgers executed the fork migrations under names that were
     // later renumbered (the feature migrations moved after upstream v3.1.0's max so that
     // STOCK v3.x databases can adopt the fork in ordered mode; the workflow bridge was
@@ -543,35 +606,7 @@ export class DatabaseRepository {
     // kysely's name tiebreak reproduces filename order exactly. Each rename requires its
     // anchor to be executed (possibly by an earlier iteration of this chain) and its
     // target name to be free.
-    const renames: Array<{ oldName: string; newName: string; anchor: string }> = [
-      {
-        oldName: '1779580000001-RetireWorkflowLockSteps',
-        newName: '1784900000000-RetireWorkflowLockSteps',
-        anchor: '1784836013770-MinFacePreferenceMigration',
-      },
-      {
-        oldName: '1779487447243-AddAlbumSmartKind',
-        newName: '1784910000001-AddAlbumSmartKind',
-        anchor: '1784900000000-RetireWorkflowLockSteps',
-      },
-      {
-        oldName: '1779549231508-AddAlbumSmartAlbumCache',
-        newName: '1784910000002-AddAlbumSmartAlbumCache',
-        anchor: '1784910000001-AddAlbumSmartKind',
-      },
-      {
-        oldName: '1779574778179-AddAlbumContainers',
-        newName: '1784910000003-AddAlbumContainers',
-        anchor: '1784910000002-AddAlbumSmartAlbumCache',
-      },
-      {
-        oldName: '1779580000000-AddLockedContent',
-        newName: '1784910000004-AddLockedContent',
-        anchor: '1784910000003-AddAlbumContainers',
-      },
-    ];
-
-    for (const { oldName, newName, anchor } of renames) {
+    for (const { oldName, newName, anchor } of FORK_LEDGER_RENAMES) {
       const renamed = await sql`
         UPDATE kysely_migrations
         SET name = ${newName},

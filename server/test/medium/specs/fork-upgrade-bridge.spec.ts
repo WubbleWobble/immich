@@ -273,3 +273,84 @@ describe('fork upgrade bridge: ledger normalization for renumbered feature migra
     await expect(repository.runMigrations()).resolves.toBeUndefined();
   });
 });
+
+// Pre-bridge interim ledgers (df8a3e579..c31655d9b): all four feature migrations executed
+// under their old names, and NO bridge row at all. Renaming alone cannot fix this - the
+// pending bridge would sort before the renamed executed rows - so normalization must run
+// the idempotent bridge inline, record it, and then chain-rename the features.
+describe('fork upgrade bridge: pre-bridge interim ledger', () => {
+  it('executes the bridge inline, records it, and renames the feature rows', async () => {
+    const db = await getKyselyDB();
+
+    await db.deleteFrom('kysely_migrations').where('name', '=', '1784900000000-RetireWorkflowLockSteps').execute();
+    const oldNames: Array<[string, string]> = [
+      ['1784910000001-AddAlbumSmartKind', '1779487447243-AddAlbumSmartKind'],
+      ['1784910000002-AddAlbumSmartAlbumCache', '1779549231508-AddAlbumSmartAlbumCache'],
+      ['1784910000003-AddAlbumContainers', '1779574778179-AddAlbumContainers'],
+      ['1784910000004-AddLockedContent', '1779580000000-AddLockedContent'],
+    ];
+    for (const [current, old] of oldNames) {
+      await db
+        .updateTable('kysely_migrations')
+        .set({ name: old, timestamp: '2026-08-23T00:00:00.000Z' })
+        .where('name', '=', current)
+        .execute();
+    }
+
+    const repository = new DatabaseRepository(db as never, LoggingRepository.create(), new ConfigRepository());
+    await expect(repository.runMigrations()).resolves.toBeUndefined();
+
+    const ledgerRows = await db
+      .selectFrom('kysely_migrations')
+      .select(['name', 'timestamp'])
+      .orderBy('timestamp', 'asc')
+      .orderBy('name', 'asc')
+      .execute();
+    const names = ledgerRows.map(({ name }) => name);
+    const tail = names.slice(names.indexOf('1784836013770-MinFacePreferenceMigration'));
+    expect(tail).toEqual([
+      '1784836013770-MinFacePreferenceMigration',
+      '1784900000000-RetireWorkflowLockSteps',
+      '1784910000001-AddAlbumSmartKind',
+      '1784910000002-AddAlbumSmartAlbumCache',
+      '1784910000003-AddAlbumContainers',
+      '1784910000004-AddLockedContent',
+    ]);
+
+    await expect(repository.runMigrations()).resolves.toBeUndefined();
+  });
+});
+
+// The rolling-upgrade retry must recognize EVERY obsolete name, not just the old bridge:
+// after the feature renumbering, a racing older instance can commit any of the four old
+// feature rows post-normalization.
+describe('fork upgrade bridge: rolling-upgrade race retry on a feature name', () => {
+  it('re-normalizes and retries when the migrator hits an old feature row', async () => {
+    const db = await getKyselyDB();
+
+    await db
+      .updateTable('kysely_migrations')
+      .set({
+        name: '1779487447243-AddAlbumSmartKind',
+        timestamp: '2026-08-23T00:00:00.000Z',
+      })
+      .where('name', '=', '1784910000001-AddAlbumSmartKind')
+      .execute();
+
+    const repository = new DatabaseRepository(db as never, LoggingRepository.create(), new ConfigRepository());
+    const prototype = DatabaseRepository.prototype as unknown as { normalizeForkLedger: () => Promise<void> };
+    const spy = vitest.spyOn(prototype, 'normalizeForkLedger').mockImplementationOnce(() => Promise.resolve());
+
+    try {
+      await expect(repository.runMigrations()).resolves.toBeUndefined();
+      expect(spy).toHaveBeenCalledTimes(2);
+    } finally {
+      spy.mockRestore();
+    }
+
+    const ledgerRows = await db.selectFrom('kysely_migrations').select('name').execute();
+    const names = ledgerRows.map(({ name }) => name);
+    expect(names).not.toContain('1779487447243-AddAlbumSmartKind');
+    expect(names).toContain('1784910000001-AddAlbumSmartKind');
+  });
+});

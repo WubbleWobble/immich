@@ -32,12 +32,19 @@ migration (`1784836013770-MinFacePreferenceMigration`):
 - **Databases created from earlier `integration-3.x` commits** (fork
   development/testing only): those executed the fork migrations under
   since-renumbered names. Startup normalizes the ledger automatically before
-  the migrator runs — executed rows are renamed to the current names and
-  anchored at `1784836013770`'s timestamp verbatim (kysely breaks timestamp
-  ties by name, reproducing filename order; copying the stored string avoids
-  any timezone dependency). Each rename logs a `[fork upgrade]` line. A
-  rolling-upgrade race against an older instance is retried once on its exact
-  failure signature.
+  the migrator runs — executed rows are chain-renamed to the current names,
+  each anchored at its immediate filename-order predecessor's timestamp
+  verbatim (kysely breaks timestamp ties by name, reproducing filename order;
+  copying the stored string avoids any timezone dependency). Pre-bridge
+  ledgers (commits `df8a3e579`…`c31655d9b`, which had the old feature rows but
+  no bridge migration at all) additionally get the idempotent bridge executed
+  inline and recorded, since a pending bridge would otherwise sort before the
+  renamed rows. Each repair logs a `[fork upgrade]` line. A rolling-upgrade
+  race against an older instance is retried once when the failure names any
+  obsolete migration. **Caveat**: startups on those pre-bridge commits ran
+  plugin sync with the scrubbed manifest, silently cascade-deleting any legacy
+  `assetLock` workflow steps — ledger repair cannot recover those; only a
+  database backup can.
 - **Hypothetical 2.x-era fork databases**: none were ever deployed. Such a
   ledger (fork rows applied before upstream 3.x's) is not auto-repaired;
   restore from backup or upgrade by hand.
