@@ -165,10 +165,12 @@ describe('fork upgrade bridge: ledger normalization with a pending predecessor',
     const db = await getKyselyDB();
     const repository = new DatabaseRepository(db as never, LoggingRepository.create(), new ConfigRepository());
 
-    // Revert the bridge and its predecessor, then plant the backdated ledger entry -
-    // reproducing a 1061114a0-executed bridge on a partially reverted ledger.
-    await repository.revertLastMigration();
-    await repository.revertLastMigration();
+    // Revert the four feature migrations, the bridge, and its predecessor, then plant the
+    // backdated ledger entry - reproducing a 1061114a0-executed bridge on a partially
+    // reverted ledger.
+    for (let i = 0; i < 6; i++) {
+      await repository.revertLastMigration();
+    }
     await db
       .insertInto('kysely_migrations')
       .values({ name: '1779580000001-RetireWorkflowLockSteps', timestamp: '2026-08-23T00:00:00.000Z' })
@@ -217,5 +219,57 @@ describe('fork upgrade bridge: rolling-upgrade race retry', () => {
     const names = ledgerRows.map(({ name }) => name);
     expect(names).not.toContain('1779580000001-RetireWorkflowLockSteps');
     expect(names).toContain('1784900000000-RetireWorkflowLockSteps');
+  });
+});
+
+// Interim integration-3.x ledgers executed the four feature migrations under their
+// pre-renumbering names (the features later moved after upstream v3.1.0's max so stock
+// v3.x databases can adopt the fork in ordered mode). Startup must rename all executed
+// rows to the current names, anchored at the predecessor's timestamp, and migrate cleanly.
+describe('fork upgrade bridge: ledger normalization for renumbered feature migrations', () => {
+  it('renames all interim feature rows and migrates cleanly', async () => {
+    const db = await getKyselyDB();
+
+    const oldNames: Array<[string, string]> = [
+      ['1784910000001-AddAlbumSmartKind', '1779487447243-AddAlbumSmartKind'],
+      ['1784910000002-AddAlbumSmartAlbumCache', '1779549231508-AddAlbumSmartAlbumCache'],
+      ['1784910000003-AddAlbumContainers', '1779574778179-AddAlbumContainers'],
+      ['1784910000004-AddLockedContent', '1779580000000-AddLockedContent'],
+    ];
+    for (const [current, old] of oldNames) {
+      await db
+        .updateTable('kysely_migrations')
+        .set({ name: old, timestamp: '2026-08-23T00:00:00.000Z' })
+        .where('name', '=', current)
+        .execute();
+    }
+
+    const repository = new DatabaseRepository(db as never, LoggingRepository.create(), new ConfigRepository());
+    await expect(repository.runMigrations()).resolves.toBeUndefined();
+
+    const ledgerRows = await db
+      .selectFrom('kysely_migrations')
+      .select(['name', 'timestamp'])
+      .orderBy('timestamp', 'asc')
+      .orderBy('name', 'asc')
+      .execute();
+    const names = ledgerRows.map(({ name }) => name);
+    for (const [current, old] of oldNames) {
+      expect(names).not.toContain(old);
+      expect(names).toContain(current);
+    }
+    // Filename order restored: predecessor, bridge, then the four features.
+    const tail = names.slice(names.indexOf('1784836013770-MinFacePreferenceMigration'));
+    expect(tail).toEqual([
+      '1784836013770-MinFacePreferenceMigration',
+      '1784900000000-RetireWorkflowLockSteps',
+      '1784910000001-AddAlbumSmartKind',
+      '1784910000002-AddAlbumSmartAlbumCache',
+      '1784910000003-AddAlbumContainers',
+      '1784910000004-AddLockedContent',
+    ]);
+
+    // Idempotent second startup.
+    await expect(repository.runMigrations()).resolves.toBeUndefined();
   });
 });

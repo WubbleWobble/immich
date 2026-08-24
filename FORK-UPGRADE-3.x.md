@@ -1,64 +1,60 @@
-# Upgrading a 2.x fork instance to integration-3.x
+# Adopting integration-3.x
 
-## Why anything is needed at all
+## Migration layout
 
 Immich records applied migrations in the **`kysely_migrations`** table (see
 `server/src/repositories/database.repository.ts`, `migrationTableName`), and in
 production kysely **refuses to run a pending migration that sorts before an
 already-applied one** (`allowUnorderedMigrations` is dev-only).
 
-A 2.x fork database has applied, in order: upstream migrations up to
-`1778614946174-UpdateWorkflowTables`, then the fork's
-`1779487447243-AddAlbumSmartKind`, `1779549231508-AddAlbumSmartAlbumCache`,
-`1779574778179-AddAlbumContainers`, and `1786957000000-AddLockedContent`.
-Upstream v3.1.0 adds migrations numbered `1779806699547`…`1784836013770` — all
-of which sort **before** the applied `1786957000000-AddLockedContent` row, so an
-unmodified upgrade refuses to migrate.
+The fork's migrations therefore all sort **after** upstream v3.1.0's last
+migration (`1784836013770-MinFacePreferenceMigration`):
 
-The fix on `integration-3.x`: the first three fork migrations already sit in the
-gap between 2.x-upstream-max (`17786…`) and 3.x-upstream-min (`17798…`) and are
-untouched. Only `AddLockedContent` was renumbered, to `1779580000000` — inside
-the same gap. With that, every applied row sorts before every pending upstream
-migration and the ordered production migrator is satisfied.
+| Migration | Purpose |
+|---|---|
+| `1784900000000-RetireWorkflowLockSteps` | Disables/retires workflow steps that set the removed per-asset `visibility: locked` (see below) |
+| `1784910000001-AddAlbumSmartKind` | Smart albums: `album.kind` + `filter` |
+| `1784910000002-AddAlbumSmartAlbumCache` | Smart albums: list-view cache columns |
+| `1784910000003-AddAlbumContainers` | Album folders: container tables + closure |
+| `1784910000004-AddLockedContent` | Locked albums/folders: lock tables + data migration of any `visibility=locked` assets into per-user "Locked Folder" albums |
 
-## The one-time step for an existing 2.x fork database
+## Upgrade paths — nothing manual in any of them
 
-The live database still records the old name, so rename its ledger row **before
-the first 3.x server start** (server stopped):
+- **Stock Immich v3.1.0** (e.g. a standard docker-compose deployment on the
+  `release` tag): the fork migrations are pending and sort after everything
+  applied. Start the fork image; they run in order. Any existing
+  `visibility=locked` assets are migrated into per-user locked albums, and any
+  workflows using the retired lock actions are disabled with a logged
+  `[fork upgrade]` warning (see below).
+- **Stock Immich 2.x**: upstream v3.1.0's migrations run first, then the
+  fork's. Same ordered pass, nothing manual.
+- **Fresh install**: everything runs in one ordered pass.
+- **Databases created from earlier `integration-3.x` commits** (fork
+  development/testing only): those executed the fork migrations under
+  since-renumbered names. Startup normalizes the ledger automatically before
+  the migrator runs — executed rows are renamed to the current names and
+  anchored at `1784836013770`'s timestamp verbatim (kysely breaks timestamp
+  ties by name, reproducing filename order; copying the stored string avoids
+  any timezone dependency). Each rename logs a `[fork upgrade]` line. A
+  rolling-upgrade race against an older instance is retried once on its exact
+  failure signature.
+- **Hypothetical 2.x-era fork databases**: none were ever deployed. Such a
+  ledger (fork rows applied before upstream 3.x's) is not auto-repaired;
+  restore from backup or upgrade by hand.
+- **Reverted/partial ledgers**: if the anchor predecessor is pending, the
+  bridge's old entry is dropped (it is idempotent and reruns in order); old
+  feature-migration rows in that state indicate a crashed-mid-upgrade artifact
+  — restore from backup.
 
-```sql
-UPDATE kysely_migrations
-SET name = '1779580000000-AddLockedContent'
-WHERE name = '1786957000000-AddLockedContent';
-```
+## Deployment notes
 
-For example:
-
-```bash
-docker exec -i immich_postgres psql -U postgres -d immich <<'SQL'
-UPDATE kysely_migrations
-SET name = '1779580000000-AddLockedContent'
-WHERE name = '1786957000000-AddLockedContent';
-SQL
-```
-
-Then start the 3.x server normally: the pending migrations - upstream v3.1.0's
-`1779806699547`…`1784836013770`, then the fork's
-`1784900000000-RetireWorkflowLockSteps` bridge - all sort after every applied
-row and run in order. The bridge deliberately sorts last: it only needs to run
-before plugin synchronization (a post-migration startup step), and sorting after
-upstream's migrations also keeps databases that already started on earlier
-`integration-3.x` commits (applied through `1784836013770`) upgradeable.
-
-Fresh installations need nothing: all migrations (upstream and fork,
-interleaved by timestamp) run in one ordered pass — `AddLockedContent` only
-touches tables that exist from the 2.x era, so running it before the 3.x
-upstream migrations is safe.
-
-## Versioning
-
-Package versions track upstream (v3.1.0) so mobile-client version checks keep
-working; fork identity lives in the docker image tag (e.g. `v3.1.0-wobble.1`).
+- Package versions track upstream (v3.1.0) so mobile-client version checks
+  keep working; fork identity lives in the docker image tag
+  (e.g. `immich-server:v3.1.0-wobble.1`).
+- Only the **server** image is forked (the web app is embedded in it).
+  `immich-machine-learning`, `postgres`, and `redis`/`valkey` stay on their
+  stock images — pin `IMMICH_VERSION=v3.1.0` so machine-learning matches the
+  server instead of rolling ahead.
 
 ## Workflow lock automation
 
@@ -69,31 +65,11 @@ workflow cannot hold): the `assetLock` action (whose `inverse` config was the
 unlock), and the `assetVisibility` action's `locked` option. The fork removes
 `assetLock` entirely and drops `locked` from `assetVisibility`.
 
-Existing workflows are bridged by the `1784900000000-RetireWorkflowLockSteps`
-migration on first 3.x start, BEFORE plugin sync can cascade-delete anything
-silently: workflows containing either step form are **disabled**, `assetLock`
-steps are removed (deliberately and logged - the plugin method they reference is
-about to disappear), and `assetVisibility(visibility=locked)` steps are kept for
-manual re-pointing. A `[fork upgrade]` warning in the server log reports the
-counts. Review the disabled workflows and rebuild the lock behaviour manually if
-wanted (e.g. add-to-album steps targeting an album you lock).
-
-### Caveat: interim integration-3.x commits
-
-- **`df8a3e579`…`c31655d9b`** shipped the scrubbed plugin manifest (no
-  `assetLock` method) with **no bridge at all**. An instance that completed a
-  startup on these commits ran plugin synchronization, which cascade-deleted
-  any legacy `assetLock` workflow steps **silently**. Those steps are
-  unrecoverable except from a database backup; the parent workflows still exist
-  (enabled) and should be reviewed.
-- **`1061114a0`** introduced the bridge, but under the backdated name
-  `1779580000001`, which a database already migrated through `1784836013770`
-  refused to run in production - startup aborted before anything else happened.
-  A database that DID execute the backdated bridge (a fresh install on that
-  commit, or a dev-mode start where unordered migrations are allowed) records
-  the old name in its ledger; after the rename such a ledger would fail with
-  "previously executed migration ... is missing". The server now normalizes
-  this automatically at startup, before the migrator runs: the ledger row is
-  renamed to `1784900000000-RetireWorkflowLockSteps` and its timestamp moved
-  after the upstream migrations (execution order is validated too). No manual
-  step is needed.
+Existing workflows are bridged by `1784900000000-RetireWorkflowLockSteps` on
+first fork start, BEFORE plugin sync can cascade-delete anything silently:
+workflows containing either step form are **disabled**, `assetLock` steps are
+removed (deliberately and logged — the plugin method they reference is about to
+disappear), and `assetVisibility(visibility=locked)` steps are kept for manual
+re-pointing. A `[fork upgrade]` warning in the server log reports the counts.
+Review the disabled workflows and rebuild the lock behaviour manually if wanted
+(e.g. add-to-album steps targeting an album you lock).

@@ -534,26 +534,65 @@ export class DatabaseRepository {
       return;
     }
 
-    // Normal case: the predecessor executed, so the renamed row can adopt its timestamp
-    // verbatim (kysely's name tiebreak places the bridge exactly where its filename sorts).
-    const renamed = await sql`
-      UPDATE kysely_migrations
-      SET name = '1784900000000-RetireWorkflowLockSteps',
-          timestamp = (SELECT timestamp FROM kysely_migrations WHERE name = '1784836013770-MinFacePreferenceMigration')
-      WHERE name = '1779580000001-RetireWorkflowLockSteps'
-        AND EXISTS (SELECT 1 FROM kysely_migrations WHERE name = '1784836013770-MinFacePreferenceMigration')
-    `.execute(this.db);
-    if (renamed.numAffectedRows && renamed.numAffectedRows > 0n) {
-      this.logger.warn(
-        '[fork upgrade] Normalized migration ledger: renamed 1779580000001-RetireWorkflowLockSteps to 1784900000000 and reordered it after the upstream migrations.',
-      );
-      return;
+    // Interim integration-3.x ledgers executed the fork migrations under names that were
+    // later renumbered (the feature migrations moved after upstream v3.1.0's max so that
+    // STOCK v3.x databases can adopt the fork in ordered mode; the workflow bridge was
+    // additionally shipped once under a backdated name). Executed rows are renamed to the
+    // current names in filename order, each adopting its immediate filename-order
+    // predecessor's timestamp VERBATIM - no arithmetic or formatting (timezone-safe) - so
+    // kysely's name tiebreak reproduces filename order exactly. Each rename requires its
+    // anchor to be executed (possibly by an earlier iteration of this chain) and its
+    // target name to be free.
+    const renames: Array<{ oldName: string; newName: string; anchor: string }> = [
+      {
+        oldName: '1779580000001-RetireWorkflowLockSteps',
+        newName: '1784900000000-RetireWorkflowLockSteps',
+        anchor: '1784836013770-MinFacePreferenceMigration',
+      },
+      {
+        oldName: '1779487447243-AddAlbumSmartKind',
+        newName: '1784910000001-AddAlbumSmartKind',
+        anchor: '1784900000000-RetireWorkflowLockSteps',
+      },
+      {
+        oldName: '1779549231508-AddAlbumSmartAlbumCache',
+        newName: '1784910000002-AddAlbumSmartAlbumCache',
+        anchor: '1784910000001-AddAlbumSmartKind',
+      },
+      {
+        oldName: '1779574778179-AddAlbumContainers',
+        newName: '1784910000003-AddAlbumContainers',
+        anchor: '1784910000002-AddAlbumSmartAlbumCache',
+      },
+      {
+        oldName: '1779580000000-AddLockedContent',
+        newName: '1784910000004-AddLockedContent',
+        anchor: '1784910000003-AddAlbumContainers',
+      },
+    ];
+
+    for (const { oldName, newName, anchor } of renames) {
+      const renamed = await sql`
+        UPDATE kysely_migrations
+        SET name = ${newName},
+            timestamp = (SELECT timestamp FROM kysely_migrations WHERE name = ${anchor})
+        WHERE name = ${oldName}
+          AND EXISTS (SELECT 1 FROM kysely_migrations WHERE name = ${anchor})
+          AND NOT EXISTS (SELECT 1 FROM kysely_migrations WHERE name = ${newName})
+      `.execute(this.db);
+      if (renamed.numAffectedRows && renamed.numAffectedRows > 0n) {
+        this.logger.warn(
+          `[fork upgrade] Normalized migration ledger: renamed ${oldName} to ${newName} and reordered it after ${anchor}.`,
+        );
+      }
     }
 
-    // Abnormal case (reverted/partial ledger): the predecessor is still pending, so a
-    // renamed row would sort after pending migrations and kysely would reject the ledger.
-    // The only valid shape is to drop the old entry and let the bridge - idempotent by
-    // design - rerun in its proper filename position.
+    // Abnormal case (reverted/partial ledger, anchor predecessor pending): a renamed row
+    // would sort after pending migrations and kysely would reject the ledger. The bridge
+    // is idempotent, so its old entry is dropped and it reruns in filename order. The
+    // feature migrations are NOT rerunnable (CREATE TABLE) - if their old rows remain
+    // here, the ledger is a crashed-mid-upgrade artifact that needs a backup restore, and
+    // the migrator's own "missing migration" error will say which row is the problem.
     const dropped = await sql`
       DELETE FROM kysely_migrations
       WHERE name = '1779580000001-RetireWorkflowLockSteps'
