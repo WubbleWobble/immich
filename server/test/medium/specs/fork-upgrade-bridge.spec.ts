@@ -6,6 +6,7 @@ import { LoggingRepository } from 'src/repositories/logging.repository';
 import { DB } from 'src/schema';
 import { up } from 'src/schema/migrations/1784900000000-RetireWorkflowLockSteps';
 import { getKyselyDB } from 'test/utils';
+import { vitest } from 'vitest';
 
 // Validates the 2.x -> 3.x workflow bridge (1784900000000-RetireWorkflowLockSteps) against
 // rows shaped like a live 2.x fork database: assetLock steps must be removed deliberately
@@ -175,9 +176,46 @@ describe('fork upgrade bridge: ledger normalization with a pending predecessor',
 
     await expect(repository.runMigrations()).resolves.toBeUndefined();
 
-    const names = (await db.selectFrom('kysely_migrations').select('name').execute()).map(({ name }) => name);
+    const ledgerRows = await db.selectFrom('kysely_migrations').select('name').execute();
+    const names = ledgerRows.map(({ name }) => name);
     expect(names).not.toContain('1779580000001-RetireWorkflowLockSteps');
     expect(names).toContain('1784836013770-MinFacePreferenceMigration');
+    expect(names).toContain('1784900000000-RetireWorkflowLockSteps');
+  });
+});
+
+// The rolling-upgrade race (P2): an old 1061114a0 instance can commit the backdated row
+// AFTER the new instance's normalization ran but before its migrator locked. Simulated by
+// suppressing the first normalization call: the migrator then fails on the backdated row,
+// and runMigrations() must re-normalize and retry instead of aborting startup.
+describe('fork upgrade bridge: rolling-upgrade race retry', () => {
+  it('re-normalizes and retries when the migrator hits the backdated row', async () => {
+    const db = await getKyselyDB();
+
+    await db
+      .updateTable('kysely_migrations')
+      .set({
+        name: '1779580000001-RetireWorkflowLockSteps',
+        timestamp: '2026-08-23T00:00:00.000Z',
+      })
+      .where('name', '=', '1784900000000-RetireWorkflowLockSteps')
+      .execute();
+
+    const repository = new DatabaseRepository(db as never, LoggingRepository.create(), new ConfigRepository());
+    const prototype = DatabaseRepository.prototype as unknown as { normalizeForkLedger: () => Promise<void> };
+    const spy = vitest.spyOn(prototype, 'normalizeForkLedger').mockImplementationOnce(() => Promise.resolve());
+
+    try {
+      await expect(repository.runMigrations()).resolves.toBeUndefined();
+      // First call was the suppressed pre-migration attempt; the retry made the second.
+      expect(spy).toHaveBeenCalledTimes(2);
+    } finally {
+      spy.mockRestore();
+    }
+
+    const ledgerRows = await db.selectFrom('kysely_migrations').select('name').execute();
+    const names = ledgerRows.map(({ name }) => name);
+    expect(names).not.toContain('1779580000001-RetireWorkflowLockSteps');
     expect(names).toContain('1784900000000-RetireWorkflowLockSteps');
   });
 });

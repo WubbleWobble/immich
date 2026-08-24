@@ -369,9 +369,20 @@ export class DatabaseRepository {
     this.logger.log('Running migrations');
 
     await this.normalizeForkLedger();
-    const migrator = this.createMigrator();
 
-    const { error, results } = await migrator.migrateToLatest();
+    let { error, results } = await this.createMigrator().migrateToLatest();
+
+    // Rolling-upgrade race: an old (1061114a0) instance can commit the backdated bridge
+    // row AFTER our normalization ran but before our migrator acquired its lock, making
+    // the migrator fail on a row that is missing from the current manifest. The ledger
+    // state itself is repairable, so re-normalize and retry once.
+    if (error instanceof Error && error.message.includes('1779580000001-RetireWorkflowLockSteps')) {
+      this.logger.warn(
+        '[fork upgrade] Migration failed on the backdated bridge row (racing older instance?); re-normalizing the ledger and retrying.',
+      );
+      await this.normalizeForkLedger();
+      ({ error, results } = await this.createMigrator().migrateToLatest());
+    }
 
     for (const result of results ?? []) {
       if (result.status === 'Success') {
