@@ -80,15 +80,20 @@ wanted (e.g. add-to-album steps targeting an album you lock).
 
 ### Caveat: interim integration-3.x commits
 
-Commits `df8a3e579`…`c31655d9b` shipped the bridge under a backdated name
-(`1779580000001`), which a database already migrated through `1784836013770`
-refuses to run in production ("New migrations must always have a name that
-comes alphabetically after the last executed migration"). That failure aborted
-startup BEFORE plugin synchronization, so `assetLock` steps on such databases
-were not cascade-deleted - upgrading to the renamed bridge proceeds normally.
-The exception is a database started on those commits with
-`IMMICH_ENV=development` (unordered migrations allowed): there the backdated
-bridge already ran, and re-running the renamed bridge is harmless (workflows
-already disabled, no assetLock steps left to remove). If a database somehow ran
-plugin sync with the scrubbed manifest before any bridge executed, its
-assetLock steps are unrecoverable except from backup.
+- **`df8a3e579`…`c31655d9b`** shipped the scrubbed plugin manifest (no
+  `assetLock` method) with **no bridge at all**. An instance that completed a
+  startup on these commits ran plugin synchronization, which cascade-deleted
+  any legacy `assetLock` workflow steps **silently**. Those steps are
+  unrecoverable except from a database backup; the parent workflows still exist
+  (enabled) and should be reviewed.
+- **`1061114a0`** introduced the bridge, but under the backdated name
+  `1779580000001`, which a database already migrated through `1784836013770`
+  refused to run in production - startup aborted before anything else happened.
+  A database that DID execute the backdated bridge (a fresh install on that
+  commit, or a dev-mode start where unordered migrations are allowed) records
+  the old name in its ledger; after the rename such a ledger would fail with
+  "previously executed migration ... is missing". The server now normalizes
+  this automatically at startup, before the migrator runs: the ledger row is
+  renamed to `1784900000000-RetireWorkflowLockSteps` and its timestamp moved
+  after the upstream migrations (execution order is validated too). No manual
+  step is needed.

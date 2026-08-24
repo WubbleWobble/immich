@@ -368,6 +368,7 @@ export class DatabaseRepository {
   async runMigrations(): Promise<void> {
     this.logger.log('Running migrations');
 
+    await this.normalizeForkLedger();
     const migrator = this.createMigrator();
 
     const { error, results } = await migrator.migrateToLatest();
@@ -498,6 +499,41 @@ export class DatabaseRepository {
 
     this.logger.debug('Finished reverting migration');
     return reverted.migrationName;
+  }
+
+  /**
+   * Fork ledger repair: interim integration-3.x commit 1061114a0 shipped the workflow
+   * bridge migration under the backdated name 1779580000001-RetireWorkflowLockSteps; it
+   * was later renamed to 1784900000000 (it must only precede plugin sync, and sorting
+   * early broke already-migrated databases). A ledger that executed the old name would
+   * otherwise fail startup with "previously executed migration ... is missing". Renaming
+   * the row alone is not enough - kysely also validates execution order, so the row's
+   * timestamp moves after the last upstream migration's. No-op unless the old row exists
+   * (fresh databases have no ledger yet).
+   */
+  private async normalizeForkLedger(): Promise<void> {
+    const tableExists = await sql<{ exists: boolean }>`
+      SELECT to_regclass('kysely_migrations') IS NOT NULL AS exists
+    `.execute(this.db);
+    if (!tableExists.rows[0]?.exists) {
+      return;
+    }
+
+    const result = await sql`
+      UPDATE kysely_migrations
+      SET name = '1784900000000-RetireWorkflowLockSteps',
+          timestamp = (
+            SELECT to_char(max(timestamp::timestamptz) + interval '1 second', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+            FROM kysely_migrations
+            WHERE name != '1779580000001-RetireWorkflowLockSteps'
+          )
+      WHERE name = '1779580000001-RetireWorkflowLockSteps'
+    `.execute(this.db);
+    if (result.numAffectedRows && result.numAffectedRows > 0n) {
+      this.logger.warn(
+        '[fork upgrade] Normalized migration ledger: renamed 1779580000001-RetireWorkflowLockSteps to 1784900000000 and reordered it after the upstream migrations.',
+      );
+    }
   }
 
   private createMigrator(): Migrator {

@@ -1,5 +1,8 @@
 import { WorkflowStepConfig } from '@immich/plugin-sdk';
 import { Kysely } from 'kysely';
+import { ConfigRepository } from 'src/repositories/config.repository';
+import { DatabaseRepository } from 'src/repositories/database.repository';
+import { LoggingRepository } from 'src/repositories/logging.repository';
 import { DB } from 'src/schema';
 import { up } from 'src/schema/migrations/1784900000000-RetireWorkflowLockSteps';
 import { getKyselyDB } from 'test/utils';
@@ -101,5 +104,40 @@ describe('fork upgrade bridge: RetireWorkflowLockSteps', () => {
     expect(stepIds.has(lockStep.id)).toBe(false);
     expect(stepIds.has(visibilityStep.id)).toBe(true);
     expect(stepIds.has(innocentStep.id)).toBe(true);
+  });
+});
+
+// Validates the ledger repair for databases that executed interim commit 1061114a0, whose
+// bridge migration shipped under the backdated name 1779580000001. Renaming the file made
+// kysely reject such ledgers ("previously executed migration ... is missing"), so
+// runMigrations() normalizes the row - name AND timestamp (execution order is validated
+// too) - before the migrator runs.
+describe('fork upgrade bridge: ledger normalization for interim commit 1061114a0', () => {
+  it('renames and reorders the backdated ledger row, then migrates cleanly', async () => {
+    const db = await getKyselyDB();
+
+    // Simulate the 1061114a0 ledger: the bridge executed under its old name, early.
+    await db
+      .updateTable('kysely_migrations')
+      .set({
+        name: '1779580000001-RetireWorkflowLockSteps',
+        timestamp: '2026-08-23T00:00:00.000Z',
+      })
+      .where('name', '=', '1784900000000-RetireWorkflowLockSteps')
+      .execute();
+
+    const repository = new DatabaseRepository(db as never, LoggingRepository.create(), new ConfigRepository());
+
+    // Without normalization this throws "corrupted migrations: ... is missing".
+    await expect(repository.runMigrations()).resolves.toBeUndefined();
+
+    const rows = await db
+      .selectFrom('kysely_migrations')
+      .select(['name', 'timestamp'])
+      .orderBy('timestamp', 'asc')
+      .execute();
+    const names = rows.map(({ name }) => name);
+    expect(names).not.toContain('1779580000001-RetireWorkflowLockSteps');
+    expect(names.at(-1)).toBe('1784900000000-RetireWorkflowLockSteps');
   });
 });
