@@ -154,3 +154,30 @@ describe('fork upgrade bridge: ledger normalization for interim commit 1061114a0
     await expect(repository.runMigrations()).resolves.toBeUndefined();
   });
 });
+
+// The abnormal-ledger fallback (P2): if the bridge executed under its backdated name but
+// its filename-order predecessor was later reverted (so it is pending again), renaming the
+// row would sort it after pending migrations and kysely would reject the ledger. The
+// normalization instead drops the old entry, and the idempotent bridge reruns in order.
+describe('fork upgrade bridge: ledger normalization with a pending predecessor', () => {
+  it('drops the backdated row and reruns the bridge in filename order', async () => {
+    const db = await getKyselyDB();
+    const repository = new DatabaseRepository(db as never, LoggingRepository.create(), new ConfigRepository());
+
+    // Revert the bridge and its predecessor, then plant the backdated ledger entry -
+    // reproducing a 1061114a0-executed bridge on a partially reverted ledger.
+    await repository.revertLastMigration();
+    await repository.revertLastMigration();
+    await db
+      .insertInto('kysely_migrations')
+      .values({ name: '1779580000001-RetireWorkflowLockSteps', timestamp: '2026-08-23T00:00:00.000Z' })
+      .execute();
+
+    await expect(repository.runMigrations()).resolves.toBeUndefined();
+
+    const names = (await db.selectFrom('kysely_migrations').select('name').execute()).map(({ name }) => name);
+    expect(names).not.toContain('1779580000001-RetireWorkflowLockSteps');
+    expect(names).toContain('1784836013770-MinFacePreferenceMigration');
+    expect(names).toContain('1784900000000-RetireWorkflowLockSteps');
+  });
+});

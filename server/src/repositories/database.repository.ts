@@ -523,19 +523,33 @@ export class DatabaseRepository {
       return;
     }
 
-    const result = await sql`
+    // Normal case: the predecessor executed, so the renamed row can adopt its timestamp
+    // verbatim (kysely's name tiebreak places the bridge exactly where its filename sorts).
+    const renamed = await sql`
       UPDATE kysely_migrations
       SET name = '1784900000000-RetireWorkflowLockSteps',
-          timestamp = COALESCE(
-            (SELECT timestamp FROM kysely_migrations WHERE name = '1784836013770-MinFacePreferenceMigration'),
-            (SELECT max(timestamp) FROM kysely_migrations WHERE name != '1779580000001-RetireWorkflowLockSteps'),
-            timestamp
-          )
+          timestamp = (SELECT timestamp FROM kysely_migrations WHERE name = '1784836013770-MinFacePreferenceMigration')
       WHERE name = '1779580000001-RetireWorkflowLockSteps'
+        AND EXISTS (SELECT 1 FROM kysely_migrations WHERE name = '1784836013770-MinFacePreferenceMigration')
     `.execute(this.db);
-    if (result.numAffectedRows && result.numAffectedRows > 0n) {
+    if (renamed.numAffectedRows && renamed.numAffectedRows > 0n) {
       this.logger.warn(
         '[fork upgrade] Normalized migration ledger: renamed 1779580000001-RetireWorkflowLockSteps to 1784900000000 and reordered it after the upstream migrations.',
+      );
+      return;
+    }
+
+    // Abnormal case (reverted/partial ledger): the predecessor is still pending, so a
+    // renamed row would sort after pending migrations and kysely would reject the ledger.
+    // The only valid shape is to drop the old entry and let the bridge - idempotent by
+    // design - rerun in its proper filename position.
+    const dropped = await sql`
+      DELETE FROM kysely_migrations
+      WHERE name = '1779580000001-RetireWorkflowLockSteps'
+    `.execute(this.db);
+    if (dropped.numAffectedRows && dropped.numAffectedRows > 0n) {
+      this.logger.warn(
+        '[fork upgrade] Normalized migration ledger: dropped the backdated 1779580000001-RetireWorkflowLockSteps entry (its predecessor is pending); the bridge will rerun in order.',
       );
     }
   }
