@@ -1,5 +1,5 @@
 import { WorkflowStepConfig } from '@immich/plugin-sdk';
-import { Kysely } from 'kysely';
+import { Kysely, sql } from 'kysely';
 import { ConfigRepository } from 'src/repositories/config.repository';
 import { DatabaseRepository } from 'src/repositories/database.repository';
 import { LoggingRepository } from 'src/repositories/logging.repository';
@@ -113,8 +113,12 @@ describe('fork upgrade bridge: RetireWorkflowLockSteps', () => {
 // runMigrations() normalizes the row - name AND timestamp (execution order is validated
 // too) - before the migrator runs.
 describe('fork upgrade bridge: ledger normalization for interim commit 1061114a0', () => {
-  it('renames and reorders the backdated ledger row, then migrates cleanly', async () => {
+  it('renames and reorders the backdated ledger row, then migrates cleanly - in any session timezone', async () => {
     const db = await getKyselyDB();
+
+    // The repair must not depend on the PostgreSQL session timezone (to_char renders local
+    // time; a literal 'Z' suffix would mislabel the instant and sort the row too early).
+    await sql`SET timezone = 'America/Los_Angeles'`.execute(db);
 
     // Simulate the 1061114a0 ledger: the bridge executed under its old name, early.
     await db
@@ -131,13 +135,22 @@ describe('fork upgrade bridge: ledger normalization for interim commit 1061114a0
     // Without normalization this throws "corrupted migrations: ... is missing".
     await expect(repository.runMigrations()).resolves.toBeUndefined();
 
+    // The bridge adopts its filename-order predecessor's timestamp verbatim; kysely's
+    // name tiebreak then places it exactly where the filename sorts - after the
+    // predecessor, but never past migrations added later.
     const rows = await db
       .selectFrom('kysely_migrations')
       .select(['name', 'timestamp'])
       .orderBy('timestamp', 'asc')
+      .orderBy('name', 'asc')
       .execute();
     const names = rows.map(({ name }) => name);
     expect(names).not.toContain('1779580000001-RetireWorkflowLockSteps');
-    expect(names.at(-1)).toBe('1784900000000-RetireWorkflowLockSteps');
+    const bridgeIndex = names.indexOf('1784900000000-RetireWorkflowLockSteps');
+    expect(names[bridgeIndex - 1]).toBe('1784836013770-MinFacePreferenceMigration');
+    expect(rows[bridgeIndex].timestamp).toBe(rows[bridgeIndex - 1].timestamp);
+
+    // A second startup is a no-op and still migrates cleanly.
+    await expect(repository.runMigrations()).resolves.toBeUndefined();
   });
 });
