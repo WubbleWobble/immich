@@ -585,16 +585,22 @@ export class DatabaseRepository {
     `.execute(this.db);
     if (preBridge.rows[0]?.needed) {
       await retireWorkflowLockSteps(this.db);
-      await sql`
+      // This runs outside kysely's migration lock, so a concurrent replica may have won
+      // the same repair between our check and this insert - the bridge is idempotent, and
+      // the loser must tolerate the winner's ledger row.
+      const recorded = await sql`
         INSERT INTO kysely_migrations (name, timestamp)
         SELECT '1784900000000-RetireWorkflowLockSteps', timestamp
         FROM kysely_migrations
         WHERE name = '1784836013770-MinFacePreferenceMigration'
+        ON CONFLICT (name) DO NOTHING
       `.execute(this.db);
-      this.logger.warn(
-        '[fork upgrade] Pre-bridge ledger detected: executed the workflow-lock bridge inline and recorded it. ' +
-          'Note: startups on the pre-bridge commits may already have cascade-deleted legacy assetLock workflow steps; those are only recoverable from backup.',
-      );
+      if (recorded.numAffectedRows && recorded.numAffectedRows > 0n) {
+        this.logger.warn(
+          '[fork upgrade] Pre-bridge ledger detected: executed the workflow-lock bridge inline and recorded it. ' +
+            'Note: startups on the pre-bridge commits may already have cascade-deleted legacy assetLock workflow steps; those are only recoverable from backup.',
+        );
+      }
     }
 
     // Interim integration-3.x ledgers executed the fork migrations under names that were
