@@ -1,4 +1,5 @@
 import {
+  Check,
   Column,
   CreateDateColumn,
   DeleteDateColumn,
@@ -18,6 +19,11 @@ import { AssetTable } from 'src/schema/tables/asset.table';
 
 @Table({ name: 'album' })
 @UpdatedAtTrigger('album_updatedAt')
+// Created by 1784910000001-AddAlbumSmartKind; declared here so the schema matches the code.
+@Check({
+  name: 'album_kind_filter_consistency',
+  expression: `("kind" = 'smart' AND "filter" IS NOT NULL) OR ("kind" = 'regular' AND "filter" IS NULL)`,
+})
 export class AlbumTable {
   @PrimaryGeneratedColumn()
   id!: Generated<string>;
