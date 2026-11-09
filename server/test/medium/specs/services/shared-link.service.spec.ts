@@ -5,6 +5,7 @@ import { AuthDto } from 'src/dtos/auth.dto.js';
 import { AlbumKind, AlbumUserRole, AssetType, AssetVisibility, Permission, SharedLinkType } from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { AlbumContainerRepository } from 'src/repositories/album-container.repository.js';
+import { AlbumRepository } from 'src/repositories/album.repository.js';
 import { CryptoRepository } from 'src/repositories/crypto.repository.js';
 import { DatabaseRepository } from 'src/repositories/database.repository.js';
 import { LockRepository } from 'src/repositories/lock.repository.js';
@@ -27,6 +28,7 @@ const setup = (db?: Kysely<DB>) => {
     database: db || defaultDatabase,
     real: [
       AccessRepository,
+      AlbumRepository,
       CryptoRepository,
       DatabaseRepository,
       LockRepository,
@@ -1280,6 +1282,59 @@ describe(SharedLinkService.name, () => {
       await expect(
         checkAccess(access, { auth: partnerVisitor, permission: Permission.AssetRead, ids: [partner.photoX.id] }),
       ).resolves.toEqual(new Set([partner.photoX.id]));
+    });
+  });
+
+  describe('fork: smart-album links accept no uploads (R36-5)', () => {
+    const SMART_UPLOAD_ERROR = 'Smart albums do not accept uploads';
+
+    it('defaults allowUpload to false for a smart album and refuses an explicit true', async () => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser();
+      const auth = factory.auth({ user });
+      const { album: smart } = await ctx.newAlbum({
+        ownerId: user.id,
+        kind: AlbumKind.Smart,
+        filter: { isFavorite: true },
+      });
+      const { album: regular } = await ctx.newAlbum({ ownerId: user.id });
+
+      await expect(sut.create(auth, { type: SharedLinkType.Album, albumId: smart.id })).resolves.toEqual(
+        expect.objectContaining({ allowUpload: false }),
+      );
+      await expect(
+        sut.create(auth, { type: SharedLinkType.Album, albumId: smart.id, allowUpload: false }),
+      ).resolves.toEqual(expect.objectContaining({ allowUpload: false }));
+      await expect(
+        sut.create(auth, { type: SharedLinkType.Album, albumId: smart.id, allowUpload: true }),
+      ).rejects.toThrow(SMART_UPLOAD_ERROR);
+
+      // regular albums keep the upstream default
+      await expect(sut.create(auth, { type: SharedLinkType.Album, albumId: regular.id })).resolves.toEqual(
+        expect.objectContaining({ allowUpload: true }),
+      );
+    });
+
+    it('refuses enabling uploads on an existing smart-album link', async () => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser();
+      const auth = factory.auth({ user });
+      const { album: smart } = await ctx.newAlbum({
+        ownerId: user.id,
+        kind: AlbumKind.Smart,
+        filter: { isFavorite: true },
+      });
+      const link = await sut.create(auth, { type: SharedLinkType.Album, albumId: smart.id });
+
+      await expect(sut.update(auth, link.id, { allowUpload: true })).rejects.toThrow(SMART_UPLOAD_ERROR);
+      await expect(sut.update(auth, link.id, { description: 'renamed' })).resolves.toEqual(
+        expect.objectContaining({ allowUpload: false, description: 'renamed' }),
+      );
+      // a legacy link created with uploads on can still be switched off
+      await ctx.database.updateTable('shared_link').set({ allowUpload: true }).where('id', '=', link.id).execute();
+      await expect(sut.update(auth, link.id, { allowUpload: false })).resolves.toEqual(
+        expect.objectContaining({ allowUpload: false }),
+      );
     });
   });
 });

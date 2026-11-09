@@ -11,6 +11,8 @@
     allowUpload: boolean;
     showMetadata: boolean;
     expiresAt: string | null;
+    /** Fork: false for a smart album's link - its membership is its filter, so it accepts no uploads. */
+    canUpload?: boolean;
   };
 
   let {
@@ -21,6 +23,7 @@
     allowUpload = $bindable(),
     showMetadata = $bindable(),
     expiresAt = $bindable(),
+    canUpload = true,
   }: Props = $props();
 
   $effect(() => {
@@ -60,7 +63,9 @@
     <Switch bind:checked={allowDownload} />
   </Field>
 
-  <Field label={$t('allow_public_user_to_upload')}>
-    <Switch bind:checked={allowUpload} />
-  </Field>
+  {#if canUpload}
+    <Field label={$t('allow_public_user_to_upload')}>
+      <Switch bind:checked={allowUpload} />
+    </Field>
+  {/if}
 </div>

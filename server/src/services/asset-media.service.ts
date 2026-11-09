@@ -20,6 +20,7 @@ import {
 import { AssetDownloadOriginalDto } from 'src/dtos/asset.dto.js';
 import { AuthDto } from 'src/dtos/auth.dto.js';
 import {
+  AlbumKind,
   AssetFileType,
   AssetVisibility,
   CacheControl,
@@ -51,7 +52,7 @@ export class AssetMediaService extends BaseService {
 
     const assetId = await this.assetRepository.getUploadAssetIdByChecksum(auth.user.id, fromChecksum(checksum));
     // Fork (7A.8a): never name a hidden asset; the upload proceeds and takes the checksum-constraint path below.
-    if (!assetId || (await this.isDuplicateHiddenFromSharedLink(auth, assetId))) {
+    if (!assetId || (await this.getSharedLinkHiddenDuplicate(auth, assetId)) === 'ungranted') {
       return;
     }
 
@@ -211,7 +212,8 @@ export class AssetMediaService extends BaseService {
           throw new InternalServerErrorException();
         }
 
-        if (await this.isDuplicateHiddenFromSharedLink(auth, duplicateId)) {
+        const hiddenDuplicate = await this.getSharedLinkHiddenDuplicate(auth, duplicateId);
+        if (hiddenDuplicate === 'ungranted') {
           // Fork (7A.8a): neither add the hidden asset to the link nor name it. Reply exactly like a fresh upload with
           // an id that is never persisted - the result for "no duplicate exists" (ruling R32), so the response is no
           // existence or lock-state oracle for the link holder.
@@ -219,7 +221,9 @@ export class AssetMediaService extends BaseService {
           return { status: AssetMediaStatus.CREATED, id: this.cryptoRepository.randomUUID() };
         }
 
-        if (auth.sharedLink) {
+        // Fork (R36-5): a hidden duplicate the link already grants is named (that reveals nothing new) but never
+        // re-filed through the link - adding a membership is a mutation on hidden content (§15.2).
+        if (auth.sharedLink && hiddenDuplicate === 'visible') {
           await this.addToSharedLink(auth.sharedLink, duplicateId);
         }
 
@@ -357,19 +361,22 @@ export class AssetMediaService extends BaseService {
   }
 
   /**
-   * Fork (7A.8a): whether a shared-link upload's checksum duplicate is an asset hidden for the link owner that the link
-   * does not already grant. A link that grants it (e.g. an album link to the locked album itself) reveals nothing new,
-   * so that duplicate keeps the regular response; adding it again would be a no-op.
+   * Fork (7A.8a, R36-5): how a shared-link upload's checksum duplicate relates to the link owner's locks - `visible`
+   * (not hidden, or no link), `granted` (hidden for the owner but already reachable through the link, e.g. an album
+   * link to the locked album itself, so naming it reveals nothing new) or `ungranted` (hidden and not reachable).
    */
-  private async isDuplicateHiddenFromSharedLink(auth: AuthDto, assetId: string): Promise<boolean> {
+  private async getSharedLinkHiddenDuplicate(
+    auth: AuthDto,
+    assetId: string,
+  ): Promise<'visible' | 'granted' | 'ungranted'> {
     if (!auth.sharedLink) {
-      return false;
+      return 'visible';
     }
     if (!(await BaseService.create(LockService, this).isAssetHiddenForSharedLinkOwner(auth, assetId))) {
-      return false;
+      return 'visible';
     }
     const granted = await this.checkAccess({ auth, permission: Permission.AssetRead, ids: [assetId] });
-    return !granted.has(assetId);
+    return granted.has(assetId) ? 'granted' : 'ungranted';
   }
 
   private async addToSharedLink(sharedLink: AuthSharedLink, assetId: string) {
@@ -379,7 +386,8 @@ export class AssetMediaService extends BaseService {
     }
 
     const album = await this.albumRepository.getById(sharedLink.albumId, { withAssets: false });
-    if (!album) {
+    // Fork (R36-5): a smart album's membership is its filter; an upload through its link files nothing into it.
+    if (!album || album.kind === AlbumKind.Smart) {
       return;
     }
 

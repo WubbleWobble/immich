@@ -97,7 +97,7 @@ export const getAlbumActions = ($t: MessageFormatter, album: AlbumResponseDto) =
     title: $t('create_link'),
     icon: mdiLink,
     color: 'primary',
-    onAction: () => modalManager.show(SharedLinkCreateModal, { albumId: album.id }),
+    onAction: () => modalManager.show(SharedLinkCreateModal, { albumId: album.id, canUpload: !isSmartAlbum(album) }),
   };
 
   const Delete: ActionItem = {

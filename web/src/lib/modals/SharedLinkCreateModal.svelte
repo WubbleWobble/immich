@@ -10,9 +10,11 @@
     onClose: () => void;
     albumId?: string;
     assetIds?: string[];
+    /** Fork: false for a smart album - the server refuses uploads to it. */
+    canUpload?: boolean;
   }
 
-  let { onClose, albumId, assetIds }: Props = $props();
+  let { onClose, albumId, assetIds, canUpload = true }: Props = $props();
 
   let description = $state('');
   let allowDownload = $state(true);
@@ -30,7 +32,7 @@
       albumId,
       assetIds,
       expiresAt,
-      allowUpload,
+      allowUpload: canUpload && allowUpload,
       description,
       password,
       allowDownload,
@@ -67,5 +69,6 @@
     bind:allowUpload
     bind:showMetadata
     bind:expiresAt
+    {canUpload}
   />
 </FormModal>

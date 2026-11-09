@@ -2,7 +2,7 @@ import { Kysely } from 'kysely';
 import { randomBytes } from 'node:crypto';
 import { AssetMediaStatus } from 'src/dtos/asset-media-response.dto.js';
 import { AssetMediaSize } from 'src/dtos/asset-media.dto.js';
-import { AssetFileType, SharedLinkType } from 'src/enum.js';
+import { AlbumKind, AssetFileType, SharedLinkType } from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { AlbumRepository } from 'src/repositories/album.repository.js';
 import { AssetRepository } from 'src/repositories/asset.repository.js';
@@ -340,6 +340,84 @@ describe(AssetService.name, () => {
       await expect(
         sut.uploadAsset(lockedLinkAuth, uploadDto, mediumFactory.uploadFile({ checksum: hidden.checksum })),
       ).resolves.toEqual({ id: hidden.id, status: AssetMediaStatus.DUPLICATE });
+      // ...but the granted hidden duplicate is not re-filed through the link (R36-5): no album write, no event
+      expect(ctx.getMock(EventRepository).emit).not.toHaveBeenCalledWith('AlbumUpdate', expect.anything());
+    });
+
+    it('a hidden duplicate granted through a smart-album link adds no album_asset row', async () => {
+      const { sut, ctx } = setup();
+      ctx.getMock(StorageRepository).utimes.mockResolvedValue();
+      ctx.getMock(EventRepository).emit.mockResolvedValue();
+      ctx.getMock(JobRepository).queue.mockResolvedValue();
+
+      const { user } = await ctx.newUser();
+      const { asset: hidden } = await ctx.newAsset({ ownerId: user.id, isFavorite: true });
+      const { album: locked } = await ctx.newAlbum({ ownerId: user.id }, [hidden.id]);
+      const { album: smart } = await ctx.newAlbum({
+        ownerId: user.id,
+        kind: AlbumKind.Smart,
+        filter: { isFavorite: true },
+      });
+      await ctx.get(LockRepository).lockAlbum(user.id, locked.id);
+      await ctx.get(LockRepository).lockAlbum(user.id, smart.id);
+      const sharedLink = await ctx.get(SharedLinkRepository).create({
+        key: randomBytes(50),
+        type: SharedLinkType.Album,
+        albumId: smart.id,
+        userId: user.id,
+        allowDownload: true,
+        allowUpload: true,
+      });
+
+      const auth = factory.auth({ user: { id: user.id }, sharedLink });
+      const uploadDto = { fileModifiedAt: new Date(), fileCreatedAt: new Date(), assetData: Buffer.from('some data') };
+      await expect(
+        sut.uploadAsset(auth, uploadDto, mediumFactory.uploadFile({ checksum: hidden.checksum })),
+      ).resolves.toEqual({ id: hidden.id, status: AssetMediaStatus.DUPLICATE });
+
+      await expect(
+        ctx.database.selectFrom('album_asset').select('assetId').where('albumId', '=', smart.id).execute(),
+      ).resolves.toEqual([]);
+      await expect(
+        ctx.database
+          .selectFrom('shared_link_asset')
+          .select('assetId')
+          .where('sharedLinkId', '=', sharedLink.id)
+          .execute(),
+      ).resolves.toEqual([]);
+      expect(ctx.getMock(EventRepository).emit).not.toHaveBeenCalledWith('AlbumUpdate', expect.anything());
+    });
+
+    it('an upload through a (legacy, upload-enabled) smart-album link files nothing into the smart album', async () => {
+      const { sut, ctx } = setup();
+      ctx.getMock(StorageRepository).utimes.mockResolvedValue();
+      ctx.getMock(EventRepository).emit.mockResolvedValue();
+      ctx.getMock(JobRepository).queue.mockResolvedValue();
+
+      const { user } = await ctx.newUser();
+      const { album: smart } = await ctx.newAlbum({
+        ownerId: user.id,
+        kind: AlbumKind.Smart,
+        filter: { isFavorite: true },
+      });
+      const sharedLink = await ctx.get(SharedLinkRepository).create({
+        key: randomBytes(50),
+        type: SharedLinkType.Album,
+        albumId: smart.id,
+        userId: user.id,
+        allowDownload: true,
+        allowUpload: true,
+      });
+
+      const auth = factory.auth({ user: { id: user.id }, sharedLink });
+      const uploadDto = { fileModifiedAt: new Date(), fileCreatedAt: new Date(), assetData: Buffer.from('some data') };
+      const response = await sut.uploadAsset(auth, uploadDto, mediumFactory.uploadFile());
+      expect(response).toEqual({ id: expect.any(String), status: AssetMediaStatus.CREATED });
+
+      await expect(
+        ctx.database.selectFrom('album_asset').select('assetId').where('albumId', '=', smart.id).execute(),
+      ).resolves.toEqual([]);
+      expect(ctx.getMock(EventRepository).emit).not.toHaveBeenCalledWith('AlbumUpdate', expect.anything());
     });
   });
 

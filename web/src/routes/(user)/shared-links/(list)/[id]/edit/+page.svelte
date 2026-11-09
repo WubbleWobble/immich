@@ -3,7 +3,7 @@
   import SharedLinkFormFields from '$lib/components/SharedLinkFormFields.svelte';
   import { Route } from '$lib/route';
   import { handleUpdateSharedLink } from '$lib/services/shared-link.service';
-  import { SharedLinkType } from '@immich/sdk';
+  import { AlbumKind, SharedLinkType } from '@immich/sdk';
   import { FormModal } from '@immich/ui';
   import { mdiLink } from '@mdi/js';
   import { t } from 'svelte-i18n';
@@ -25,6 +25,8 @@
   let slug = $state(sharedLink.slug ?? '');
   let shareType = sharedLink.album ? SharedLinkType.Album : SharedLinkType.Individual;
   let expiresAt = $state(sharedLink.expiresAt);
+  // Fork: a smart album's link accepts no uploads; always send false so a legacy upload-enabled link stays editable
+  const canUpload = sharedLink.album?.kind !== AlbumKind.Smart;
 
   const onClose = async () => {
     await goto(Route.sharedLinks());
@@ -35,7 +37,7 @@
       description,
       password: password ?? null,
       expiresAt,
-      allowUpload,
+      allowUpload: canUpload && allowUpload,
       allowDownload,
       showMetadata,
       slug: slug.trim() ?? null,
@@ -71,5 +73,6 @@
     bind:allowUpload
     bind:showMetadata
     bind:expiresAt
+    {canUpload}
   />
 </FormModal>

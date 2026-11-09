@@ -11,10 +11,20 @@ import {
   SharedLinkSearchDto,
   mapSharedLink,
 } from 'src/dtos/shared-link.dto.js';
-import { Permission, SharedLinkType } from 'src/enum.js';
+import { AlbumKind, Permission, SharedLinkType } from 'src/enum.js';
 import { BaseService } from 'src/services/base.service.js';
 import { LockService, SharedLinkLockTarget } from 'src/services/lock.service.js';
 import { OpenGraphTags, findOrFail, getExternalDomain } from 'src/utils/misc.js';
+
+/**
+ * Fork (R36-5): a smart album has no stored membership, so a link to one cannot accept uploads. An explicit request
+ * for uploads is refused rather than silently dropped; leaving it unspecified defaults to no uploads.
+ */
+const assertUploadAllowed = (isSmartAlbum: boolean, allowUpload: boolean | undefined) => {
+  if (isSmartAlbum && allowUpload === true) {
+    throw new BadRequestException('Smart albums do not accept uploads');
+  }
+};
 
 @Injectable()
 export class SharedLinkService extends BaseService {
@@ -71,6 +81,7 @@ export class SharedLinkService extends BaseService {
   }
 
   async create(auth: AuthDto, dto: SharedLinkCreateDto): Promise<SharedLinkResponseDto> {
+    let isSmartAlbum = false;
     switch (dto.type) {
       case SharedLinkType.Album: {
         if (!dto.albumId) {
@@ -79,6 +90,9 @@ export class SharedLinkService extends BaseService {
         await this.requireAccess({ auth, permission: Permission.AlbumShare, ids: [dto.albumId] });
         // Fork (audit 1): a public link to an album hidden for the manager would hand out the hidden content
         await this.lockService().assertAlbumVisibleForViewer(auth, dto.albumId);
+        const album = await this.albumRepository.getById(dto.albumId, { withAssets: false });
+        isSmartAlbum = album?.kind === AlbumKind.Smart;
+        assertUploadAllowed(isSmartAlbum, dto.allowUpload);
         break;
       }
 
@@ -109,7 +123,8 @@ export class SharedLinkService extends BaseService {
         description: dto.description || null,
         password: dto.password,
         expiresAt: dto.expiresAt || null,
-        allowUpload: dto.allowUpload ?? true,
+        // Fork (R36-5): a smart album's link defaults to no uploads (its membership is its filter)
+        allowUpload: dto.allowUpload ?? !isSmartAlbum,
         allowDownload: dto.showMetadata === false ? false : (dto.allowDownload ?? true),
         showExif: dto.showMetadata ?? true,
         slug: dto.slug || null,
@@ -130,7 +145,8 @@ export class SharedLinkService extends BaseService {
   }
 
   async update(auth: AuthDto, id: string, dto: SharedLinkEditDto) {
-    await this.findManageableOrFail(auth, id);
+    const existing = await this.findManageableOrFail(auth, id);
+    assertUploadAllowed(existing.album?.kind === AlbumKind.Smart, dto.allowUpload);
     try {
       const sharedLink = await this.sharedLinkRepository.update({
         id,

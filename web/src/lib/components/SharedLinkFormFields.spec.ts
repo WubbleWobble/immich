@@ -29,4 +29,19 @@ describe('SharedLinkFormFields component', () => {
     expect(isChecked(showMetadataSwitch)).toBe(false);
     expect(isChecked(allowDownloadSwitch)).toBe(false);
   });
+
+  it('hides the upload switch for a smart album link', () => {
+    const { container } = renderWithTooltips(SharedLinkFormFields, {
+      slug: '',
+      password: '',
+      description: '',
+      allowDownload: true,
+      allowUpload: false,
+      showMetadata: true,
+      expiresAt: null,
+      canUpload: false,
+    });
+
+    expect(container.querySelectorAll('[role="switch"], input[type="checkbox"]')).toHaveLength(2);
+  });
 });
