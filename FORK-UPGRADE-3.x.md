@@ -95,6 +95,20 @@ commits.
 | Upload duplicate of an asset hidden for a non-elevated session (R49) | `x-immich-checksum` pre-check falls through; `bulk-upload-check` answers `accept`; the upload answers `201 { id: <fresh uuid>, status: created }` and stores nothing. Elevated sessions get the real `duplicate` + id |
 | Asset bytes (thumbnail, preview, original, video playback, asset files, HLS segments) (R50) | `Cache-Control: private, no-cache, no-transform` (was `private, max-age=86400, ... stale-while-revalidate=2592000, stale-if-error=2592000`) |
 
+## Shared folders in the web app
+
+- **Items shared from inside a private folder appear at the recipient's
+  root (T3).** A folder or album shared directly, whose parent folder is
+  not shared with the recipient, is listed at the top level of the
+  recipient's Albums page and in the sidebar's recent albums. The private
+  parent is never fetched or named, and the breadcrumb starts at the
+  shared folder. The owner's own folder tree is unchanged.
+- **Editing follows the effective role (T4).** The album page's editing
+  controls (edit, title and description, Add Photos) use `viewerRole`, so
+  an Editor through a shared folder gets them without a direct share. A
+  Viewer through a folder does not. Smart albums stay read-only, and only
+  the owner can change their filter.
+
 ## Privacy model limits
 
 State these plainly to users.
@@ -170,6 +184,14 @@ State these plainly to users.
   scheduled trash retention job (automatic deletion after the configured
   number of days) is a separate policy and is unchanged: it still removes
   every expired trashed photo, hidden or not.
+- **Person portraits follow the reveal (T6).** A portrait cropped from a
+  photo in your locked album shows only in an elevated session with that
+  lock revealed. The web app now loads portraits with the session's reveal
+  state and reloads them when the reveal or elevation changes, so a revealed
+  portrait appears without a page reload, and hiding it again blanks it.
+  Portraits load through the API, not as plain image links. They no longer
+  go through the browser's lazy image loading; the page loads them when they
+  near the viewport instead.
 - **CLI and API-key uploads re-send hidden files every run (R49).** API-key
   sessions are never elevated. So `immich-cli` and `immich-go` see an
   already-hidden file as new each time, upload it again and get a phantom
