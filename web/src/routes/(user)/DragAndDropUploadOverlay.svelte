@@ -5,11 +5,19 @@
   import { dragAndDropFilesStore } from '$lib/stores/drag-and-drop-files.store';
   import { fileUploadHandler } from '$lib/utils/file-uploader';
   import { isAlbumsRoute } from '$lib/utils/navigation';
+  import { getUploadTargetAlbumId } from '$lib/utils/upload-target';
+  import type { AlbumResponseDto } from '@immich/sdk';
   import { Logo } from '@immich/ui';
   import { t } from 'svelte-i18n';
   import { fade } from 'svelte/transition';
 
-  let albumId = $derived(isAlbumsRoute(page.route?.id) ? page.params.albumId : undefined);
+  let albumId = $derived(
+    getUploadTargetAlbumId(
+      isAlbumsRoute(page.route?.id),
+      page.params.albumId,
+      (page.data as { album?: AlbumResponseDto }).album,
+    ),
+  );
 
   let dragStartTarget: EventTarget | null = $state(null);
   let isInternalDrag = false;
