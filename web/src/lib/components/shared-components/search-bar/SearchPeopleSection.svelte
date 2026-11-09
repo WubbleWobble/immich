@@ -1,9 +1,8 @@
 <script lang="ts">
-  import ImageThumbnail from '$lib/components/assets/thumbnail/ImageThumbnail.svelte';
+  import PersonThumbnail from '$lib/components/assets/thumbnail/PersonThumbnail.svelte';
   import { getPeople, getSearchPeopleTitle } from './search-bar-utils';
   import SingleGridRow from '$lib/components/shared-components/SingleGridRow.svelte';
   import SearchBar from '$lib/elements/SearchBar.svelte';
-  import { getPeopleThumbnailUrl } from '$lib/utils';
   import { type PersonResponseDto } from '@immich/sdk';
   import { Button, Icon, LoadingSpinner, Text } from '@immich/ui';
   import { mdiArrowRight, mdiCheck, mdiClose } from '@mdi/js';
@@ -68,13 +67,7 @@
             onclick={() => togglePersonSelection(person.id, people)}
           >
             <div class="relative w-full">
-              <ImageThumbnail
-                circle
-                shadow
-                url={getPeopleThumbnailUrl(person)}
-                altText={person.name}
-                widthStyle="100%"
-              />
+              <PersonThumbnail circle shadow {person} altText={person.name} widthStyle="100%" />
               {#if selectedPeople.has(person.id)}
                 <div
                   class="absolute top-0 flex size-full items-center justify-center rounded-full bg-primary opacity-75"

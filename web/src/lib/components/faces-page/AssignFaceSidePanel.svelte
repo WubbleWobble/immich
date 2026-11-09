@@ -2,7 +2,7 @@
   import SearchPeople from '$lib/components/faces-page/PeopleSearch.svelte';
   import { timeBeforeShowLoadingSpinner } from '$lib/constants';
   import { assetViewerManager } from '$lib/managers/asset-viewer-manager.svelte';
-  import { getPeopleThumbnailUrl, handlePromiseError } from '$lib/utils';
+  import { handlePromiseError } from '$lib/utils';
   import { handleError } from '$lib/utils/handle-error';
   import { zoomImageToBase64 } from '$lib/utils/people-utils';
   import { getPersonNameWithHiddenValue } from '$lib/utils/person';
@@ -13,7 +13,7 @@
   import { t } from 'svelte-i18n';
   import { linear } from 'svelte/easing';
   import { fly } from 'svelte/transition';
-  import ImageThumbnail from '../assets/thumbnail/ImageThumbnail.svelte';
+  import PersonThumbnail from '$lib/components/assets/thumbnail/PersonThumbnail.svelte';
 
   interface Props {
     editedFace: AssetFaceResponseDto;
@@ -159,10 +159,10 @@
             <div class="w-fit">
               <button type="button" class="w-22.5" onclick={() => onReassign(person)}>
                 <div class="relative">
-                  <ImageThumbnail
+                  <PersonThumbnail
                     curve
                     shadow
-                    url={getPeopleThumbnailUrl(person)}
+                    {person}
                     altText={$getPersonNameWithHiddenValue(person.name, person.isHidden)}
                     title={$getPersonNameWithHiddenValue(person.name, person.isHidden)}
                     widthStyle="90px"

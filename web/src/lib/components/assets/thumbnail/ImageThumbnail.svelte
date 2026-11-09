@@ -6,7 +6,12 @@
   import type { ClassValue } from 'svelte/elements';
 
   interface Props {
-    url: string;
+    /** Undefined while the source is not ready yet (e.g. a portrait still loading): a placeholder keeps the box. */
+    url: string | undefined;
+    /** The source could not be obtained: show the broken-image state. */
+    failed?: boolean;
+    /** The placeholder element shown while `url` is undefined (e.g. to observe it for lazy loading). */
+    placeholder?: HTMLElement;
     altText: string | undefined;
     title?: string | null;
     heightStyle?: string | undefined;
@@ -26,6 +31,8 @@
 
   let {
     url,
+    failed = false,
+    placeholder = $bindable(),
     altText,
     title = null,
     heightStyle = undefined,
@@ -70,8 +77,15 @@
   let style = $derived(`width: ${widthStyle}; height: ${heightStyle ?? ''};`);
 </script>
 
-{#if errored}
+{#if errored || failed}
   <BrokenAsset class={[sharedClasses, brokenAssetClass]} width={widthStyle} height={heightStyle} />
+{:else if url === undefined}
+  <div
+    bind:this={placeholder}
+    class={['bg-gray-300 dark:bg-gray-700', sharedClasses, imageClass]}
+    {style}
+    title={title ?? undefined}
+  ></div>
 {:else}
   <Image
     src={url}

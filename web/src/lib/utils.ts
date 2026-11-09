@@ -7,14 +7,12 @@ import {
   getAssetPlaybackPath,
   getAssetThumbnailPath,
   getBaseUrl,
-  getPeopleThumbnailPath,
   getUserProfileImagePath,
   linkOAuthAccount,
   startOAuth,
   unlinkOAuthAccount,
   type AssetResponseDto,
   type MemoryResponseDto,
-  type PersonResponseDto,
   type ServerVersionResponseDto,
   type SharedLinkResponseDto,
   type UserResponseDto,
@@ -253,9 +251,6 @@ export const getAssetHlsSessionUrl = (id: string, sessionId: string) => {
 
 export const getProfileImageUrl = (user: UserResponseDto) =>
   createUrl(getUserProfileImagePath(user.id), { updatedAt: user.profileChangedAt });
-
-export const getPeopleThumbnailUrl = (person: PersonResponseDto, updatedAt?: string) =>
-  createUrl(getPeopleThumbnailPath(person.id), { updatedAt: updatedAt ?? person.updatedAt });
 
 export const copyToClipboard = async (secret: string | unknown) => {
   const $t = get(t);

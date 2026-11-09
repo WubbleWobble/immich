@@ -1,12 +1,11 @@
 <script lang="ts">
-  import { getPeopleThumbnailUrl } from '$lib/utils';
   import { handleError } from '$lib/utils/handle-error';
   import { mergePeople, type PersonResponseDto } from '@immich/sdk';
   import { FormModal, Icon, IconButton, toastManager } from '@immich/ui';
   import { mdiArrowLeft, mdiCallMerge, mdiSwapHorizontal } from '@mdi/js';
   import { onMount, tick } from 'svelte';
   import { t } from 'svelte-i18n';
-  import ImageThumbnail from '../components/assets/thumbnail/ImageThumbnail.svelte';
+  import PersonThumbnail from '$lib/components/assets/thumbnail/PersonThumbnail.svelte';
 
   type Props = {
     personToMerge: PersonResponseDto;
@@ -62,13 +61,7 @@
       <div class="flex size-20 items-center px-1 md:size-24 md:px-2">
         <!-- Trigger a re-render on person change as <Image> captures only the first src -->
         {#key personToMerge.id}
-          <ImageThumbnail
-            circle
-            shadow
-            url={getPeopleThumbnailUrl(personToMerge)}
-            altText={personToMerge.name}
-            widthStyle="100%"
-          />
+          <PersonThumbnail circle shadow person={personToMerge} altText={personToMerge.name} widthStyle="100%" />
         {/key}
       </div>
 
@@ -102,11 +95,11 @@
         }}
       >
         {#key personToBeMergedInto.id}
-          <ImageThumbnail
+          <PersonThumbnail
             border={potentialMergePeople.length > 0}
             circle
             shadow
-            url={getPeopleThumbnailUrl(personToBeMergedInto)}
+            person={personToBeMergedInto}
             altText={personToBeMergedInto.name}
             widthStyle="100%"
           />
@@ -123,14 +116,7 @@
             {#each potentialMergePeople as person (person.id)}
               <div class="size-24 md:size-28">
                 <button type="button" class="w-full p-2" onclick={() => changePersonToMerge(person)}>
-                  <ImageThumbnail
-                    border={true}
-                    circle
-                    shadow
-                    url={getPeopleThumbnailUrl(person)}
-                    altText={person.name}
-                    widthStyle="100%"
-                  />
+                  <PersonThumbnail border={true} circle shadow {person} altText={person.name} widthStyle="100%" />
                 </button>
               </div>
             {/each}

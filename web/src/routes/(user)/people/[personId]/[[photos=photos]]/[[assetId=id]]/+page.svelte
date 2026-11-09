@@ -5,7 +5,7 @@
   import { listNavigation } from '$lib/actions/list-navigation';
   import { scrollMemoryClearer } from '$lib/actions/scroll-memory';
   import ActionMenuItem from '$lib/components/ActionMenuItem.svelte';
-  import ImageThumbnail from '$lib/components/assets/thumbnail/ImageThumbnail.svelte';
+  import PersonThumbnail from '$lib/components/assets/thumbnail/PersonThumbnail.svelte';
   import OnEvents from '$lib/components/OnEvents.svelte';
   import ButtonContextMenu from '$lib/components/shared-components/context-menu/ButtonContextMenu.svelte';
   import MenuOption from '$lib/components/shared-components/context-menu/MenuOption.svelte';
@@ -32,7 +32,6 @@
   import { getPersonActions, handleUpdatePersonName } from '$lib/services/person.service';
   import { locale } from '$lib/stores/preferences.store';
   import { websocketEvents } from '$lib/stores/websocket';
-  import { getPeopleThumbnailUrl } from '$lib/utils';
   import { handleError } from '$lib/utils/handle-error';
   import { normalizeSearchString } from '$lib/utils/string-utils';
   import { AssetVisibility, searchPerson, updatePerson, type PersonResponseDto } from '@immich/sdk';
@@ -72,7 +71,8 @@
   const altNames = $derived([
     ...new Set(person.otherPeople.map(({ name }) => name).filter((name) => !!name && name !== person.name)),
   ]);
-  let thumbnailData = $derived(getPeopleThumbnailUrl(person));
+  // Bumped when the server regenerates this person's portrait, to refetch it.
+  let thumbnailCacheKey = $state<string>();
 
   let timelineManager = $state<TimelineManager>() as TimelineManager;
   const options = $derived({ visibility: AssetVisibility.Timeline, personId: data.person.id, withPartners: true });
@@ -110,7 +110,7 @@
 
     return websocketEvents.on('on_person_thumbnail', (personId: string) => {
       if (person.id === personId) {
-        thumbnailData = getPeopleThumbnailUrl(person, Date.now().toString());
+        thumbnailCacheKey = Date.now().toString();
       }
     });
   });
@@ -374,14 +374,15 @@
                 name={person.name}
                 bind:isSearchingPeople
                 onChange={handleNameChange}
-                {thumbnailData}
+                {thumbnailCacheKey}
               />
             {:else}
               <div class="relative flex gap-4">
-                <ImageThumbnail
+                <PersonThumbnail
                   circle
                   shadow
-                  url={thumbnailData}
+                  {person}
+                  cacheKey={thumbnailCacheKey}
                   altText={person.name}
                   widthStyle="3.375rem"
                   heightStyle="3.375rem"
@@ -452,10 +453,10 @@
                         : ''}"
                       onclick={() => handleSuggestPeople(person)}
                     >
-                      <ImageThumbnail
+                      <PersonThumbnail
                         circle
                         shadow
-                        url={getPeopleThumbnailUrl(person)}
+                        {person}
                         altText={person.name}
                         widthStyle="2rem"
                         heightStyle="2rem"

@@ -1,7 +1,6 @@
 <script lang="ts">
-  import ImageThumbnail from '$lib/components/assets/thumbnail/ImageThumbnail.svelte';
+  import PersonThumbnail from '$lib/components/assets/thumbnail/PersonThumbnail.svelte';
   import SearchBar from '$lib/elements/SearchBar.svelte';
-  import { getPeopleThumbnailUrl } from '$lib/utils';
   import { normalizeSearchString } from '$lib/utils/string-utils';
   import { type PersonResponseDto } from '@immich/sdk';
   import {
@@ -75,7 +74,7 @@
         <div class="flex min-h-0 grow immich-scrollbar flex-col gap-2 overflow-y-auto sm:max-h-120">
           {#each namedPeople as person (person.id)}
             <ListButton onclick={() => selectPerson(person)} selected={selectedIds.has(person.id)}>
-              <ImageThumbnail circle url={getPeopleThumbnailUrl(person)} altText={person.name} widthStyle="4rem" />
+              <PersonThumbnail circle {person} altText={person.name} widthStyle="4rem" />
               <Text fontWeight="medium" class="grow truncate text-start">{person.name}</Text>
             </ListButton>
           {/each}
@@ -90,7 +89,7 @@
                     ? 'ring-2 ring-primary'
                     : ''}"
                 >
-                  <ImageThumbnail circle url={getPeopleThumbnailUrl(person)} altText={person.name} widthStyle="4rem" />
+                  <PersonThumbnail circle {person} altText={person.name} widthStyle="4rem" />
                 </button>
               {/each}
             </div>

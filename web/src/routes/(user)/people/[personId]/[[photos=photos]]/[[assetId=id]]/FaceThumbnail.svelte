@@ -1,7 +1,6 @@
 <script lang="ts">
-  import { getPeopleThumbnailUrl } from '$lib/utils';
   import { type PersonResponseDto } from '@immich/sdk';
-  import ImageThumbnail from '$lib/components/assets/thumbnail/ImageThumbnail.svelte';
+  import PersonThumbnail from '$lib/components/assets/thumbnail/PersonThumbnail.svelte';
 
   interface Props {
     person: PersonResponseDto;
@@ -42,7 +41,7 @@
   >
     <!-- Trigger a re-render on person change as <Image> captures only the first src -->
     {#key person.id}
-      <ImageThumbnail {circle} url={getPeopleThumbnailUrl(person)} altText={person.name} widthStyle="100%" shadow />
+      <PersonThumbnail {circle} {person} altText={person.name} widthStyle="100%" shadow />
     {/key}
   </div>
 

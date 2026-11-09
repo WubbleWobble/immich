@@ -45,6 +45,21 @@ class LockManager {
     });
   }
 
+  /**
+   * Changes whenever elevation, the lock sets or the reveal set change. Media fetched by the page itself (not through
+   * the service worker) and judged under the previous state must be refetched then - e.g. person portraits (T6).
+   */
+  get visibilityKey() {
+    const sorted = (ids: Iterable<string>) => [...ids].sort();
+    return JSON.stringify([
+      this.isElevated,
+      sorted(this.lockedAlbumIds),
+      sorted(this.lockedContainerIds),
+      sorted(this.revealedAlbumIds),
+      sorted(this.revealedContainerIds),
+    ]);
+  }
+
   /** Refresh elevation status; while elevated, also refresh the lock sets. */
   async refresh() {
     const wasElevated = this.isElevated;

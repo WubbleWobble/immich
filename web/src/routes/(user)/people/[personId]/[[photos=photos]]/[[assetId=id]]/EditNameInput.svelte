@@ -3,13 +3,14 @@
   import { type PersonResponseDto } from '@immich/sdk';
   import { Button } from '@immich/ui';
   import { t } from 'svelte-i18n';
-  import ImageThumbnail from '$lib/components/assets/thumbnail/ImageThumbnail.svelte';
+  import PersonThumbnail from '$lib/components/assets/thumbnail/PersonThumbnail.svelte';
 
   interface Props {
     person: PersonResponseDto;
     name: string;
     suggestedPeople: PersonResponseDto[];
-    thumbnailData: string;
+    /** Changes when the portrait was regenerated. */
+    thumbnailCacheKey?: string;
     isSearchingPeople: boolean;
     onChange: (name: string) => void;
   }
@@ -18,7 +19,7 @@
     person,
     name = $bindable(),
     suggestedPeople = $bindable(),
-    thumbnailData,
+    thumbnailCacheKey,
     isSearchingPeople = $bindable(),
     onChange,
   }: Props = $props();
@@ -34,7 +35,15 @@
     ? 'rounded-t-lg dark:border-immich-dark-gray'
     : 'rounded-lg'} border border-gray-200 bg-gray-100 p-2 dark:border-immich-dark-gray dark:bg-gray-700"
 >
-  <ImageThumbnail circle shadow url={thumbnailData} altText={person.name} widthStyle="2rem" heightStyle="2rem" />
+  <PersonThumbnail
+    circle
+    shadow
+    {person}
+    cacheKey={thumbnailCacheKey}
+    altText={person.name}
+    widthStyle="2rem"
+    heightStyle="2rem"
+  />
   <form class="ms-4 flex w-full justify-between gap-16" autocomplete="off" {onsubmit}>
     <SearchPeople
       bind:searchName={name}

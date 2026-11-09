@@ -1,7 +1,6 @@
 <script lang="ts">
-  import ImageThumbnail from '$lib/components/assets/thumbnail/ImageThumbnail.svelte';
+  import PersonThumbnail from '$lib/components/assets/thumbnail/PersonThumbnail.svelte';
   import SearchBar from '$lib/elements/SearchBar.svelte';
-  import { getPeopleThumbnailUrl } from '$lib/utils';
   import { handleError } from '$lib/utils/handle-error';
   import { normalizeSearchString } from '$lib/utils/string-utils';
   import { getAllPeople, type PersonResponseDto } from '@immich/sdk';
@@ -80,13 +79,7 @@
                   ? 'bg-primary/10 ring-2 ring-primary'
                   : ''}"
               >
-                <ImageThumbnail
-                  circle
-                  shadow
-                  url={getPeopleThumbnailUrl(person)}
-                  altText={person.name}
-                  widthStyle="100%"
-                />
+                <PersonThumbnail circle shadow {person} altText={person.name} widthStyle="100%" />
                 <p class="line-clamp-2 text-center text-sm font-medium">{person.name}</p>
               </button>
             {/each}

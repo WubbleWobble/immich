@@ -1,11 +1,10 @@
 <script lang="ts">
-  import ImageThumbnail from '$lib/components/assets/thumbnail/ImageThumbnail.svelte';
+  import PersonThumbnail from '$lib/components/assets/thumbnail/PersonThumbnail.svelte';
   import { assetViewerManager } from '$lib/managers/asset-viewer-manager.svelte';
   import { authManager } from '$lib/managers/auth-manager.svelte';
   import { Route } from '$lib/route';
   import { faceManager } from '$lib/stores/face.svelte';
   import { locale } from '$lib/stores/preferences.store';
-  import { getPeopleThumbnailUrl } from '$lib/utils';
   import { type AssetResponseDto } from '@immich/sdk';
   import { IconButton, Text } from '@immich/ui';
   import { mdiEye, mdiEyeOff, mdiPencil, mdiPlus } from '@mdi/js';
@@ -113,10 +112,10 @@
           onpointerenter={() => assetViewerManager.setHighlightedFaces(personFaces)}
           onpointerleave={() => assetViewerManager.clearHighlightedFaces()}
         >
-          <ImageThumbnail
+          <PersonThumbnail
             curve
             shadow
-            url={getPeopleThumbnailUrl(person)}
+            {person}
             altText={person.name}
             title={person.name}
             widthStyle="100%"

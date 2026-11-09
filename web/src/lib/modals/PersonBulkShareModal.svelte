@@ -1,10 +1,9 @@
 <script lang="ts">
-  import ImageThumbnail from '$lib/components/assets/thumbnail/ImageThumbnail.svelte';
+  import PersonThumbnail from '$lib/components/assets/thumbnail/PersonThumbnail.svelte';
   import UserAvatar from '$lib/components/shared-components/UserAvatar.svelte';
   import { authManager } from '$lib/managers/auth-manager.svelte';
   import PeopleSelectionModal from '$lib/modals/PeopleSelectionModal.svelte';
   import { handleBulkUpsert } from '$lib/services/person-user.service';
-  import { getPeopleThumbnailUrl } from '$lib/utils';
   import { handleError } from '$lib/utils/handle-error';
   import { getAllPeople, type PersonResponseDto, type UserResponseDto } from '@immich/sdk';
   import {
@@ -220,7 +219,7 @@
           <div class="immich-scrollbar overflow-y-auto sm:max-h-64">
             {#each selectedPeople as person (person.id)}
               <div class="flex items-center gap-3 rounded-lg px-2 py-1 hover:bg-subtle">
-                <ImageThumbnail circle url={getPeopleThumbnailUrl(person)} altText={person.name} widthStyle="2.5rem" />
+                <PersonThumbnail circle {person} altText={person.name} widthStyle="2.5rem" />
                 <Text size="small" class="grow truncate">{person.name}</Text>
               </div>
             {:else}

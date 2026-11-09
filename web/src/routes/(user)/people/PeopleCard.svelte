@@ -1,9 +1,8 @@
 <script lang="ts">
-  import ImageThumbnail from '$lib/components/assets/thumbnail/ImageThumbnail.svelte';
+  import PersonThumbnail from '$lib/components/assets/thumbnail/PersonThumbnail.svelte';
   import PersonIndicator from '$lib/components/faces-page/PersonIndicator.svelte';
   import { Route } from '$lib/route';
   import { getPersonActions } from '$lib/services/person.service';
-  import { getPeopleThumbnailUrl } from '$lib/utils';
   import { type PersonResponseDto } from '@immich/sdk';
   import { ContextMenuButton } from '@immich/ui';
   import { mdiAccountMultipleCheckOutline } from '@mdi/js';
@@ -35,9 +34,9 @@
 <div id="people-card" class="relative" role="group">
   <a href={Route.viewPerson(person, { previousRoute: Route.people() })} draggable="false" class="group">
     <div class="@container relative size-full rounded-xl brightness-95 filter">
-      <ImageThumbnail
+      <PersonThumbnail
         shadow
-        url={getPeopleThumbnailUrl(person)}
+        {person}
         altText={person.name}
         title={person.name}
         widthStyle="100%"

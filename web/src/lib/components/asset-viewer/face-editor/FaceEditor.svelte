@@ -1,10 +1,9 @@
 <script lang="ts">
   import { shortcut } from '$lib/actions/shortcut';
-  import ImageThumbnail from '$lib/components/assets/thumbnail/ImageThumbnail.svelte';
+  import PersonThumbnail from '$lib/components/assets/thumbnail/PersonThumbnail.svelte';
   import { assetViewerManager } from '$lib/managers/asset-viewer-manager.svelte';
   import FaceCreateTagModal from '$lib/modals/CreateFaceModal.svelte';
   import { faceManager } from '$lib/stores/face.svelte';
-  import { getPeopleThumbnailUrl } from '$lib/utils';
   import { getNaturalSize, scaleToFit } from '$lib/utils/container-utils';
   import { handleError } from '$lib/utils/handle-error';
   import { normalizeSearchString } from '$lib/utils/string-utils';
@@ -398,10 +397,10 @@
               type="button"
               class="flex w-full place-items-center gap-2 rounded-lg py-2 ps-1 pe-4 hover:bg-immich-primary/25"
             >
-              <ImageThumbnail
+              <PersonThumbnail
                 curve
                 shadow
-                url={getPeopleThumbnailUrl(person)}
+                {person}
                 altText={person.name}
                 title={person.name}
                 widthStyle="30px"

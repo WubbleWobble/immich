@@ -5,7 +5,7 @@
   import { assetViewerManager } from '$lib/managers/asset-viewer-manager.svelte';
   import { eventManager } from '$lib/managers/event-manager.svelte';
   import { languageManager } from '$lib/managers/language-manager.svelte';
-  import { getPeopleThumbnailUrl, handlePromiseError } from '$lib/utils';
+  import { handlePromiseError } from '$lib/utils';
   import { handleError } from '$lib/utils/handle-error';
   import { zoomImageToBase64 } from '$lib/utils/people-utils';
   import { getPersonNameWithHiddenValue } from '$lib/utils/person';
@@ -25,6 +25,7 @@
   import { linear } from 'svelte/easing';
   import { fly } from 'svelte/transition';
   import ImageThumbnail from '../assets/thumbnail/ImageThumbnail.svelte';
+  import PersonThumbnail from '$lib/components/assets/thumbnail/PersonThumbnail.svelte';
   import AssignFaceSidePanel from './AssignFaceSidePanel.svelte';
 
   interface Props {
@@ -262,11 +263,11 @@
                     heightStyle={thumbnailWidth}
                   />
                 {:else if selectedPersonToReassign[face.id]}
-                  <ImageThumbnail
+                  <PersonThumbnail
                     curve
                     shadow
                     highlighted={isHighlighted}
-                    url={getPeopleThumbnailUrl(selectedPersonToReassign[face.id])}
+                    person={selectedPersonToReassign[face.id]}
                     altText={selectedPersonToReassign[face.id].name}
                     title={$getPersonNameWithHiddenValue(
                       selectedPersonToReassign[face.id].name,
@@ -277,11 +278,11 @@
                     hidden={selectedPersonToReassign[face.id].isHidden}
                   />
                 {:else if face.person}
-                  <ImageThumbnail
+                  <PersonThumbnail
                     curve
                     shadow
                     highlighted={isHighlighted}
-                    url={getPeopleThumbnailUrl(face.person)}
+                    person={face.person}
                     altText={face.person.name}
                     title={$getPersonNameWithHiddenValue(face.person.name, face.person.isHidden)}
                     widthStyle={thumbnailWidth}
