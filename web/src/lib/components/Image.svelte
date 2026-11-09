@@ -1,6 +1,6 @@
 <script lang="ts">
   import { isFirefox } from '$lib/utils/asset-utils';
-  import { cancelImageUrl } from '$lib/utils/sw-messaging';
+  import { trackImageRequest, type ImageRequest } from '$lib/utils/sw-messaging';
   import { onDestroy, untrack } from 'svelte';
   import type { HTMLImgAttributes } from 'svelte/elements';
 
@@ -17,6 +17,7 @@
   let capturedSource: string | undefined = $state();
   let loaded = $state(false);
   let destroyed = false;
+  let request: ImageRequest | undefined;
 
   $effect(() => {
     if (src === undefined || capturedSource !== undefined) {
@@ -24,6 +25,7 @@
     }
 
     capturedSource = src;
+    request = trackImageRequest(src);
     untrack(() => {
       onStart?.();
     });
@@ -31,9 +33,7 @@
 
   onDestroy(() => {
     destroyed = true;
-    if (capturedSource !== undefined) {
-      cancelImageUrl(capturedSource);
-    }
+    request?.cancel();
   });
 
   const completeLoad = () => {
@@ -45,6 +45,7 @@
   };
 
   const handleLoad = () => {
+    request?.settle();
     if (destroyed || !src) {
       return;
     }
@@ -58,6 +59,7 @@
   };
 
   const handleError = () => {
+    request?.settle();
     if (destroyed || !src) {
       return;
     }

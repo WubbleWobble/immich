@@ -1,10 +1,17 @@
-import { cancelImageUrl } from '$lib/utils/sw-messaging';
+import { trackImageRequest } from '$lib/utils/sw-messaging';
 
 export function loadImage(src: string, onLoad: () => void, onError: () => void, onStart?: () => void) {
   let destroyed = false;
 
-  const handleLoad = () => !destroyed && onLoad();
-  const handleError = () => !destroyed && onError();
+  const request = trackImageRequest(src);
+  const handleLoad = () => {
+    request.settle();
+    return !destroyed && onLoad();
+  };
+  const handleError = () => {
+    request.settle();
+    return !destroyed && onError();
+  };
 
   const img = document.createElement('img');
   img.addEventListener('load', handleLoad);
@@ -17,7 +24,7 @@ export function loadImage(src: string, onLoad: () => void, onError: () => void, 
     destroyed = true;
     img.removeEventListener('load', handleLoad);
     img.removeEventListener('error', handleError);
-    cancelImageUrl(src);
+    request.cancel();
     img.remove();
   };
 }

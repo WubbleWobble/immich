@@ -25,7 +25,8 @@ export const installMessageListener = () => {
           return;
         }
 
-        handleCancel(url);
+        // Fork: a cancel releases only the sending tab's reference (matches FetchEvent.clientId)
+        handleCancel(url, 'id' in client ? client.id : '');
         break;
       }
 

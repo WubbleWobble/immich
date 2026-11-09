@@ -7,6 +7,8 @@ type PendingRequest = {
   url: string;
   controller: AbortController;
   promise: Promise<Response>;
+  /** Live consumers per client (tab): a cancel releases one of the sending client's references. */
+  consumers: Map<string, number>;
 };
 
 /**
@@ -18,8 +20,8 @@ type PendingRequest = {
 const pendingRequests = new Map<string, PendingRequest>();
 
 /**
- * Every request whose body may still be streaming, so an image unmount (cancel) or an authorization-boundary purge can
- * still abort it after its headers arrived. Never used to answer a request.
+ * Every request whose body may still be streaming, so an authorization-boundary purge can still abort it after its
+ * headers arrived. Never used to answer a request, and never touched by a cancel.
  */
 const activeControllers = new Map<string, Set<AbortController>>();
 
@@ -57,12 +59,16 @@ const forgetController = (requestKey: string, controller: AbortController) => {
   }
 };
 
-export const handleFetch = async (request: URL | Request): Promise<Response> => {
+const addConsumer = (pendingRequest: PendingRequest, clientId: string) =>
+  pendingRequest.consumers.set(clientId, (pendingRequest.consumers.get(clientId) ?? 0) + 1);
+
+export const handleFetch = async (request: URL | Request, clientId = ''): Promise<Response> => {
   const requestKey = getRequestKey(request);
   const pendingKey = getPendingKey(request);
   const existing = pendingRequests.get(pendingKey);
 
   if (existing) {
+    addConsumer(existing, clientId);
     // Clone the response since response bodies can only be read once
     // Each caller gets an independent clone they can consume
     return existing.promise.then((response) => response.clone());
@@ -73,6 +79,7 @@ export const handleFetch = async (request: URL | Request): Promise<Response> => 
     url: requestKey,
     controller,
     promise: undefined as unknown as Promise<Response>,
+    consumers: new Map([[clientId, 1]]),
   };
   pendingRequests.set(pendingKey, pendingRequest);
   const controllers = activeControllers.get(requestKey) ?? new Set<AbortController>();
@@ -102,18 +109,33 @@ export const handleFetch = async (request: URL | Request): Promise<Response> => 
   return pendingRequest.promise.then((response) => response.clone());
 };
 
-export const handleCancel = (url: URL) => {
+/**
+ * A consumer in `clientId` no longer wants `url` (an image unmounted before it loaded). Only requests still in flight
+ * are affected, and only those holding a reference from that client: one reference is released, and the request is
+ * aborted when its last consumer is gone. A settled request - and so any request started after the canceller's own
+ * request settled - is never touched. The page sends a cancel only for its last unsettled consumer of the URL (see
+ * ImageRequestLedger), so a fresh consumer in the same tab is not cancelled by a stale one either.
+ */
+export const handleCancel = (url: URL, clientId = '') => {
   const requestKey = getRequestKey(url);
 
   for (const [pendingKey, pendingRequest] of pendingRequests) {
-    if (pendingRequest.url === requestKey) {
-      pendingRequests.delete(pendingKey);
+    const references = pendingRequest.consumers.get(clientId) ?? 0;
+    if (pendingRequest.url !== requestKey || references === 0) {
+      continue;
     }
+    if (references > 1) {
+      pendingRequest.consumers.set(clientId, references - 1);
+      continue;
+    }
+    pendingRequest.consumers.delete(clientId);
+    if (pendingRequest.consumers.size > 0) {
+      continue;
+    }
+
+    pendingRequests.delete(pendingKey);
+    pendingRequest.controller.abort(CANCELATION_MESSAGE);
   }
-  for (const controller of activeControllers.get(requestKey) ?? []) {
-    controller.abort(CANCELATION_MESSAGE);
-  }
-  activeControllers.delete(requestKey);
 };
 
 /**

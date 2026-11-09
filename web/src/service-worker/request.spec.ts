@@ -84,18 +84,6 @@ describe('service worker asset requests (R50)', () => {
     await expect(textOf(ordinary)).resolves.toBe('access denied');
   });
 
-  it('cancel aborts every in-flight request for the URL', async () => {
-    const { calls } = controlledFetch();
-
-    const first = handleFetch(new Request(url, { headers: { Authorization: 'Bearer a' } }));
-    const second = handleFetch(new Request(url, { headers: { Authorization: 'Bearer b' } }));
-    handleCancel(new URL(url));
-
-    expect(calls.map(({ signal }) => signal.aborted)).toEqual([true, true]);
-    await expect(first).resolves.toMatchObject({ status: 204 });
-    await expect(second).resolves.toMatchObject({ status: 204 });
-  });
-
   it('a failed request is not reused either', async () => {
     const fetchMock = vi
       .fn()
@@ -140,14 +128,110 @@ describe('service worker asset requests (R50)', () => {
     expect(calls[0].signal.aborted).toBe(true);
   });
 
-  it('cancel still aborts a single pending request', async () => {
-    const { calls } = controlledFetch();
+  describe('cancel (reference-counted per in-flight request)', () => {
+    it("never affects a request started after the cancelling consumer's request settled", async () => {
+      const { calls } = controlledFetch();
 
-    const pending = handleFetch(new Request(url));
-    handleCancel(new URL(url));
+      const old = handleFetch(new Request(url), 'tab-a');
+      calls[0].release(new Response('old', { status: 200 }));
+      await expect(textOf(old)).resolves.toBe('old');
 
-    expect(calls[0].signal.aborted).toBe(true);
-    await expect(pending).resolves.toMatchObject({ status: 204 });
+      const fresh = handleFetch(new Request(url), 'tab-b');
+      // the old consumer unmounts late
+      handleCancel(new URL(url), 'tab-a');
+
+      expect(calls[1].signal.aborted).toBe(false);
+      calls[1].release(new Response('fresh', { status: 200 }));
+      await expect(textOf(fresh)).resolves.toBe('fresh');
+    });
+
+    it('two consumers in flight, one cancels: the request continues for the other', async () => {
+      const { fetchMock, calls } = controlledFetch();
+
+      handleFetch(new Request(url), 'tab-a').catch(() => {});
+      const other = handleFetch(new Request(url), 'tab-b');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      handleCancel(new URL(url), 'tab-a');
+      expect(calls[0].signal.aborted).toBe(false);
+
+      calls[0].release(new Response('bytes', { status: 200 }));
+      await expect(textOf(other)).resolves.toBe('bytes');
+    });
+
+    it('two consumers of one tab: each cancel releases one reference', async () => {
+      const { calls } = controlledFetch();
+
+      const first = handleFetch(new Request(url), 'tab-a');
+      const second = handleFetch(new Request(url), 'tab-a');
+
+      handleCancel(new URL(url), 'tab-a');
+      expect(calls[0].signal.aborted).toBe(false);
+      handleCancel(new URL(url), 'tab-a');
+      expect(calls[0].signal.aborted).toBe(true);
+      await expect(first).resolves.toMatchObject({ status: 204 });
+      await expect(second).resolves.toMatchObject({ status: 204 });
+    });
+
+    it('the last consumer cancelling aborts the request', async () => {
+      const { calls } = controlledFetch();
+
+      const first = handleFetch(new Request(url), 'tab-a');
+      const second = handleFetch(new Request(url), 'tab-b');
+      handleCancel(new URL(url), 'tab-a');
+      handleCancel(new URL(url), 'tab-b');
+
+      expect(calls[0].signal.aborted).toBe(true);
+      await expect(first).resolves.toMatchObject({ status: 204 });
+      await expect(second).resolves.toMatchObject({ status: 204 });
+    });
+
+    it('a cancel from a client with no consumer, or after settling, aborts nothing', async () => {
+      const { calls } = controlledFetch();
+
+      const pending = handleFetch(new Request(url), 'tab-a');
+      handleCancel(new URL(url), 'tab-z');
+      expect(calls[0].signal.aborted).toBe(false);
+
+      calls[0].release(new Response('bytes', { status: 200 }));
+      await pending;
+      handleCancel(new URL(url), 'tab-a');
+      expect(calls[0].signal.aborted).toBe(false);
+    });
+
+    it('releases the consumer in every credential variant of the URL', async () => {
+      const { calls } = controlledFetch();
+
+      const first = handleFetch(new Request(url, { headers: { Authorization: 'Bearer a' } }), 'tab-a');
+      const second = handleFetch(new Request(url, { headers: { Authorization: 'Bearer b' } }), 'tab-a');
+      handleCancel(new URL(url), 'tab-a');
+
+      expect(calls.map(({ signal }) => signal.aborted)).toEqual([true, true]);
+      await expect(first).resolves.toMatchObject({ status: 204 });
+      await expect(second).resolves.toMatchObject({ status: 204 });
+    });
+
+    it('the cancel message is matched to the sending client', async () => {
+      const { calls } = controlledFetch();
+      installMessageListener();
+
+      const pending = handleFetch(new Request(url), 'tab-a');
+      dispatchEvent(
+        new MessageEvent('message', {
+          data: { type: 'cancel', url },
+          source: { id: 'tab-b' } as unknown as MessagePort,
+        }),
+      );
+      expect(calls[0].signal.aborted).toBe(false);
+      dispatchEvent(
+        new MessageEvent('message', {
+          data: { type: 'cancel', url },
+          source: { id: 'tab-a' } as unknown as MessagePort,
+        }),
+      );
+      expect(calls[0].signal.aborted).toBe(true);
+      await expect(pending).resolves.toMatchObject({ status: 204 });
+    });
   });
 
   it('accepts a purge message from any client (one purge covers every tab)', async () => {

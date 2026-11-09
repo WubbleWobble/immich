@@ -1,5 +1,4 @@
 import type { LoadImageFunction } from '$lib/actions/image-loader.svelte';
-import { cancelImageUrl } from '$lib/utils/sw-messaging';
 
 export type ImageQuality = 'thumbnail' | 'preview' | 'original';
 
@@ -152,15 +151,11 @@ export class AdaptiveImageLoader {
 
   destroy() {
     this.destroyed = true;
-    if (this.imageLoader) {
-      for (const destroy of this.destroyFunctions) {
-        destroy();
-      }
-      return;
-    }
-
-    for (const config of Object.values(this.qualityConfigs)) {
-      cancelImageUrl(config.url);
+    // Fork: without an imageLoader the <Image> components rendering these URLs own their requests and cancel them on
+    // unmount (reference-counted, see trackImageRequest); a blind cancel per URL here could abort another consumer's
+    // live request for the same URL.
+    for (const destroy of this.destroyFunctions) {
+      destroy();
     }
   }
 }

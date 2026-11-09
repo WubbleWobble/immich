@@ -1,9 +1,10 @@
 import { fireEvent, render } from '@testing-library/svelte';
 import Image from '$lib/components/Image.svelte';
-import { cancelImageUrl } from '$lib/utils/sw-messaging';
+import { trackImageRequest } from '$lib/utils/sw-messaging';
 
+const request = { settle: vi.fn(), cancel: vi.fn() };
 vi.mock('$lib/utils/sw-messaging', () => ({
-  cancelImageUrl: vi.fn(),
+  trackImageRequest: vi.fn(() => request),
 }));
 
 describe('Image component', () => {
@@ -48,11 +49,21 @@ describe('Image component', () => {
     expect(onError.mock.calls[0][0].message).toBe('Failed to load image: /test.jpg');
   });
 
-  it('calls cancelImageUrl on unmount', () => {
+  it('tracks its request and cancels it on unmount', () => {
     const { unmount } = render(Image, { src: '/test.jpg' });
-    expect(cancelImageUrl).not.toHaveBeenCalled();
+    expect(trackImageRequest).toHaveBeenCalledExactlyOnceWith('/test.jpg');
+    expect(request.cancel).not.toHaveBeenCalled();
     unmount();
-    expect(cancelImageUrl).toHaveBeenCalledWith('/test.jpg');
+    expect(request.cancel).toHaveBeenCalledOnce();
+  });
+
+  it('settles its request on load and on error', async () => {
+    const { baseElement } = render(Image, { src: '/test.jpg' });
+    const img = baseElement.querySelector('img')!;
+    await fireEvent.load(img);
+    expect(request.settle).toHaveBeenCalledOnce();
+    await fireEvent.error(img);
+    expect(request.settle).toHaveBeenCalledTimes(2);
   });
 
   it('does not call onLoad after unmount', async () => {

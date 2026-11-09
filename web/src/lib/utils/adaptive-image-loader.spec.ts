@@ -1,8 +1,8 @@
 import { AdaptiveImageLoader, type QualityList } from '$lib/utils/adaptive-image-loader.svelte';
-import { cancelImageUrl } from '$lib/utils/sw-messaging';
+import { trackImageRequest } from '$lib/utils/sw-messaging';
 
 vi.mock('$lib/utils/sw-messaging', () => ({
-  cancelImageUrl: vi.fn(),
+  trackImageRequest: vi.fn(() => ({ settle: vi.fn(), cancel: vi.fn() })),
 }));
 
 function createQualityList(overrides?: {
@@ -246,14 +246,13 @@ describe('AdaptiveImageLoader', () => {
   });
 
   describe('destroy', () => {
-    it('cancels all image URLs when no imageLoader', () => {
+    it('leaves cancellation to the <Image> components that own the requests when no imageLoader', () => {
       const loader = new AdaptiveImageLoader(createQualityList());
 
       loader.destroy();
 
-      expect(cancelImageUrl).toHaveBeenCalledWith('/thumbnail.jpg');
-      expect(cancelImageUrl).toHaveBeenCalledWith('/preview.jpg');
-      expect(cancelImageUrl).toHaveBeenCalledWith('/original.jpg');
+      // a blind per-URL cancel could abort another consumer's live request for the same URL
+      expect(trackImageRequest).not.toHaveBeenCalled();
     });
 
     it('calls destroy functions when imageLoader is provided', () => {
@@ -265,7 +264,7 @@ describe('AdaptiveImageLoader', () => {
       loader.destroy();
 
       expect(destroyFn).toHaveBeenCalledOnce();
-      expect(cancelImageUrl).not.toHaveBeenCalled();
+      expect(trackImageRequest).not.toHaveBeenCalled();
     });
   });
 

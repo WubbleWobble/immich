@@ -15,7 +15,7 @@ vi.mock('@immich/sdk', async (importOriginal) => ({
 }));
 
 vi.mock('$lib/utils/sw-messaging', () => ({
-  cancelImageUrl: vi.fn(),
+  trackImageRequest: vi.fn(() => ({ settle: vi.fn(), cancel: vi.fn() })),
   purgeMediaRequests: vi.fn(),
 }));
 
