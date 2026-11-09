@@ -4,7 +4,7 @@ import type { DateTime } from 'luxon';
 import { SvelteSet } from 'svelte/reactivity';
 import { MediaType } from '$lib/constants';
 import type { SearchFilter } from '$lib/types';
-import { parseUtcDate } from '$lib/utils/date-time';
+import { asLocalTimeISO, parseUtcDate } from '$lib/utils/date-time';
 
 /**
  * Convert a persisted SmartAlbumFilter into the SearchFilter shape used by
@@ -13,6 +13,8 @@ import { parseUtcDate } from '$lib/utils/date-time';
  */
 export function smartAlbumFilterToSearchFilter(filter: SmartAlbumFilter | null | undefined): SearchFilter {
   const f = filter ?? {};
+  // A stored bound opens on its UTC calendar day (as on the search page); the pickers show that
+  // day, and searchFilterToSmartAlbumFilter writes a picked day back as UTC day bounds.
   const toStartOfDay = (s?: string) => (s ? parseUtcDate(s).startOf('day') : undefined);
   // Like the search page, an "unknown" (null) location/camera value is the empty-string option.
   const withNullAsEmptyString = (value: string | null | undefined) => (value === null ? '' : value);
@@ -116,7 +118,12 @@ export function isEmptySmartAlbumFilter(filter: Partial<SmartAlbumFilter>): bool
  */
 export function searchFilterToSmartAlbumFilter(filter: SearchFilter): SmartAlbumFilter {
   const emptyStringToNull = (value?: string) => (value === '' ? null : value);
-  const parseOptional = (d?: DateTime) => (d ? parseUtcDate(d.toString()) : undefined);
+  // The date pickers emit the picked calendar day in the viewer's local zone. Store that
+  // wall-clock day as UTC day bounds, exactly like the search page (searchManager.#toQuery);
+  // converting the instant instead would shift the day for anyone east of UTC. A loaded value
+  // (smartAlbumFilterToSearchFilter) is already a UTC day, which this leaves unchanged.
+  const toDayBound = (d: DateTime | undefined, bound: 'startOf' | 'endOf') =>
+    d?.isValid ? asLocalTimeISO(d[bound]('day') as DateTime<true>) : undefined;
 
   let type: AssetTypeEnum | undefined;
   if (filter.mediaType === MediaType.Image) {
@@ -132,8 +139,8 @@ export function searchFilterToSmartAlbumFilter(filter: SearchFilter): SmartAlbum
     make: emptyStringToNull(filter.camera.make),
     model: emptyStringToNull(filter.camera.model),
     lensModel: emptyStringToNull(filter.camera.lensModel),
-    takenAfter: parseOptional(filter.date.takenAfter)?.startOf('day').toISO() || undefined,
-    takenBefore: parseOptional(filter.date.takenBefore)?.endOf('day').toISO() || undefined,
+    takenAfter: toDayBound(filter.date.takenAfter, 'startOf'),
+    takenBefore: toDayBound(filter.date.takenBefore, 'endOf'),
     visibility: filter.display.isArchive ? Visibility.Archive : undefined,
     isFavorite: filter.display.isFavorite || undefined,
     isNotInAlbum: filter.display.isNotInAlbum || undefined,

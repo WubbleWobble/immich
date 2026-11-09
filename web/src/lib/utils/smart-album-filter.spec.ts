@@ -128,6 +128,55 @@ describe('smart album filter round trip', () => {
       });
     });
 
+    // The @immich/ui DatePicker emits DateTime.fromObject({ year, month, day }) in the viewer's
+    // local zone; the picked wall-clock day must be stored, as the search page does (asLocalTimeISO).
+    describe.each(['Europe/Berlin', 'America/New_York', 'Pacific/Kiritimati', 'Pacific/Pago_Pago'])(
+      'a date picked in %s',
+      (zone) => {
+        const pick = (day: number) => DateTime.fromObject({ year: 2024, month: 2, day }, { zone });
+
+        it('stores the picked day as whole-day bounds', () => {
+          const form = smartAlbumFilterToSearchFilter({});
+          form.date.takenAfter = pick(1);
+          form.date.takenBefore = pick(1);
+          expect(mergeSmartAlbumFilter({}, form)).toEqual({
+            takenAfter: '2024-02-01T00:00:00.000Z',
+            takenBefore: '2024-02-01T23:59:59.999Z',
+          });
+        });
+
+        it('reopens on the picked day and saves the same values again', () => {
+          const form = smartAlbumFilterToSearchFilter({});
+          form.date.takenAfter = pick(1);
+          form.date.takenBefore = pick(3);
+          const saved = mergeSmartAlbumFilter({}, form);
+
+          const reopened = smartAlbumFilterToSearchFilter(saved);
+          expect(reopened.date.takenAfter?.toISODate()).toBe('2024-02-01');
+          expect(reopened.date.takenBefore?.toISODate()).toBe('2024-02-03');
+          expect(mergeSmartAlbumFilter(saved, reopened)).toEqual(saved);
+
+          // re-picking the same days in the picker (local zone) is not an edit
+          reopened.date.takenAfter = pick(1);
+          reopened.date.takenBefore = pick(3);
+          expect(mergeSmartAlbumFilter(saved, reopened)).toEqual({
+            takenAfter: '2024-02-01T00:00:00.000Z',
+            takenBefore: '2024-02-03T23:59:59.999Z',
+          });
+        });
+
+        it('keeps an exact stored instant verbatim when the date is not edited', () => {
+          const stored: SmartAlbumFilter = { takenAfter: NON_MIDNIGHT, takenBefore: OFFSET_LOCAL_MIDNIGHT };
+          const form = smartAlbumFilterToSearchFilter(stored);
+          form.date.takenAfter = pick(1);
+          expect(mergeSmartAlbumFilter(stored, form)).toEqual({
+            takenAfter: '2024-02-01T00:00:00.000Z',
+            takenBefore: OFFSET_LOCAL_MIDNIGHT,
+          });
+        });
+      },
+    );
+
     it('removes only the person the user deselected', () => {
       const stored: SmartAlbumFilter = { personIds: [PERSON_A, PERSON_B], city: null };
       const form = smartAlbumFilterToSearchFilter(stored);
