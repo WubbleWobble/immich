@@ -10,6 +10,7 @@ import {
   getAlbumAssetsActions,
   getAlbumFolderActions,
   handleLeaveAlbum,
+  isAlbumEditor,
 } from '$lib/services/album.service';
 import { getAssetBulkActions } from '$lib/services/asset.service';
 import { handleError } from '$lib/utils/handle-error';
@@ -161,6 +162,63 @@ describe('album actions', () => {
       expect(visible(smart.AddAssets)).toBe(false);
       expect(visible(smart.Upload)).toBe(false);
       expect(visible(getAssetBulkActions($t, smartAlbum()).RemoveFromAlbum)).toBe(false);
+    });
+  });
+
+  // T4: the album DTO lists only direct members; the effective role (direct or inherited from an
+  // ancestor folder share, strongest wins) arrives as viewerRole and is what the server enforces.
+  describe('editing follows the effective role (viewerRole)', () => {
+    const folderEditor = userAdminFactory.build({ id: 'folder-editor' });
+
+    it('lets a folder-only Editor edit (not a direct member)', () => {
+      authManager.setUser(folderEditor);
+      const album = buildAlbum({ viewerRole: AlbumUserRole.Editor });
+      expect(isAlbumEditor(album)).toBe(true);
+      expect(visible(getAlbumActions($t, album).Edit)).toBe(true);
+    });
+
+    it('lets a direct Viewer with an inherited Editor grant edit', () => {
+      authManager.setUser(viewer);
+      const album = buildAlbum({ viewerRole: AlbumUserRole.Editor });
+      expect(isAlbumEditor(album)).toBe(true);
+      expect(visible(getAlbumActions($t, album).Edit)).toBe(true);
+    });
+
+    it('keeps a direct Editor with an inherited Viewer grant an editor', () => {
+      authManager.setUser(editor);
+      const album = buildAlbum({ viewerRole: AlbumUserRole.Editor });
+      expect(isAlbumEditor(album)).toBe(true);
+    });
+
+    it('does not let a folder-only Viewer edit', () => {
+      authManager.setUser(folderEditor);
+      const album = buildAlbum({ viewerRole: AlbumUserRole.Viewer });
+      expect(isAlbumEditor(album)).toBe(false);
+      expect(visible(getAlbumActions($t, album).Edit)).toBe(false);
+    });
+
+    it('does not trust a stale direct row over the effective role', () => {
+      authManager.setUser(editor);
+      expect(isAlbumEditor(buildAlbum({ viewerRole: AlbumUserRole.Viewer }))).toBe(false);
+      expect(isAlbumEditor(buildAlbum({ viewerRole: null }))).toBe(false);
+    });
+
+    it('treats the owner as an editor', () => {
+      authManager.setUser(owner);
+      expect(isAlbumEditor(buildAlbum({ viewerRole: AlbumUserRole.Owner }))).toBe(true);
+    });
+
+    it('keeps a smart album read-only and its filter owner-only for an inherited Editor', () => {
+      authManager.setUser(folderEditor);
+      const album = smartAlbum();
+      const editable = { ...album, viewerRole: AlbumUserRole.Editor };
+      const assets = [{ id: 'asset-1' }] as never;
+      expect(isAlbumEditor(editable)).toBe(true);
+      expect(visible(getAlbumActions($t, editable).EditSmartFilter)).toBe(false);
+      const { AddAssets, Upload } = getAlbumAssetsActions($t, editable, assets);
+      expect(visible(AddAssets)).toBe(false);
+      expect(visible(Upload)).toBe(false);
+      expect(visible(getAssetBulkActions($t, editable).RemoveFromAlbum)).toBe(false);
     });
   });
 

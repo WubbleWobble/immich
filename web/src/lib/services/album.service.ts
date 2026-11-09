@@ -63,9 +63,13 @@ import { purgeMediaRequests } from '$lib/utils/sw-messaging';
 export const isAlbumOwner = (album: AlbumResponseDto) => album.albumUsers[0].user.id === authManager.user.id;
 /** Smart albums are read-only: their content is the filter's result, never manual adds/uploads/removals. */
 export const isSmartAlbum = (album: AlbumResponseDto) => album.kind === AlbumKind.Smart;
+/**
+ * Editing follows the viewer's effective role (T4): the strongest of their direct album role and any
+ * role inherited from an ancestor folder share, computed by the server. `albumUsers` lists direct
+ * members only, so a folder-only Editor does not appear there.
+ */
 export const isAlbumEditor = (album: AlbumResponseDto) =>
-  isAlbumOwner(album) ||
-  album.albumUsers.find(({ user: { id } }) => id === authManager.user.id)?.role === AlbumUserRole.Editor;
+  album.viewerRole === AlbumUserRole.Owner || album.viewerRole === AlbumUserRole.Editor;
 
 export const getAlbumsActions = ($t: MessageFormatter) => {
   const Create: ActionItem = {
