@@ -117,9 +117,12 @@ State these plainly to users.
   (add to album, stack) fail, and the "uploaded" photo never appears. There
   is no websocket `on_upload_success`, and quota usage does not grow. The
   admin job-queue counts also differ: a real upload queues metadata
-  extraction, a phantom does not. The owner's phone backup is not affected. It decides what to upload from its
-  synced asset table, and the owner's own sync is unfiltered, so hidden
-  photos still count as backed up.
+  extraction, a phantom does not. The owner's phone backup is not
+  affected. It decides what to upload from its synced asset table, and the
+  owner's own sync is unfiltered, so hidden photos still count as backed up.
+- **Live Photo auto-linking respects locks.** If the motion part is hidden
+  by the owner's locks and the still is not, metadata extraction leaves
+  both unlinked and untouched.
 - **CLI and API-key uploads re-send hidden files every run (R49).** API-key
   sessions are never elevated. So `immich-cli` and `immich-go` see an
   already-hidden file as new each time, upload it again and get a phantom
