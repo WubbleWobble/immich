@@ -449,6 +449,72 @@ describe(AssetService.name, () => {
   });
 
   describe('fork locks', () => {
+    it('stack summary on asset.get counts only visible members and hides a hidden primary id', async () => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser();
+      const { user: partner } = await ctx.newUser();
+      await ctx.newPartner({ sharedById: user.id, sharedWithId: partner.id });
+      const newAsset = (day: number) => ctx.newAsset({ ownerId: user.id, fileCreatedAt: new Date(2020, 0, day) });
+      const { asset: primary } = await newAsset(1);
+      const { asset: visible1 } = await newAsset(2);
+      const { asset: hiddenMember } = await newAsset(3);
+      const { asset: visible2 } = await newAsset(4);
+      const { stack } = await ctx.newStack({ ownerId: user.id }, [
+        primary.id,
+        visible1.id,
+        hiddenMember.id,
+        visible2.id,
+      ]);
+      // a second stack whose only other member is hidden
+      const { asset: hiddenPrimary } = await newAsset(5);
+      const { asset: lonely } = await newAsset(6);
+      const { stack: lonelyStack } = await ctx.newStack({ ownerId: user.id }, [hiddenPrimary.id, lonely.id]);
+
+      const { album: locked } = await ctx.newAlbum({ ownerId: user.id }, [
+        primary.id,
+        hiddenMember.id,
+        hiddenPrimary.id,
+      ]);
+      await ctx.get(LockRepository).lockAlbum(user.id, locked.id);
+
+      const auth = factory.auth({ user });
+      const revealing = { ...auth, revealedLocks: { albumIds: [locked.id], containerIds: [] } };
+      const partnerAuth = factory.auth({ user: partner, session: { hasElevatedPermission: true } });
+      // outside elevation (and for a partner, in every session): the hidden primary is replaced by the first visible
+      // member and only visible members count; a stack left with one visible member looks unstacked
+      for (const viewer of [auth, revealing, partnerAuth]) {
+        for (const id of [visible1.id, visible2.id]) {
+          await expect(sut.get(viewer, id)).resolves.toMatchObject({
+            stack: { id: stack.id, primaryAssetId: visible1.id, assetCount: 2 },
+          });
+        }
+        await expect(sut.get(viewer, lonely.id)).resolves.toMatchObject({ stack: null });
+      }
+
+      // a shared-link visitor is judged by the owner's locks but keeps every member the link itself grants
+      const sharedLink = await ctx.get(SharedLinkRepository).create({
+        allowUpload: false,
+        showExif: true,
+        key: Buffer.from(`stack-${stack.id}`),
+        type: SharedLinkType.Individual,
+        userId: user.id,
+        assetIds: [visible1.id, hiddenMember.id],
+      });
+      const linkAuth = factory.auth({ user: { id: user.id }, sharedLink });
+      await expect(sut.get(linkAuth, visible1.id)).resolves.toMatchObject({
+        stack: { id: stack.id, primaryAssetId: visible1.id, assetCount: 3 },
+      });
+
+      // the elevated owner sees the stack as stored (direct-by-id read, spec §15.3)
+      const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+      await expect(sut.get(elevated, visible1.id)).resolves.toMatchObject({
+        stack: { id: stack.id, primaryAssetId: primary.id, assetCount: 4 },
+      });
+      await expect(sut.get(elevated, lonely.id)).resolves.toMatchObject({
+        stack: { id: lonelyStack.id, primaryAssetId: hiddenPrimary.id, assetCount: 2 },
+      });
+    });
+
     it('update re-reads through the lock-checked get: a hidden asset is refused before any write', async () => {
       const { sut, ctx } = setup();
       ctx.getMock(WebsocketRepository).clientSend.mockReturnValue();

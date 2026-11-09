@@ -204,6 +204,14 @@ export class LockService extends BaseService {
     return hidden.has(assetId);
   }
 
+  /**
+   * Direct-by-id read filter (7A.8c, the stack summary of asset detail): the subset of `assetIds` hidden for the
+   * viewer - the viewer's own locks are bypassed in an elevated session, another owner's always apply.
+   */
+  getHiddenAssetIdsForRead(auth: AuthDto, assetIds: string[]): Promise<Set<string>> {
+    return this.getHiddenAssetIds(auth, assetIds, 'direct');
+  }
+
   private async findHiddenSharedLinks(
     auth: AuthDto,
     links: SharedLinkLockTarget[],

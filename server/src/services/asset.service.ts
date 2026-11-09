@@ -40,6 +40,7 @@ import {
 } from 'src/enum.js';
 import { AlbumService } from 'src/services/album.service.js';
 import { BaseService } from 'src/services/base.service.js';
+import { LockService } from 'src/services/lock.service.js';
 import { requireElevatedPermission } from 'src/utils/access.js';
 import {
   getAssetFiles,
@@ -90,6 +91,10 @@ export class AssetService extends BaseService {
       throw new BadRequestException('Asset not found');
     }
 
+    if (asset.stack) {
+      asset.stack = await this.toVisibleStackSummary(auth, id, asset.stack);
+    }
+
     if (auth.sharedLink && !auth.sharedLink.showExif) {
       return mapAsset(asset, { stripMetadata: true, withStack: true, auth });
     }
@@ -105,6 +110,37 @@ export class AssetService extends BaseService {
     }
 
     return data;
+  }
+
+  /**
+   * Fork (7A.8c): the stack summary (primaryAssetId, assetCount) must not reveal members hidden for the viewer. Hidden
+   * members are not counted and a hidden primary is replaced by the first visible member (as StackService presents a
+   * stack); a stack left without another visible member is presented as no stack, like one whose other members are
+   * all off the timeline. The requested asset passed asset.read and always counts. A shared-link visitor (never
+   * elevated, judged by the owner's locks) keeps every member the link itself grants.
+   */
+  private async toVisibleStackSummary<T extends { primaryAssetId: string; assets: { id: string }[] }>(
+    auth: AuthDto,
+    assetId: string,
+    stack: T,
+  ): Promise<(T & { assetCount?: number }) | null> {
+    const memberIds = [stack.primaryAssetId, ...stack.assets.map(({ id }) => id)].filter((id) => id !== assetId);
+    const hidden = await BaseService.create(LockService, this).getHiddenAssetIdsForRead(auth, memberIds);
+    if (auth.sharedLink && hidden.size > 0) {
+      const granted = await this.checkAccess({ auth, permission: Permission.AssetRead, ids: [...hidden] });
+      for (const id of granted) {
+        hidden.delete(id);
+      }
+    }
+    if (hidden.size === 0) {
+      return stack;
+    }
+
+    const assets = stack.assets.filter(({ id }) => !hidden.has(id));
+    if (!hidden.has(stack.primaryAssetId)) {
+      return assets.length === 0 ? null : { ...stack, assets, assetCount: assets.length + 1 };
+    }
+    return assets.length < 2 ? null : { ...stack, assets, primaryAssetId: assets[0].id, assetCount: assets.length };
   }
 
   async update(auth: AuthDto, id: string, dto: UpdateAssetDto): Promise<AssetResponseDto> {
