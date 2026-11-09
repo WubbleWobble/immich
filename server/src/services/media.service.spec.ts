@@ -1567,6 +1567,47 @@ describe(MediaService.name, () => {
       expect(mocks.storage.unlink).not.toHaveBeenCalled();
     });
 
+    describe('when generation or publishing throws', () => {
+      beforeEach(() => {
+        mocks.person.getDataForThumbnailGenerationJob.mockResolvedValue(personThumbnailStub.newThumbnailMiddle);
+        mocks.media.decodeImage.mockResolvedValue({
+          data: Buffer.from(''),
+          info: { width: 1000, height: 1000 } as OutputInfo,
+        });
+        mocks.media.generateThumbnail.mockResolvedValue();
+        mocks.person.publishThumbnail.mockRejectedValue(new Error('connection lost after commit'));
+      });
+
+      it('keeps the new file when the publish committed before throwing', async () => {
+        mocks.person.isThumbnailPathReferenced.mockResolvedValue(true);
+
+        await expect(
+          sut.handleGeneratePersonThumbnail({ ownerId: 'owner-1', personGroupId: 'person-group-1' }),
+        ).rejects.toThrow('connection lost after commit');
+        const path = mocks.media.generateThumbnail.mock.calls[0][2];
+        expect(mocks.person.isThumbnailPathReferenced).toHaveBeenCalledWith(path);
+        expect(mocks.storage.unlink).not.toHaveBeenCalled();
+      });
+
+      it('keeps the new file when its publish state cannot be verified', async () => {
+        mocks.person.isThumbnailPathReferenced.mockRejectedValue(new Error('database unavailable'));
+
+        await expect(
+          sut.handleGeneratePersonThumbnail({ ownerId: 'owner-1', personGroupId: 'person-group-1' }),
+        ).rejects.toThrow('connection lost after commit');
+        expect(mocks.storage.unlink).not.toHaveBeenCalled();
+      });
+
+      it('unlinks the new file when nothing references it', async () => {
+        mocks.person.isThumbnailPathReferenced.mockResolvedValue(false);
+
+        await expect(
+          sut.handleGeneratePersonThumbnail({ ownerId: 'owner-1', personGroupId: 'person-group-1' }),
+        ).rejects.toThrow('connection lost after commit');
+        expect(mocks.storage.unlink).toHaveBeenCalledWith(mocks.media.generateThumbnail.mock.calls[0][2]);
+      });
+    });
+
     it('should generate a thumbnail even if machine learning is disabled', async () => {
       mocks.systemMetadata.get.mockResolvedValue(systemConfigStub.machineLearningDisabled);
       mocks.person.getDataForThumbnailGenerationJob.mockResolvedValue(personThumbnailStub.newThumbnailMiddle);

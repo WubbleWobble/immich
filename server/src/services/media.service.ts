@@ -419,6 +419,16 @@ export class MediaService extends BaseService {
     };
   }
 
+  /** Fork: whether a person row references `path`; an unanswerable check counts as referenced (keep the file). */
+  private async isThumbnailPathReferencedSafe(path: string): Promise<boolean> {
+    try {
+      return await this.personRepository.isThumbnailPathReferenced(path);
+    } catch (error) {
+      this.logger.warn(`Keeping ${path}: could not verify whether it is published: ${error}`);
+      return true;
+    }
+  }
+
   @OnJob({ name: JobName.PersonGenerateThumbnail, queue: QueueName.ThumbnailGeneration })
   async handleGeneratePersonThumbnail({
     ownerId,
@@ -483,7 +493,11 @@ export class MediaService extends BaseService {
       await this.mediaRepository.generateThumbnail(decoded, thumbnailOptions, thumbnailPath);
       published = await this.personRepository.publishThumbnail({ ownerId, personGroupId, faceId, path: thumbnailPath });
     } catch (error) {
-      await this.storageRepository.unlink(thumbnailPath);
+      // The publish may have committed before the error surfaced (e.g. a lost connection after COMMIT): a path a person
+      // row references is live and must not be unlinked. Only an unreferenced (never published) file is cleaned up.
+      if (!(await this.isThumbnailPathReferencedSafe(thumbnailPath))) {
+        await this.storageRepository.unlink(thumbnailPath);
+      }
       throw error;
     }
 
