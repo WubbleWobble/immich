@@ -1115,6 +1115,26 @@ describe('/albums', () => {
       ).rejects.toBeDefined();
     });
 
+    it('rejects moving a folder into itself with a 400', async () => {
+      const created = await request(app)
+        .post('/album-containers')
+        .set('Authorization', `Bearer ${user1.accessToken}`)
+        .send({ name: 'self-parent' });
+      expect(created.status).toBe(201);
+
+      const { status, body } = await request(app)
+        .put(`/album-containers/${created.body.id}`)
+        .set('Authorization', `Bearer ${user1.accessToken}`)
+        .send({ parentId: created.body.id });
+      expect(status).toBe(400);
+      expect(body).toEqual(errorDto.badRequest('A folder cannot be moved into itself'));
+
+      const after = await request(app)
+        .get(`/album-containers/${created.body.id}`)
+        .set('Authorization', `Bearer ${user1.accessToken}`);
+      expect(after.body.parentId).toBeNull();
+    });
+
     it('enforces the folder depth limit', async () => {
       // MAX_DEPTH = 16, enforced as `parentDepth + 1 > 16`, so the chain can
       // legally reach depth 16 (17 nodes from root). The next creation fails.

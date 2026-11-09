@@ -280,6 +280,22 @@ describe(AlbumContainerService.name, () => {
     });
   });
 
+  describe('update', () => {
+    it('rejects moving a folder into itself with a 400', async () => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser();
+      const repository = ctx.get(AlbumContainerRepository);
+      const parent = await repository.create({ ownerId: user.id, name: 'Parent', parentId: null });
+      const folder = await repository.create({ ownerId: user.id, name: 'Folder', parentId: parent.id });
+
+      await expect(sut.update(factory.auth({ user }), folder.id, { parentId: folder.id })).rejects.toThrow(
+        new BadRequestException('A folder cannot be moved into itself'),
+      );
+      await expect(repository.getById(folder.id)).resolves.toMatchObject({ parentId: parent.id });
+      await ctx.expectClosureMatchesParents(user.id);
+    });
+  });
+
   describe('create inside a hidden folder', () => {
     it.each(['locked parent', 'descendant of a locked ancestor'] as const)(
       'rejects a folder created in a %s outside an elevated session',

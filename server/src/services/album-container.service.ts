@@ -189,6 +189,10 @@ export class AlbumContainerService extends BaseService {
 
       if (dto.parentId !== undefined && dto.parentId !== container.parentId) {
         if (dto.parentId !== null) {
+          // isDescendantOf excludes the depth-0 self row, so self-parenting needs its own check.
+          if (dto.parentId === id) {
+            throw new BadRequestException('A folder cannot be moved into itself');
+          }
           const parent = await this.albumContainerRepository.getById(dto.parentId, tx);
           if (!parent) {
             throw new BadRequestException('Parent folder not found');

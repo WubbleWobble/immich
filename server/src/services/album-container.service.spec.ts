@@ -536,6 +536,18 @@ describe(AlbumContainerService.name, () => {
       expect(mocks.albumContainer.move).not.toHaveBeenCalled();
     });
 
+    it('rejects moving a container into itself before touching the closure', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const folder = folderForOwner(owner.id);
+      mocks.albumContainer.getById.mockResolvedValue(folder);
+
+      await expect(sut.update(auth, folder.id, { parentId: folder.id })).rejects.toThrow(
+        new BadRequestException('A folder cannot be moved into itself'),
+      );
+      expect(mocks.albumContainer.move).not.toHaveBeenCalled();
+    });
+
     it('rejects move that exceeds depth limit', async () => {
       const owner = UserFactory.create();
       const auth = AuthFactory.create({ id: owner.id });
