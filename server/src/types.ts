@@ -240,6 +240,11 @@ export interface IEntityJob extends IBaseJob {
 
 export interface IAssetDeleteJob extends IEntityJob {
   deleteOnDisk: boolean;
+  /**
+   * Fork (R58): a motion part's delete carries the verdict judged before its still was removed - once the still is gone
+   * the motion part is judged alone and, without albums of its own, would read as visible.
+   */
+  hiddenFromOrdinary?: boolean;
 }
 
 export interface ILibraryFileJob {

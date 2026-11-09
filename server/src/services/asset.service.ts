@@ -425,9 +425,14 @@ export class AssetService extends BaseService {
       }
     }
 
-    // Fork (R58): judged while the asset (and its album memberships) still exist - see NotificationService.
-    const hiddenForOwner = await BaseService.create(LockService, this).getOwnerEventHiddenIds(asset.ownerId, [id]);
-    const hiddenFromOrdinary = hiddenForOwner.has(id);
+    // Fork (R58): judged while the asset (and its album memberships) still exist - see NotificationService. The motion
+    // part is judged now too, as a Live Photo unit with this still (7A.2), and its delete job carries the verdict.
+    const motionId = asset.livePhotoVideoId;
+    const hiddenForOwner = await BaseService.create(LockService, this).getOwnerEventHiddenIds(
+      asset.ownerId,
+      motionId ? [id, motionId] : [id],
+    );
+    const hiddenFromOrdinary = !!job.hiddenFromOrdinary || hiddenForOwner.has(id);
 
     await this.assetRepository.remove(asset);
     if (!asset.libraryId) {
@@ -446,7 +451,11 @@ export class AssetService extends BaseService {
       if (count === 0) {
         await this.jobRepository.queue({
           name: JobName.AssetDelete,
-          data: { id: asset.livePhotoVideoId, deleteOnDisk },
+          data: {
+            id: asset.livePhotoVideoId,
+            deleteOnDisk,
+            hiddenFromOrdinary: hiddenFromOrdinary || hiddenForOwner.has(asset.livePhotoVideoId),
+          },
         });
       }
     }

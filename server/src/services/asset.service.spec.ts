@@ -728,7 +728,7 @@ describe(AssetService.name, () => {
       });
 
       expect(mocks.job.queue.mock.calls).toEqual([
-        [{ name: JobName.AssetDelete, data: { id: motionAsset.id, deleteOnDisk: true } }],
+        [{ name: JobName.AssetDelete, data: { id: motionAsset.id, deleteOnDisk: true, hiddenFromOrdinary: false } }],
         [{ name: JobName.FileDelete, data: { files: [asset.originalPath] } }],
       ]);
     });

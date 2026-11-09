@@ -1681,6 +1681,49 @@ describe(AssetService.name, () => {
         ]);
       });
 
+      it("a hidden Live Photo's motion-part delete carries the still's verdict (round 4)", async () => {
+        const { sut, ctx } = setup();
+        ctx.getMock(EventRepository).emit.mockResolvedValue();
+        ctx.getMock(JobRepository).queue.mockResolvedValue();
+        const { sut: notify, ctx: notifyCtx } = notifier();
+        notifyCtx.getMock(WebsocketRepository).clientSend.mockReturnValue();
+        const { user } = await ctx.newUser();
+        // the motion part has no album of its own (metadata linking empties them); the still sits in a locked album
+        const { asset: motion } = await ctx.newAsset({
+          ownerId: user.id,
+          type: AssetType.Video,
+          visibility: AssetVisibility.Hidden,
+        });
+        const { asset: still } = await ctx.newAsset({ ownerId: user.id, livePhotoVideoId: motion.id });
+        const { album } = await ctx.newAlbum({ ownerId: user.id }, [still.id]);
+        await ctx.get(LockRepository).lockAlbum(user.id, album.id);
+        const elevatedRoom = await withSessions(ctx, user.id);
+
+        await sut.handleAssetDeletion({ id: still.id, deleteOnDisk: false });
+        const motionJob = ctx
+          .getMock(JobRepository)
+          .queue.mock.calls.map(([job]) => job)
+          .find((job) => job.name === JobName.AssetDelete);
+        expect(motionJob).toEqual({
+          name: JobName.AssetDelete,
+          data: { id: motion.id, deleteOnDisk: false, hiddenFromOrdinary: true },
+        });
+        await sut.handleAssetDeletion((motionJob as { data: { id: string; deleteOnDisk: boolean } }).data);
+
+        const emitted = ctx
+          .getMock(EventRepository)
+          .emit.mock.calls.filter(([name]) => name === 'AssetDelete')
+          .map(([, payload]) => payload as ArgOf<'AssetDelete'>);
+        expect(emitted).toEqual([
+          { assetId: still.id, userId: user.id, hiddenFromOrdinary: true },
+          { assetId: motion.id, userId: user.id, hiddenFromOrdinary: true },
+        ]);
+        for (const payload of emitted) {
+          await notify.onAssetDelete(payload);
+        }
+        expect(sent(notifyCtx).map(({ room }) => room)).toEqual([elevatedRoom, elevatedRoom]);
+      });
+
       it("a hidden asset's deletion is judged before removal and reaches only elevated sessions", async () => {
         const { sut, ctx } = setup();
         ctx.getMock(EventRepository).emit.mockResolvedValue();
