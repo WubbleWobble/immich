@@ -1,6 +1,6 @@
 import { LoginResponseDto, ManualJobName } from '@immich/sdk';
-import { errorDto } from 'src/responses';
-import { app, utils } from 'src/utils';
+import { errorDto } from 'src/responses.js';
+import { app, utils } from 'src/utils.js';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
@@ -108,7 +108,7 @@ describe('/admin/database-backups', () => {
       const { status, body } = await request(app).post('/admin/database-backups/start-restore').send();
 
       expect(status).toBe(400);
-      expect(body).toEqual(errorDto.badRequest('The server already has an admin'));
+      expect(body).toEqual(errorDto.badRequest('Admin setup is not available'));
     });
 
     it.sequential('should enter maintenance mode in "database restore mode"', async () => {

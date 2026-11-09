@@ -1,20 +1,20 @@
 import { Injectable } from '@nestjs/common';
-import { Activity } from 'src/database';
+import { Activity } from 'src/database.js';
 import {
   ActivityCreateDto,
   ActivityDto,
   ActivityResponseDto,
   ActivitySearchDto,
   ActivityStatisticsResponseDto,
-  mapActivity,
   MaybeDuplicate,
   ReactionLevel,
   ReactionType,
-} from 'src/dtos/activity.dto';
-import { AuthDto } from 'src/dtos/auth.dto';
-import { Permission } from 'src/enum';
-import { BaseService } from 'src/services/base.service';
-import { LockService } from 'src/services/lock.service';
+  mapActivity,
+} from 'src/dtos/activity.dto.js';
+import { AuthDto } from 'src/dtos/auth.dto.js';
+import { Permission } from 'src/enum.js';
+import { BaseService } from 'src/services/base.service.js';
+import { LockService } from 'src/services/lock.service.js';
 
 @Injectable()
 export class ActivityService extends BaseService {

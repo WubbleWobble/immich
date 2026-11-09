@@ -265,8 +265,8 @@
 
   $effect(() => console.log(steps));
 
-  const { Download, Duplicate, CopyJson, Delete } = $derived(
-    getWorkflowActions($t, { ...savedWorkflow, name, description, enabled, trigger, steps }),
+  const { Download, Duplicate, CopyJson, Delete, Logs } = $derived(
+    getWorkflowActions($t, { ...savedWorkflow, ...workflowJsonContent }),
   );
 </script>
 
@@ -280,7 +280,7 @@
       {onClose}
       translations={{ close: $t('back') }}
       closeIcon={mdiArrowLeft}
-      actions={[Duplicate, CopyJson, Download, Delete].map((item) => ({ ...item, color: undefined }))}
+      actions={[Logs, Duplicate, CopyJson, Download, Delete].map((item) => ({ ...item, color: undefined }))}
     >
       <ControlBarHeader>
         <ControlBarTitle>{data.workflow.name}</ControlBarTitle>

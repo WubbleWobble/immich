@@ -1,18 +1,18 @@
 import { Injectable } from '@nestjs/common';
-import { ExpressionBuilder, Insertable, Kysely, Updateable } from 'kysely';
 import { jsonArrayFrom } from 'kysely/helpers/postgres';
 import { InjectKysely } from 'nestjs-kysely';
-import { columns } from 'src/database';
-import { DummyValue, GenerateSql } from 'src/decorators';
-import { DB } from 'src/schema';
-import { StackTable } from 'src/schema/tables/stack.table';
+import type { ExpressionBuilder, Insertable, Kysely, Updateable } from 'kysely';
+import { columns } from 'src/database.js';
+import { DummyValue, GenerateSql } from 'src/decorators.js';
+import { DB } from 'src/schema/index.js';
+import { StackTable } from 'src/schema/tables/stack.table.js';
 import {
   asUuid,
   joinDeduplicationPlugin,
   OwnerLockVisibility,
   withDefaultVisibility,
   withLockVisibility,
-} from 'src/utils/database';
+} from 'src/utils/database.js';
 
 export interface StackSearch {
   ownerId: string;
@@ -53,7 +53,8 @@ const withAssets = (
       .where('asset.deletedAt', 'is', null)
       .whereRef('asset.stackId', '=', 'stack.id')
       .$call(withDefaultVisibility)
-      .$if(!!db && !!lockVisibility?.length, (qb) => withLockVisibility(qb, db!, lockVisibility!)),
+      .$if(!!db && !!lockVisibility?.length, (qb) => withLockVisibility(qb, db!, lockVisibility!))
+      .orderBy('asset.fileCreatedAt', 'asc'),
   ).as('assets');
 };
 

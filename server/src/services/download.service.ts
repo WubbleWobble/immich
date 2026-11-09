@@ -1,17 +1,22 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { parse } from 'node:path';
 import sanitize from 'sanitize-filename';
-import { StorageCore } from 'src/cores/storage.core';
-import { AuthDto } from 'src/dtos/auth.dto';
-import { DownloadArchiveDto, DownloadArchiveInfo, DownloadInfoDto, DownloadResponseDto } from 'src/dtos/download.dto';
-import { toEvaluableSmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
-import { AlbumKind, AlbumUserRole, Permission } from 'src/enum';
-import { ImmichReadStream } from 'src/repositories/storage.repository';
-import { BaseService } from 'src/services/base.service';
-import { LockService } from 'src/services/lock.service';
-import { HumanReadableSize } from 'src/utils/bytes';
-import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
-import { getPreferences } from 'src/utils/preferences';
+import { StorageCore } from 'src/cores/storage.core.js';
+import { AuthDto } from 'src/dtos/auth.dto.js';
+import {
+  DownloadArchiveDto,
+  DownloadArchiveInfo,
+  DownloadInfoDto,
+  DownloadResponseDto,
+} from 'src/dtos/download.dto.js';
+import { toEvaluableSmartAlbumFilter } from 'src/dtos/smart-album-filter.dto.js';
+import { AlbumKind, AlbumUserRole, Permission } from 'src/enum.js';
+import { ImmichReadStream } from 'src/repositories/storage.repository.js';
+import { BaseService } from 'src/services/base.service.js';
+import { LockService } from 'src/services/lock.service.js';
+import { HumanReadableSize } from 'src/utils/bytes.js';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
+import { getPreferences } from 'src/utils/preferences.js';
 
 @Injectable()
 export class DownloadService extends BaseService {
@@ -66,10 +71,12 @@ export class DownloadService extends BaseService {
       archive.assetIds.push(id);
       archive.size += Number(size || 0);
 
-      if (archive.size > targetSize) {
-        archives.push(archive);
-        archive = { size: 0, assetIds: [] };
+      if (archive.size <= targetSize) {
+        return;
       }
+
+      archives.push(archive);
+      archive = { size: 0, assetIds: [] };
     };
 
     for await (const asset of assets) {
@@ -141,6 +148,9 @@ export class DownloadService extends BaseService {
 
     void zip.finalize();
 
-    return { stream: zip.stream };
+    return {
+      stream: zip.stream,
+      disposition: dto.archiveName && `attachment; filename*=UTF-8''${encodeURIComponent(dto.archiveName)}.zip`,
+    };
   }
 }

@@ -2,14 +2,8 @@
   import AlbumCardGroup from '$lib/components/album-page/AlbumCardGroup.svelte';
   import AlbumsTable from '$lib/components/album-page/AlbumsTable.svelte';
   import OnEvents from '$lib/components/OnEvents.svelte';
-  import MenuOption from '$lib/components/shared-components/context-menu/MenuOption.svelte';
-  import RightClickContextMenu from '$lib/components/shared-components/context-menu/RightClickContextMenu.svelte';
   import { authManager } from '$lib/managers/auth-manager.svelte';
-  import AlbumEditModal from '$lib/modals/AlbumEditModal.svelte';
-  import AlbumOptionsModal from '$lib/modals/AlbumOptionsModal.svelte';
-  import MoveToFolderModal from '$lib/modals/MoveToFolderModal.svelte';
-  import { invalidateAll } from '$app/navigation';
-  import { handleDeleteAlbum, handleDownloadAlbum } from '$lib/services/album.service';
+  import { handleDeleteAlbum, isAlbumOwner } from '$lib/services/album.service';
   import {
     AlbumFilter,
     AlbumGroupBy,
@@ -20,17 +14,8 @@
     type AlbumViewSettings,
   } from '$lib/stores/preferences.store';
   import { getSelectedAlbumGroupOption, sortAlbums, stringToSortOrder, type AlbumGroup } from '$lib/utils/album-utils';
-  import type { ContextMenuPosition } from '$lib/utils/context-menu';
   import { normalizeSearchString } from '$lib/utils/string-utils';
-  import { AlbumUserRole, type AlbumResponseDto, type SharedLinkResponseDto } from '@immich/sdk';
-  import { modalManager } from '@immich/ui';
-  import {
-    mdiDeleteOutline,
-    mdiDownload,
-    mdiFolderMoveOutline,
-    mdiRenameOutline,
-    mdiShareVariantOutline,
-  } from '@mdi/js';
+  import { type AlbumResponseDto, type SharedLinkResponseDto } from '@immich/sdk';
   import { groupBy } from 'lodash-es';
   import { onMount, type Snippet } from 'svelte';
   import { t } from 'svelte-i18n';
@@ -64,7 +49,7 @@
 
   const groupOptions: AlbumGroupOption = {
     /** No grouping */
-    [AlbumGroupBy.None]: (order, albums): AlbumGroup[] => {
+    [AlbumGroupBy.None]: (_, albums): AlbumGroup[] => {
       return [
         {
           id: $t('albums'),
@@ -138,10 +123,7 @@
         return sharedAlbums;
       }
       default: {
-        const nonOwnedAlbums = sharedAlbums.filter(
-          (album) =>
-            album.albumUsers.find(({ user: { id } }) => id === authManager.user.id)?.role !== AlbumUserRole.Owner,
-        );
+        const nonOwnedAlbums = sharedAlbums.filter((album) => !isAlbumOwner(album));
         return nonOwnedAlbums.length > 0 ? ownedAlbums.concat(nonOwnedAlbums) : ownedAlbums;
       }
     }
@@ -169,18 +151,10 @@
     }));
   });
 
-  let contextMenuPosition: ContextMenuPosition = $state({ x: 0, y: 0 });
-  let selectedAlbum: AlbumResponseDto | undefined = $state();
-  let isOpen = $state(false);
-
   // TODO get rid of this
   $effect(() => {
     albumGroupIds = groupedAlbums.map(({ id }) => id);
   });
-
-  let showFullContextMenu = $derived(
-    allowEdit && selectedAlbum && selectedAlbum.albumUsers[0].user.id === authManager.user.id,
-  );
 
   onMount(async () => {
     if (allowEdit) {
@@ -188,61 +162,10 @@
     }
   });
 
-  const showAlbumContextMenu = (contextMenuDetail: ContextMenuPosition, album: AlbumResponseDto) => {
-    selectedAlbum = album;
-    contextMenuPosition = {
-      x: contextMenuDetail.x,
-      y: contextMenuDetail.y,
-    };
-    isOpen = true;
-  };
-
-  const closeAlbumContextMenu = () => {
-    isOpen = false;
-  };
-
-  const handleSelect = async (action: 'edit' | 'share' | 'download' | 'delete' | 'move') => {
-    closeAlbumContextMenu();
-
-    if (!selectedAlbum) {
-      return;
-    }
-
-    switch (action) {
-      case 'edit': {
-        await modalManager.show(AlbumEditModal, { album: selectedAlbum });
-        break;
-      }
-
-      case 'share': {
-        await modalManager.show(AlbumOptionsModal, { album: selectedAlbum });
-        break;
-      }
-
-      case 'move': {
-        const moved = await modalManager.show(MoveToFolderModal, {
-          kind: 'album',
-          sourceId: selectedAlbum.id,
-          currentParentId: selectedAlbum.containerId ?? null,
-        });
-        if (moved) {
-          await invalidateAll();
-        }
-        break;
-      }
-
-      case 'download': {
-        await handleDownloadAlbum(selectedAlbum);
-        break;
-      }
-
-      case 'delete': {
-        await handleDeleteAlbum(selectedAlbum);
-        break;
-      }
-    }
-  };
-
+  // FORK-PORT: the fork's handleSelect gained a 'move' case: modalManager.show(MoveToFolderModal, { kind: 'album',
+  // sourceId: selectedAlbum.id, currentParentId: selectedAlbum.containerId ?? null }) then invalidateAll() when moved.
+  // Upstream removed showAlbumContextMenu/handleSelect in favour of getAlbumActions() (web album.service) + @immich/ui
+  // menus; re-add "move to folder" as an album action (owner-only, Task 8).
   const removeAlbumsIfEmpty = async () => {
     const albumsToRemove = ownedAlbums.filter((album) => album.assetCount === 0 && !album.albumName);
     await Promise.allSettled(albumsToRemove.map((album) => handleDeleteAlbum(album, { prompt: false, notify: false })));
@@ -280,43 +203,21 @@
   {#if userSettings.view === AlbumViewMode.Cover}
     <!-- Album Cards -->
     {#if albumGroupOption === AlbumGroupBy.None}
-      <AlbumCardGroup
-        albums={groupedAlbums[0].albums}
-        {showOwner}
-        showDateRange
-        showItemCount
-        onShowContextMenu={showAlbumContextMenu}
-      />
+      <AlbumCardGroup albums={groupedAlbums[0].albums} {showOwner} showDateRange showItemCount />
     {:else}
       {#each groupedAlbums as albumGroup (albumGroup.id)}
-        <AlbumCardGroup
-          albums={albumGroup.albums}
-          group={albumGroup}
-          {showOwner}
-          showDateRange
-          showItemCount
-          onShowContextMenu={showAlbumContextMenu}
-        />
+        <AlbumCardGroup albums={albumGroup.albums} group={albumGroup} {showOwner} showDateRange showItemCount />
       {/each}
     {/if}
   {:else if userSettings.view === AlbumViewMode.List}
     <!-- Album Table -->
-    <AlbumsTable {groupedAlbums} {albumGroupOption} onShowContextMenu={showAlbumContextMenu} />
+    <AlbumsTable {groupedAlbums} {albumGroupOption} />
   {/if}
 {:else}
   <!-- Empty Message -->
   {@render empty?.()}
 {/if}
 
-<!-- Context Menu -->
-<RightClickContextMenu title={$t('album_options')} {...contextMenuPosition} {isOpen} onClose={closeAlbumContextMenu}>
-  {#if showFullContextMenu}
-    <MenuOption icon={mdiRenameOutline} text={$t('edit_album')} onClick={() => handleSelect('edit')} />
-    <MenuOption icon={mdiShareVariantOutline} text={$t('share')} onClick={() => handleSelect('share')} />
-    <MenuOption icon={mdiFolderMoveOutline} text={$t('move_to_folder')} onClick={() => handleSelect('move')} />
-  {/if}
-  <MenuOption icon={mdiDownload} text={$t('download')} onClick={() => handleSelect('download')} />
-  {#if showFullContextMenu}
-    <MenuOption icon={mdiDeleteOutline} text={$t('delete')} onClick={() => handleSelect('delete')} />
-  {/if}
-</RightClickContextMenu>
+<!-- FORK-PORT: the fork's album right-click menu had a "Move to folder" entry (MenuOption icon=mdiFolderMoveOutline
+text=$t('move_to_folder'), shown with the owner-only Edit/Share entries via showFullContextMenu). Upstream replaced
+RightClickContextMenu with @immich/ui ContextMenuButton items from getAlbumActions(); add a MoveToFolder action there. -->

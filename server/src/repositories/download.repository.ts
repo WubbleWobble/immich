@@ -1,16 +1,16 @@
 import { Injectable } from '@nestjs/common';
 import { Kysely } from 'kysely';
 import { InjectKysely } from 'nestjs-kysely';
-import { AssetVisibility } from 'src/enum';
-import { AssetSearchOptions } from 'src/repositories/search.repository';
-import { DB } from 'src/schema';
+import { AssetVisibility } from 'src/enum.js';
+import { AssetSearchOptions } from 'src/repositories/search.repository.js';
+import { DB } from 'src/schema/index.js';
 import {
   anyUuid,
   joinDeduplicationPlugin,
   OwnerLockVisibility,
   searchAssetIdSubquery,
   withLockVisibility,
-} from 'src/utils/database';
+} from 'src/utils/database.js';
 
 const builder = (db: Kysely<DB>) =>
   db

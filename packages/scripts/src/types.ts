@@ -11,7 +11,7 @@ export const RELEASE_TYPES = [
 ] as const;
 
 export type ReleaseType = (typeof RELEASE_TYPES)[number];
-export type ReleaseOptions = { type: string; mobile: boolean };
+export type ReleaseOptions = { type: string };
 
 export class TextFile {
   constructor(private file: string) {}
@@ -40,6 +40,8 @@ export class JsonFile<T extends object> {
     return this.text.write(JSON.stringify(contents, null, 2) + '\n');
   }
 }
+
+export type Public<T extends object> = Pick<T, keyof T>;
 
 export class ReleaseInputError extends Error {}
 export class ReleaseError extends Error {

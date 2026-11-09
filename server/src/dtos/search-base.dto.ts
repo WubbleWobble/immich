@@ -1,3 +1,7 @@
+// FORK-PORT: stale copy of the v3.1.0 search schemas. Upstream v3.3.6 redefines BaseSearchSchema,
+// BaseSearchWithResultsSchema, RandomSearchSchema and MetadataSearchSchema in place in src/dtos/search.dto.ts
+// (deprecated flat fields, size defaults, structured filter/orderBy/cursor). The merge took upstream's definitions
+// there; smart-album-filter.dto.ts still derives SmartAlbumFilterSchema from this stale MetadataSearchSchema.
 import { HistoryBuilder } from 'src/decorators';
 import { AssetOrder, AssetOrderSchema, AssetTypeSchema, AssetVisibilitySchema } from 'src/enum';
 import { isoDatetimeToDate } from 'src/validation';

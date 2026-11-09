@@ -1,16 +1,16 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { AuthDto } from 'src/dtos/auth.dto';
-import { toEvaluableSmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
-import { TimeBucketAssetDto, TimeBucketDto, TimeBucketsResponseDto } from 'src/dtos/time-bucket.dto';
-import { AlbumKind, AlbumUserRole, AssetVisibility, Permission } from 'src/enum';
-import { TimeBucketOptions } from 'src/repositories/asset.repository';
-import { AssetSearchBuilderOptions } from 'src/repositories/search.repository';
-import { BaseService } from 'src/services/base.service';
-import { LockService } from 'src/services/lock.service';
-import { requireElevatedPermission } from 'src/utils/access';
-import { getMyPartnerIds } from 'src/utils/asset.util';
-import { OwnerLockVisibility } from 'src/utils/database';
-import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
+import { AuthDto } from 'src/dtos/auth.dto.js';
+import { toEvaluableSmartAlbumFilter } from 'src/dtos/smart-album-filter.dto.js';
+import { TimeBucketAssetDto, TimeBucketDto, TimeBucketsResponseDto } from 'src/dtos/time-bucket.dto.js';
+import { AlbumKind, AlbumUserRole, AssetVisibility, Permission } from 'src/enum.js';
+import { TimeBucketOptions } from 'src/repositories/asset.repository.js';
+import { AssetSearchBuilderOptions } from 'src/repositories/search.repository.js';
+import { BaseService } from 'src/services/base.service.js';
+import { LockService } from 'src/services/lock.service.js';
+import { requireElevatedPermission } from 'src/utils/access.js';
+import { getMyPartnerIds } from 'src/utils/asset.util.js';
+import { OwnerLockVisibility } from 'src/utils/database.js';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
 
 interface SmartAlbumContext {
   /** Owner-scoped membership filter, or null when the album must present as empty. */
@@ -32,23 +32,31 @@ export class TimelineService extends BaseService {
       if (!smart.assetFilter) {
         return [];
       }
-      return await this.assetRepository.getTimeBuckets({
-        ...timeBucketOptions,
-        albumId: undefined,
-        assetFilter: smart.assetFilter,
-      });
+      return await this.assetRepository.getTimeBuckets(
+        {
+          ...timeBucketOptions,
+          albumId: undefined,
+          assetFilter: smart.assetFilter,
+        },
+        auth,
+      );
     }
 
     // Album-scoped views are deliberately not lock-filtered (spec §8.4): the album is the
     // container being inspected.
     if (dto.albumId) {
-      return await this.assetRepository.getTimeBuckets(timeBucketOptions);
+      return await this.assetRepository.getTimeBuckets(timeBucketOptions, auth);
     }
 
-    return await this.assetRepository.getTimeBuckets({
-      ...timeBucketOptions,
-      lockVisibility: await this.getLockVisibility(auth, timeBucketOptions.userIds),
-    });
+    // FORK-PORT: lock-audit — upstream now passes auth so getTimeBuckets can include, for personId requests, assets in
+    // albums shared with the viewer (inSharedAlbum, 28bd3a550); getLockVisibility below only covers the userIds owners.
+    return await this.assetRepository.getTimeBuckets(
+      {
+        ...timeBucketOptions,
+        lockVisibility: await this.getLockVisibility(auth, timeBucketOptions.userIds),
+      },
+      auth,
+    );
   }
 
   // pre-jsonified response
@@ -131,7 +139,7 @@ export class TimelineService extends BaseService {
         const partnerIds = await getMyPartnerIds({
           userId: auth.user.id,
           repository: this.partnerRepository,
-          timelineEnabled: true,
+          timelineEnabled: !options.personId || undefined,
         });
         userIds.push(...partnerIds);
       }
@@ -172,6 +180,7 @@ export class TimelineService extends BaseService {
       dto.withCoordinates = false;
     }
 
+    // eslint-disable-next-line unicorn/prefer-early-return
     if (dto.withPartners) {
       const isRequestedLocked = dto.visibility === AssetVisibility.Locked;
       const isRequestedArchived = dto.visibility === AssetVisibility.Archive || dto.visibility === undefined;

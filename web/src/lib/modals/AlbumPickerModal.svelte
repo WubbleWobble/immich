@@ -23,9 +23,10 @@
 
   type Props = {
     onClose: (albums?: AlbumResponseDto[]) => void;
+    selectedItemsCount?: number;
   };
 
-  let { onClose }: Props = $props();
+  let { onClose, selectedItemsCount }: Props = $props();
 
   onMount(async () => {
     // Smart albums are read-only and can never be add-to targets.
@@ -149,9 +150,15 @@
       }
     }
   };
+
+  const title = $derived(
+    selectedItemsCount === undefined
+      ? $t('select_albums')
+      : $t('add_to_album_item_count', { values: { count: selectedItemsCount } }),
+  );
 </script>
 
-<Modal title={$t('add_to_album')} {onClose} size="small">
+<Modal {title} {onClose} size="small">
   <ModalBody>
     <div class="mb-2 flex max-h-100 flex-col">
       {#if loading}

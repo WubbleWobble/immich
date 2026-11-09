@@ -1,10 +1,11 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import _ from 'lodash';
+import { isUndefined, omitBy } from 'lodash-es';
 import { DateTime, Duration } from 'luxon';
-import { JOBS_ASSET_PAGINATION_SIZE } from 'src/constants';
-import { AssetFile } from 'src/database';
-import { OnJob } from 'src/decorators';
-import { AssetResponseDto, SanitizedAssetResponseDto, mapAsset } from 'src/dtos/asset-response.dto';
+import type { AssetFile } from 'src/database.js';
+import type { AuthDto } from 'src/dtos/auth.dto.js';
+import type { JobItem, JobOf } from 'src/types.js';
+import { OnJob } from 'src/decorators.js';
+import { AssetResponseDto, SanitizedAssetResponseDto, mapAsset } from 'src/dtos/asset-response.dto.js';
 import {
   AssetBulkDeleteDto,
   AssetBulkUpdateDto,
@@ -19,10 +20,14 @@ import {
   AssetStatsDto,
   UpdateAssetDto,
   mapStats,
-} from 'src/dtos/asset.dto';
-import { AuthDto } from 'src/dtos/auth.dto';
-import { AssetEditAction, AssetEditActionItem, AssetEditsCreateDto, AssetEditsResponseDto } from 'src/dtos/editing.dto';
-import { AssetOcrResponseDto } from 'src/dtos/ocr.dto';
+} from 'src/dtos/asset.dto.js';
+import {
+  AssetEditAction,
+  type AssetEditActionItem,
+  AssetEditsCreateDto,
+  AssetEditsResponseDto,
+} from 'src/dtos/editing.dto.js';
+import { AssetOcrResponseDto } from 'src/dtos/ocr.dto.js';
 import {
   AssetFileType,
   AssetStatus,
@@ -32,11 +37,10 @@ import {
   JobStatus,
   Permission,
   QueueName,
-} from 'src/enum';
-import { AlbumService } from 'src/services/album.service';
-import { BaseService } from 'src/services/base.service';
-import { JobItem, JobOf } from 'src/types';
-import { requireElevatedPermission } from 'src/utils/access';
+} from 'src/enum.js';
+import { AlbumService } from 'src/services/album.service.js';
+import { BaseService } from 'src/services/base.service.js';
+import { requireElevatedPermission } from 'src/utils/access.js';
 import {
   getAssetFiles,
   getDimensions,
@@ -45,11 +49,12 @@ import {
   onBeforeLink,
   onBeforeUnlink,
   rejectLegacyLockedVisibility,
-} from 'src/utils/asset.util';
-import { updateLockedColumns } from 'src/utils/database';
-import { extractTimeZone } from 'src/utils/date';
-import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
-import { transformOcrBoundingBox } from 'src/utils/transform';
+} from 'src/utils/asset.util.js';
+import { updateLockedColumns } from 'src/utils/database.js';
+import { extractTimeZone } from 'src/utils/date.js';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
+import { batched, findOrFail } from 'src/utils/misc.js';
+import { transformOcrBoundingBox } from 'src/utils/transform.js';
 
 @Injectable()
 export class AssetService extends BaseService {
@@ -75,7 +80,7 @@ export class AssetService extends BaseService {
     const asset = await this.assetRepository.getById(id, {
       exifInfo: true,
       owner: true,
-      faces: { person: true },
+      faces: { person: true, viewingUserId: auth.user.id },
       stack: { assets: true },
       edits: true,
       tags: true,
@@ -95,7 +100,7 @@ export class AssetService extends BaseService {
       delete data.owner;
     }
 
-    if (data.ownerId !== auth.user.id || auth.sharedLink) {
+    if (auth.sharedLink) {
       data.people = [];
     }
 
@@ -119,7 +124,7 @@ export class AssetService extends BaseService {
       }
     }
 
-    await this.updateExif({ id, description, dateTimeOriginal, latitude, longitude, rating });
+    const wroteMetadata = await this.updateExif({ id, description, dateTimeOriginal, latitude, longitude, rating });
 
     const asset = await this.assetRepository.update({ id, ...rest });
 
@@ -139,7 +144,13 @@ export class AssetService extends BaseService {
     // so any asset update can change membership. Invalidate but do not fail the update.
     await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetsSafe(asset.ownerId, [asset.id]);
 
-    return mapAsset(asset, { auth });
+    if (!wroteMetadata) {
+      this.websocketRepository.clientSend('on_asset_update', auth.user.id, mapAsset(asset, { auth }));
+    }
+
+    // FORK-PORT: lock-audit — upstream now returns this.get(auth, id) (re-read through the access/lock-checked get path)
+    // instead of mapAsset(asset, { auth }); confirm get() applies the fork's lock visibility for the updater.
+    return this.get(auth, id) as Promise<AssetResponseDto>;
   }
 
   async updateAll(auth: AuthDto, dto: AssetBulkUpdateDto): Promise<void> {
@@ -159,8 +170,8 @@ export class AssetService extends BaseService {
     } = dto;
     await this.requireAccess({ auth, permission: Permission.AssetUpdate, ids });
 
-    const assetDto = _.omitBy({ isFavorite, visibility, duplicateId }, _.isUndefined);
-    const exifDto = _.omitBy(
+    const assetDto = omitBy({ isFavorite, visibility, duplicateId }, isUndefined);
+    const exifDto = omitBy(
       {
         latitude,
         longitude,
@@ -168,11 +179,13 @@ export class AssetService extends BaseService {
         description,
         dateTimeOriginal,
       },
-      _.isUndefined,
+      isUndefined,
     );
 
+    let shouldWriteSidecar = false;
     if (Object.keys(exifDto).length > 0) {
       await this.assetRepository.updateAllExif(ids, exifDto);
+      shouldWriteSidecar = true;
     }
 
     const extractedTimeZone = extractTimeZone(dateTimeOriginal);
@@ -183,13 +196,23 @@ export class AssetService extends BaseService {
       extractedTimeZone?.type === 'fixed'
     ) {
       await this.assetRepository.updateDateTimeOriginal(ids, dateTimeRelative, timeZone ?? extractedTimeZone?.name);
+      shouldWriteSidecar = true;
     }
 
     if (Object.keys(assetDto).length > 0) {
       await this.assetRepository.updateAll(ids, assetDto);
     }
 
-    await this.jobRepository.queueAll(ids.map((id) => ({ name: JobName.SidecarWrite, data: { id } })));
+    // FORK-PORT: the fork removed upstream's per-asset Locked branch here (`if (visibility === AssetVisibility.Locked)
+    // await this.albumRepository.removeAssetsFromAll(ids)`); AssetVisibility.Locked is retired (D4), so it stays out.
+    if (shouldWriteSidecar) {
+      await this.jobRepository.queueAll(ids.map((id) => ({ name: JobName.SidecarWrite, data: { id } })));
+    } else {
+      const assets = await this.assetRepository.getByIds(ids);
+      for (const asset of assets) {
+        this.websocketRepository.clientSend('on_asset_update', auth.user.id, mapAsset(asset, { auth }));
+      }
+    }
 
     // Bulk updates touch fields (favorite, visibility, rating, dateTime, description) that
     // smart album filters care about, so invalidate matching caches.
@@ -294,30 +317,16 @@ export class AssetService extends BaseService {
       .minus(Duration.fromObject({ days: trashedDays }))
       .toJSDate();
 
-    let chunk: Array<{ id: string; isOffline: boolean }> = [];
-    const queueChunk = async () => {
-      if (chunk.length === 0) {
-        return;
-      }
-
+    let count = 0;
+    for await (const assets of batched(this.assetJobRepository.streamForDeletedJob(trashedBefore))) {
       await this.jobRepository.queueAll(
-        chunk.map(({ id, isOffline }) => ({
-          name: JobName.AssetDelete,
-          data: { id, deleteOnDisk: !isOffline },
-        })),
+        assets.map(({ id, isOffline }) => ({ name: JobName.AssetDelete, data: { id, deleteOnDisk: !isOffline } })),
       );
-      chunk = [];
-    };
-
-    const assets = this.assetJobRepository.streamForDeletedJob(trashedBefore);
-    for await (const asset of assets) {
-      chunk.push(asset);
-      if (chunk.length >= JOBS_ASSET_PAGINATION_SIZE) {
-        await queueChunk();
-      }
+      count += assets.length;
     }
-
-    await queueChunk();
+    if (count > 0) {
+      this.logger.log(`Automatically queued ${count} expired trash asset(s) for deletion`);
+    }
 
     return JobStatus.Success;
   }
@@ -520,12 +529,8 @@ export class AssetService extends BaseService {
     await this.jobRepository.queueAll(jobs);
   }
 
-  private async findOrFail(id: string) {
-    const asset = await this.assetRepository.getById(id);
-    if (!asset) {
-      throw new BadRequestException('Asset not found');
-    }
-    return asset;
+  private findOrFail(id: string) {
+    return findOrFail(() => this.assetRepository.getById(id), 'Asset');
   }
 
   private async updateExif(dto: {
@@ -537,7 +542,7 @@ export class AssetService extends BaseService {
     rating?: number | null;
   }) {
     const { id, description, dateTimeOriginal, latitude, longitude, rating } = dto;
-    const writes = _.omitBy(
+    const writes = omitBy(
       {
         description,
         dateTimeOriginal,
@@ -546,19 +551,22 @@ export class AssetService extends BaseService {
         longitude,
         rating,
       },
-      _.isUndefined,
+      isUndefined,
     );
 
-    if (Object.keys(writes).length > 0) {
-      await this.assetRepository.upsertExif({
-        exif: updateLockedColumns({
-          assetId: id,
-          ...writes,
-        }),
-        lockedPropertiesBehavior: 'append',
-      });
-      await this.jobRepository.queue({ name: JobName.SidecarWrite, data: { id } });
+    if (Object.keys(writes).length === 0) {
+      return false;
     }
+
+    await this.assetRepository.upsertExif({
+      exif: updateLockedColumns({
+        assetId: id,
+        ...writes,
+      }),
+      lockedPropertiesBehavior: 'append',
+    });
+    await this.jobRepository.queue({ name: JobName.SidecarWrite, data: { id } });
+    return true;
   }
 
   async getAssetEdits(auth: AuthDto, id: string): Promise<AssetEditsResponseDto> {

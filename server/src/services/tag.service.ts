@@ -1,8 +1,8 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Insertable } from 'kysely';
-import { OnJob } from 'src/decorators';
-import { BulkIdResponseDto, BulkIdsDto } from 'src/dtos/asset-ids.response.dto';
-import { AuthDto } from 'src/dtos/auth.dto';
+import { OnJob } from 'src/decorators.js';
+import { BulkIdResponseDto, BulkIdsDto } from 'src/dtos/asset-ids.response.dto.js';
+import { AuthDto } from 'src/dtos/auth.dto.js';
 import {
   TagBulkAssetsDto,
   TagBulkAssetsResponseDto,
@@ -11,15 +11,16 @@ import {
   TagUpdateDto,
   TagUpsertDto,
   mapTag,
-} from 'src/dtos/tag.dto';
-import { JobName, JobStatus, Permission, QueueName } from 'src/enum';
-import { TagAssetTable } from 'src/schema/tables/tag-asset.table';
-import { AlbumService } from 'src/services/album.service';
-import { BaseService } from 'src/services/base.service';
-import { addAssets, removeAssets } from 'src/utils/asset.util';
-import { updateLockedColumns } from 'src/utils/database';
-import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
-import { upsertTags } from 'src/utils/tag';
+} from 'src/dtos/tag.dto.js';
+import { JobName, JobStatus, Permission, QueueName } from 'src/enum.js';
+import { TagAssetTable } from 'src/schema/tables/tag-asset.table.js';
+import { AlbumService } from 'src/services/album.service.js';
+import { BaseService } from 'src/services/base.service.js';
+import { addAssets, removeAssets } from 'src/utils/asset.util.js';
+import { updateLockedColumns } from 'src/utils/database.js';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
+import { findOrFail } from 'src/utils/misc.js';
+import { upsertTags } from 'src/utils/tag.js';
 
 @Injectable()
 export class TagService extends BaseService {
@@ -67,8 +68,21 @@ export class TagService extends BaseService {
   async update(auth: AuthDto, id: string, dto: TagUpdateDto): Promise<TagResponseDto> {
     await this.requireAccess({ auth, permission: Permission.TagUpdate, ids: [id] });
 
-    const { color } = dto;
-    const tag = await this.tagRepository.update(id, { color });
+    const { name, color } = dto;
+    const existing = await this.findOrFail(id);
+
+    let value;
+    if (name) {
+      const parts = existing.value.split('/');
+      parts[parts.length - 1] = name;
+      value = parts.join('/');
+    } else {
+      value = existing.value;
+    }
+
+    const assetIds = value === existing.value ? [] : await this.tagRepository.getAssetIdsByTagId(id);
+    const tag = await this.tagRepository.update(id, { value, color });
+    await this.syncAssetTags(assetIds);
     return mapTag(tag);
   }
 
@@ -80,10 +94,13 @@ export class TagService extends BaseService {
   async remove(auth: AuthDto, id: string): Promise<void> {
     await this.requireAccess({ auth, permission: Permission.TagDelete, ids: [id] });
 
-    // TODO sync tag changes for affected assets
-
+    const assetIds = await this.tagRepository.getAssetIdsByTagId(id);
     await this.tagRepository.delete(id);
+    // FORK-PORT: lock-audit — new upstream path (54987c764): getAssetIdsByTagId + syncAssetTags rewrite exif tags of
+    // every asset carrying the deleted tag (owner-scoped background-style write; confirm no lock-hidden leakage).
+    await this.syncAssetTags(assetIds);
 
+    // FORK-PORT: D12 (Task 7A.3) removes this pruning; dangling tag ids must stay and zero-match.
     // Self-heal smart album filters that still reference the deleted tag id. With AND
     // semantics across tagIds, a dangling reference would otherwise make the album match
     // nothing. Safe wrapper: failure here must not abort the tag delete from the user's POV.
@@ -107,7 +124,7 @@ export class TagService extends BaseService {
     const affectedAssetIds = [...new Set(results.map((item) => item.assetId))];
     for (const assetId of affectedAssetIds) {
       await this.updateTags(assetId);
-      await this.eventRepository.emit('AssetTag', { assetId });
+      await this.eventRepository.emit('AssetTag', { assetId, userId: auth.user.id });
     }
 
     // Tag membership shifts can change smart-album results that filter by tagIds.
@@ -122,7 +139,7 @@ export class TagService extends BaseService {
     const results = await addAssets(
       auth,
       { access: this.accessRepository, bulk: this.tagRepository },
-      { parentId: id, assetIds: dto.ids },
+      { parentId: id, assetIds: dto.ids, permission: Permission.AssetUpdate },
     );
 
     const taggedAssetIds: string[] = [];
@@ -132,7 +149,7 @@ export class TagService extends BaseService {
       }
 
       await this.updateTags(assetId);
-      await this.eventRepository.emit('AssetTag', { assetId });
+      await this.eventRepository.emit('AssetTag', { assetId, userId: auth.user.id });
       taggedAssetIds.push(assetId);
     }
 
@@ -176,12 +193,8 @@ export class TagService extends BaseService {
     return JobStatus.Success;
   }
 
-  private async findOrFail(id: string) {
-    const tag = await this.tagRepository.get(id);
-    if (!tag) {
-      throw new BadRequestException('Tag not found');
-    }
-    return tag;
+  private findOrFail(id: string) {
+    return findOrFail(() => this.tagRepository.get(id), 'Tag');
   }
 
   private async updateTags(assetId: string) {
@@ -190,5 +203,17 @@ export class TagService extends BaseService {
       exif: updateLockedColumns({ assetId, tags: tags.map(({ value }) => value) }),
       lockedPropertiesBehavior: 'append',
     });
+  }
+
+  private async syncAssetTags(assetIds: string[]) {
+    if (assetIds.length === 0) {
+      return;
+    }
+
+    for (const assetId of assetIds) {
+      await this.updateTags(assetId);
+    }
+
+    await this.jobRepository.queueAll(assetIds.map((id) => ({ name: JobName.SidecarWrite, data: { id } })));
   }
 }

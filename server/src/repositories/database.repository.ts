@@ -1,31 +1,34 @@
 import { schemaDiff, schemaFromCode, schemaFromDatabase } from '@immich/sql-tools';
 import { Injectable } from '@nestjs/common';
 import AsyncLock from 'async-lock';
-import { FileMigrationProvider, Kysely, Migrator, sql } from 'kysely';
+import { Kysely, sql } from 'kysely';
+import { FileMigrationProvider, Migrator } from 'kysely/migration';
 import { InjectKysely } from 'nestjs-kysely';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import semver from 'semver';
+import { diff } from 'semver';
+import z from 'zod';
+import type { ExtensionVersion, VectorExtension } from 'src/types.js';
 import {
   EXTENSION_NAMES,
   POSTGRES_VERSION_RANGE,
+  VECTORCHORD_LIST_SLACK_FACTOR,
+  VECTORCHORD_VERSION_RANGE,
   VECTOR_EXTENSIONS,
   VECTOR_INDEX_TABLES,
   VECTOR_VERSION_RANGE,
-  VECTORCHORD_LIST_SLACK_FACTOR,
-  VECTORCHORD_VERSION_RANGE,
-} from 'src/constants';
-import { GenerateSql } from 'src/decorators';
-import { DatabaseExtension, DatabaseLock, VectorIndex } from 'src/enum';
-import { ConfigRepository } from 'src/repositories/config.repository';
-import { LoggingRepository } from 'src/repositories/logging.repository';
-import 'src/schema'; // make sure all schema definitions are imported for schemaFromCode
-import { DB } from 'src/schema';
-import { immich_uuid_v7 } from 'src/schema/functions';
-import { up as retireWorkflowLockSteps } from 'src/schema/migrations/1784900000000-RetireWorkflowLockSteps';
-import { ExtensionVersion, VectorExtension } from 'src/types';
-import { vectorIndexQuery } from 'src/utils/database';
-import z from 'zod';
+  serverVersion,
+} from 'src/constants.js';
+import { GenerateSql } from 'src/decorators.js';
+import { DatabaseExtension, DatabaseLock, VectorIndex } from 'src/enum.js';
+import { ConfigRepository } from 'src/repositories/config.repository.js';
+import { LoggingRepository } from 'src/repositories/logging.repository.js';
+import { immich_uuid_v7 } from 'src/schema/functions.js';
+// eslint-disable-next-line import-x/no-duplicates
+import 'src/schema/index.js'; // make sure all schema definitions are imported for schemaFromCode
+// eslint-disable-next-line import-x/no-duplicates
+import { DB } from 'src/schema/index.js';
+import { vectorIndexQuery } from 'src/utils/database.js';
 
 export let cachedVectorExtension: VectorExtension | undefined;
 export async function getVectorExtension(runner: Kysely<DB>): Promise<VectorExtension> {
@@ -52,36 +55,6 @@ export const probes: Record<VectorIndex, number> = {
   [VectorIndex.Clip]: 1,
   [VectorIndex.Face]: 1,
 };
-
-// Obsolete fork migration names and their current replacements (see
-// normalizeForkLedger). Shared with the rolling-upgrade retry in runMigrations.
-const FORK_LEDGER_RENAMES: Array<{ oldName: string; newName: string; anchor: string }> = [
-  {
-    oldName: '1779580000001-RetireWorkflowLockSteps',
-    newName: '1784900000000-RetireWorkflowLockSteps',
-    anchor: '1784836013770-MinFacePreferenceMigration',
-  },
-  {
-    oldName: '1779487447243-AddAlbumSmartKind',
-    newName: '1784910000001-AddAlbumSmartKind',
-    anchor: '1784900000000-RetireWorkflowLockSteps',
-  },
-  {
-    oldName: '1779549231508-AddAlbumSmartAlbumCache',
-    newName: '1784910000002-AddAlbumSmartAlbumCache',
-    anchor: '1784910000001-AddAlbumSmartKind',
-  },
-  {
-    oldName: '1779574778179-AddAlbumContainers',
-    newName: '1784910000003-AddAlbumContainers',
-    anchor: '1784910000002-AddAlbumSmartAlbumCache',
-  },
-  {
-    oldName: '1779580000000-AddLockedContent',
-    newName: '1784910000004-AddLockedContent',
-    anchor: '1784910000003-AddAlbumContainers',
-  },
-];
 
 @Injectable()
 export class DatabaseRepository {
@@ -140,11 +113,13 @@ export class DatabaseRepository {
   async createExtension(extension: DatabaseExtension): Promise<void> {
     this.logger.log(`Creating ${EXTENSION_NAMES[extension]} extension`);
     await sql`CREATE EXTENSION IF NOT EXISTS ${sql.raw(extension)} CASCADE`.execute(this.db);
-    if (extension === DatabaseExtension.VectorChord) {
-      const dbName = sql.id(await this.getDatabaseName());
-      await sql`ALTER DATABASE ${dbName} SET vchordrq.probes = 1`.execute(this.db);
-      await sql`SET vchordrq.probes = 1`.execute(this.db);
+    if (extension !== DatabaseExtension.VectorChord) {
+      return;
     }
+
+    const dbName = sql.id(await this.getDatabaseName());
+    await sql`ALTER DATABASE ${dbName} SET vchordrq.probes = 1`.execute(this.db);
+    await sql`SET vchordrq.probes = 1`.execute(this.db);
   }
 
   async dropExtension(extension: DatabaseExtension): Promise<void> {
@@ -163,7 +138,7 @@ export class DatabaseRepository {
     }
     targetVersion ??= availableVersion;
 
-    if (!semver.diff(installedVersion, targetVersion)) {
+    if (!diff(installedVersion, targetVersion)) {
       return;
     }
 
@@ -270,12 +245,21 @@ export class DatabaseRepository {
         SET DATA TYPE vector(${sql.raw(String(dimSize))})`.execute(tx);
       await sql.raw(vectorIndexQuery({ vectorExtension, table, indexName, lists })).execute(tx);
     });
-    try {
-      await sql`VACUUM ANALYZE ${sql.raw(table)}`.execute(this.db);
-    } catch (error: any) {
-      this.logger.warn(`Failed to vacuum table '${table}'. The DB will temporarily use more disk space: ${error}`);
-    }
     this.logger.log(`Reindexed ${indexName}`);
+    void this.vacuum({ table }).catch((error) => this.logger.warn(`Failed to vacuum ${table}: ${error}`));
+  }
+
+  async vacuum({ analyze = false, table }: { analyze?: boolean; table?: keyof DB } = {}): Promise<void> {
+    try {
+      await sql`VACUUM ${sql.raw(analyze ? 'ANALYZE' : '')} ${sql.raw(table ?? '')}`.execute(this.db);
+    } catch (error) {
+      this.logger.warn(`Failed to vacuum ${table || 'database'}: ${error}`);
+      this.logger.warn('If using Docker, consider increasing shm_size for the database.');
+    }
+  }
+
+  reindex(table: keyof DB, { concurrently = false } = {}): Promise<unknown> {
+    return sql`REINDEX TABLE ${sql.raw(concurrently ? 'CONCURRENTLY' : '')} ${sql.raw(table)}`.execute(this.db);
   }
 
   private async getDatabaseName(): Promise<string> {
@@ -380,7 +364,7 @@ export class DatabaseRepository {
     if (count < 128_000) {
       return 1;
     }
-    // eslint-disable-next-line unicorn/prefer-minimal-ternary
+
     return count < 2_048_000 ? 1 << (32 - Math.clz32(count / 1000)) : 1 << (33 - Math.clz32(Math.sqrt(count)));
   }
 
@@ -396,27 +380,14 @@ export class DatabaseRepository {
     return count;
   }
 
-  async runMigrations(): Promise<void> {
+  async runMigrations(): Promise<number> {
     this.logger.log('Running migrations');
 
-    await this.normalizeForkLedger();
+    const migrator = this.createMigrator();
 
-    let { error, results } = await this.createMigrator().migrateToLatest();
+    const { error, results = [] } = await migrator.migrateToLatest();
 
-    // Rolling-upgrade race: an old (1061114a0) instance can commit the backdated bridge
-    // row AFTER our normalization ran but before our migrator acquired its lock, making
-    // the migrator fail on a row that is missing from the current manifest. The ledger
-    // state itself is repairable, so re-normalize and retry once.
-    const migrationErrorMessage = error instanceof Error ? error.message : '';
-    if (FORK_LEDGER_RENAMES.some(({ oldName }) => migrationErrorMessage.includes(oldName))) {
-      this.logger.warn(
-        '[fork upgrade] Migration failed on the backdated bridge row (racing older instance?); re-normalizing the ledger and retrying.',
-      );
-      await this.normalizeForkLedger();
-      ({ error, results } = await this.createMigrator().migrateToLatest());
-    }
-
-    for (const result of results ?? []) {
+    for (const result of results) {
       if (result.status === 'Success') {
         this.logger.log(`Migration "${result.migrationName}" succeeded`);
       } else if (result.status === 'Error') {
@@ -426,10 +397,22 @@ export class DatabaseRepository {
 
     if (error) {
       this.logger.error(`Migrations failed: ${error}`);
+
+      const missing =
+        error instanceof Error ? error.message.match(/previously executed migration (.+) is missing/u) : null;
+      if (missing) {
+        throw new Error(
+          `Migration "${missing[1]}" was already applied to this database but is not in this version of Immich (${serverVersion}). ` +
+            `This usually means the database was migrated by a newer version. Downgrades are not supported.`,
+          { cause: error },
+        );
+      }
+
       throw error;
     }
 
     this.logger.log('Finished running migrations');
+    return results.length;
   }
 
   async migrateFilePaths(sourceFolder: string, targetFolder: string): Promise<void> {
@@ -515,136 +498,6 @@ export class DatabaseRepository {
     await sql`SELECT pg_advisory_unlock(${lock})`.execute(connection);
   }
 
-  async revertLastMigration(): Promise<string | undefined> {
-    this.logger.debug('Reverting last migration');
-
-    const migrator = this.createMigrator();
-    const { error, results } = await migrator.migrateDown();
-
-    for (const result of results ?? []) {
-      if (result.status === 'Success') {
-        this.logger.log(`Reverted migration "${result.migrationName}"`);
-      } else if (result.status === 'Error') {
-        this.logger.warn(`Failed to revert migration "${result.migrationName}"`);
-      }
-    }
-
-    if (error) {
-      this.logger.error(`Failed to revert migrations: ${error}`);
-      throw error;
-    }
-
-    const reverted = results?.find((result) => result.direction === 'Down' && result.status === 'Success');
-    if (!reverted) {
-      this.logger.debug('No migrations to revert');
-      return undefined;
-    }
-
-    this.logger.debug('Finished reverting migration');
-    return reverted.migrationName;
-  }
-
-  /**
-   * Fork ledger repair: interim integration-3.x commit 1061114a0 shipped the workflow
-   * bridge migration under the backdated name 1779580000001-RetireWorkflowLockSteps; it
-   * was later renamed to 1784900000000 (it must only precede plugin sync, and sorting
-   * early broke already-migrated databases). A ledger that executed the old name would
-   * otherwise fail startup with "previously executed migration ... is missing". Renaming
-   * the row alone is not enough - kysely also validates execution order - so the row
-   * adopts its filename-order predecessor's timestamp VERBATIM: no timestamp arithmetic
-   * or formatting (to_char renders in the session timezone, which mislabels the instant
-   * outside UTC), and no max()+interval (which would leapfrog migrations added later).
-   * Kysely breaks equal timestamps by migration name, which places the bridge exactly
-   * where its filename sorts. No-op unless the old row exists (fresh databases have no
-   * ledger yet).
-   */
-  private async normalizeForkLedger(): Promise<void> {
-    const tableExists = await sql<{ exists: boolean }>`
-      SELECT to_regclass('kysely_migrations') IS NOT NULL AS exists
-    `.execute(this.db);
-    if (!tableExists.rows[0]?.exists) {
-      return;
-    }
-
-    // Pre-bridge interim ledgers (commits df8a3e579..c31655d9b) executed the four old
-    // feature rows but predate the bridge migration entirely. Renaming the features is not
-    // enough there: the PENDING bridge would still sort before the renamed executed rows
-    // and kysely would refuse. The bridge is idempotent and self-contained, so it is
-    // executed inline and recorded, anchored at the upstream predecessor's timestamp;
-    // the chained renames below then find their anchors. (Note: startups on those commits
-    // already ran plugin sync with the scrubbed manifest, so legacy assetLock steps were
-    // cascade-deleted then - the bridge cannot recover them, only handle what remains.)
-    const preBridge = await sql<{ needed: boolean }>`
-      SELECT EXISTS (SELECT 1 FROM kysely_migrations WHERE name = '1779487447243-AddAlbumSmartKind')
-         AND NOT EXISTS (
-           SELECT 1 FROM kysely_migrations
-           WHERE name IN ('1784900000000-RetireWorkflowLockSteps', '1779580000001-RetireWorkflowLockSteps')
-         )
-         AND EXISTS (SELECT 1 FROM kysely_migrations WHERE name = '1784836013770-MinFacePreferenceMigration')
-         AS needed
-    `.execute(this.db);
-    if (preBridge.rows[0]?.needed) {
-      await retireWorkflowLockSteps(this.db);
-      // This runs outside kysely's migration lock, so a concurrent replica may have won
-      // the same repair between our check and this insert - the bridge is idempotent, and
-      // the loser must tolerate the winner's ledger row.
-      const recorded = await sql`
-        INSERT INTO kysely_migrations (name, timestamp)
-        SELECT '1784900000000-RetireWorkflowLockSteps', timestamp
-        FROM kysely_migrations
-        WHERE name = '1784836013770-MinFacePreferenceMigration'
-        ON CONFLICT (name) DO NOTHING
-      `.execute(this.db);
-      if (recorded.numAffectedRows && recorded.numAffectedRows > 0n) {
-        this.logger.warn(
-          '[fork upgrade] Pre-bridge ledger detected: executed the workflow-lock bridge inline and recorded it. ' +
-            'Note: startups on the pre-bridge commits may already have cascade-deleted legacy assetLock workflow steps; those are only recoverable from backup.',
-        );
-      }
-    }
-
-    // Interim integration-3.x ledgers executed the fork migrations under names that were
-    // later renumbered (the feature migrations moved after upstream v3.1.0's max so that
-    // STOCK v3.x databases can adopt the fork in ordered mode; the workflow bridge was
-    // additionally shipped once under a backdated name). Executed rows are renamed to the
-    // current names in filename order, each adopting its immediate filename-order
-    // predecessor's timestamp VERBATIM - no arithmetic or formatting (timezone-safe) - so
-    // kysely's name tiebreak reproduces filename order exactly. Each rename requires its
-    // anchor to be executed (possibly by an earlier iteration of this chain) and its
-    // target name to be free.
-    for (const { oldName, newName, anchor } of FORK_LEDGER_RENAMES) {
-      const renamed = await sql`
-        UPDATE kysely_migrations
-        SET name = ${newName},
-            timestamp = (SELECT timestamp FROM kysely_migrations WHERE name = ${anchor})
-        WHERE name = ${oldName}
-          AND EXISTS (SELECT 1 FROM kysely_migrations WHERE name = ${anchor})
-          AND NOT EXISTS (SELECT 1 FROM kysely_migrations WHERE name = ${newName})
-      `.execute(this.db);
-      if (renamed.numAffectedRows && renamed.numAffectedRows > 0n) {
-        this.logger.warn(
-          `[fork upgrade] Normalized migration ledger: renamed ${oldName} to ${newName} and reordered it after ${anchor}.`,
-        );
-      }
-    }
-
-    // Abnormal case (reverted/partial ledger, anchor predecessor pending): a renamed row
-    // would sort after pending migrations and kysely would reject the ledger. The bridge
-    // is idempotent, so its old entry is dropped and it reruns in filename order. The
-    // feature migrations are NOT rerunnable (CREATE TABLE) - if their old rows remain
-    // here, the ledger is a crashed-mid-upgrade artifact that needs a backup restore, and
-    // the migrator's own "missing migration" error will say which row is the problem.
-    const dropped = await sql`
-      DELETE FROM kysely_migrations
-      WHERE name = '1779580000001-RetireWorkflowLockSteps'
-    `.execute(this.db);
-    if (dropped.numAffectedRows && dropped.numAffectedRows > 0n) {
-      this.logger.warn(
-        '[fork upgrade] Normalized migration ledger: dropped the backdated 1779580000001-RetireWorkflowLockSteps entry (its predecessor is pending); the bridge will rerun in order.',
-      );
-    }
-  }
-
   private createMigrator(): Migrator {
     return new Migrator({
       db: this.db,
@@ -654,8 +507,8 @@ export class DatabaseRepository {
       provider: new FileMigrationProvider({
         fs: { readdir },
         path: { join },
-        // eslint-disable-next-line unicorn/prefer-module
-        migrationFolder: join(__dirname, '..', 'schema/migrations'),
+        import: (filePath) => import(filePath),
+        migrationFolder: join(import.meta.dirname, '..', 'schema/migrations'),
       }),
     });
   }

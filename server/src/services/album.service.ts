@@ -2,31 +2,32 @@ import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/com
 import {
   AddUsersDto,
   AlbumResponseDto,
+  AlbumStatisticsResponseDto,
   AlbumsAddAssetsDto,
   AlbumsAddAssetsResponseDto,
-  AlbumStatisticsResponseDto,
   CreateAlbumDto,
   GetAlbumsDto,
-  mapAlbum,
   UpdateAlbumDto,
   UpdateAlbumUserDto,
-} from 'src/dtos/album.dto';
-import { BulkIdErrorReason, BulkIdResponseDto, BulkIdsDto } from 'src/dtos/asset-ids.response.dto';
-import { AuthDto } from 'src/dtos/auth.dto';
-import { MapMarkerResponseDto } from 'src/dtos/map.dto';
+  mapAlbum,
+} from 'src/dtos/album.dto.js';
+import { BulkIdErrorReason, BulkIdResponseDto, BulkIdsDto } from 'src/dtos/asset-ids.response.dto.js';
+import { AuthDto } from 'src/dtos/auth.dto.js';
+import { MapMarkerResponseDto } from 'src/dtos/map.dto.js';
 import {
   isEmptySmartAlbumFilter,
   SmartAlbumFilter,
   toEvaluableSmartAlbumFilter,
-} from 'src/dtos/smart-album-filter.dto';
-import { AlbumKind, AlbumUserRole, Permission } from 'src/enum';
-import { AlbumAssetCount, AlbumInfoOptions } from 'src/repositories/album.repository';
-import { BaseService } from 'src/services/base.service';
-import { LockService } from 'src/services/lock.service';
-import { addAssets, removeAssets } from 'src/utils/asset.util';
-import { asDateTimeString } from 'src/utils/date';
-import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
-import { getPreferences } from 'src/utils/preferences';
+} from 'src/dtos/smart-album-filter.dto.js';
+import { AlbumKind, AlbumUserRole, Permission } from 'src/enum.js';
+import { AlbumAssetCount, AlbumInfoOptions } from 'src/repositories/album.repository.js';
+import { BaseService } from 'src/services/base.service.js';
+import { LockService } from 'src/services/lock.service.js';
+import { addAssets, removeAssets } from 'src/utils/asset.util.js';
+import { asDateTimeString } from 'src/utils/date.js';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
+import { findOrFail } from 'src/utils/misc.js';
+import { getPreferences } from 'src/utils/preferences.js';
 
 interface SmartAlbumCachedMetadata {
   cachedAssetCount: number;
@@ -404,7 +405,7 @@ export class AlbumService extends BaseService {
     const results = await addAssets(
       auth,
       { access: this.accessRepository, bulk: this.albumRepository },
-      { parentId: id, assetIds: dto.ids },
+      { parentId: id, assetIds: dto.ids, permission: Permission.AssetShare },
     );
 
     const { id: firstNewAssetId } = results.find(({ success }) => success) || {};
@@ -644,12 +645,8 @@ export class AlbumService extends BaseService {
     return new Set(await this.lockRepository.getHiddenAlbumIds(auth.user.id, revealed));
   }
 
-  private async findOrFail(id: string, authUserId: string, options: AlbumInfoOptions) {
-    const album = await this.albumRepository.getById(id, options, authUserId);
-    if (!album) {
-      throw new BadRequestException('Album not found');
-    }
-    return album;
+  private findOrFail(id: string, authUserId: string, options: AlbumInfoOptions) {
+    return findOrFail(() => this.albumRepository.getById(id, options, authUserId), 'Album');
   }
 
   /**

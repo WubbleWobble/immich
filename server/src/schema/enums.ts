@@ -1,4 +1,5 @@
 import { registerEnum } from '@immich/sql-tools';
+import { PersonUserRole } from 'src/dtos/person.dto.js';
 import {
   AlbumKind,
   AlbumUserRole,
@@ -7,7 +8,7 @@ import {
   ChecksumAlgorithm,
   SourceType,
   VideoCodec,
-} from 'src/enum';
+} from 'src/enum.js';
 
 export const album_user_role_enum = registerEnum({
   name: 'album_user_role_enum',
@@ -42,4 +43,9 @@ export const asset_checksum_algorithm_enum = registerEnum({
 export const video_stream_variant_codec_enum = registerEnum({
   name: 'video_stream_variant_codec_enum',
   values: [VideoCodec.Av1, VideoCodec.Hevc, VideoCodec.H264],
+});
+
+export const person_user_role_enum = registerEnum({
+  name: 'person_user_role_enum',
+  values: Object.values(PersonUserRole),
 });

@@ -7,14 +7,17 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/domain/models/asset/asset_metadata.model.dart';
 import 'package:immich_mobile/domain/models/asset/base_asset.model.dart' hide AssetVisibility;
 import 'package:immich_mobile/domain/models/store.model.dart';
+import 'package:immich_mobile/domain/services/asset.service.dart';
 import 'package:immich_mobile/entities/store.entity.dart';
 import 'package:immich_mobile/extensions/network_capability_extensions.dart';
 import 'package:immich_mobile/extensions/platform_extensions.dart';
-import 'package:immich_mobile/extensions/translate_extensions.dart';
+import 'package:immich_mobile/generated/translations.g.dart';
 import 'package:immich_mobile/infrastructure/repositories/backup.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/settings.repository.dart';
 import 'package:immich_mobile/infrastructure/repositories/storage.repository.dart';
 import 'package:immich_mobile/platform/connectivity_api.g.dart';
+import 'package:immich_mobile/providers/infrastructure/asset.provider.dart';
+import 'package:immich_mobile/providers/infrastructure/db.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/platform.provider.dart';
 import 'package:immich_mobile/providers/infrastructure/storage.provider.dart';
 import 'package:immich_mobile/repositories/asset_media.repository.dart';
@@ -35,12 +38,14 @@ class UploadCallbacks {
 }
 
 final foregroundUploadServiceProvider = Provider((ref) {
+  // ignore: dispose-provided-instances
   return ForegroundUploadService(
     ref.watch(uploadRepositoryProvider),
     ref.watch(storageRepositoryProvider),
-    ref.watch(backupRepositoryProvider),
+    ref.watch(driftProvider).backupRepository,
     ref.watch(connectivityApiProvider),
     ref.watch(assetMediaRepositoryProvider),
+    ref.watch(assetServiceProvider),
   );
 });
 
@@ -56,13 +61,15 @@ class ForegroundUploadService {
     this._backupRepository,
     this._connectivityApi,
     this._assetMediaRepository,
+    this._assetService,
   );
 
   final UploadRepository _uploadRepository;
   final StorageRepository _storageRepository;
-  final DriftBackupRepository _backupRepository;
+  final BackupRepository _backupRepository;
   final ConnectivityApi _connectivityApi;
   final AssetMediaRepository _assetMediaRepository;
+  final AssetService _assetService;
   final Logger _logger = Logger('ForegroundUploadService');
 
   bool shouldAbortUpload = false;
@@ -240,16 +247,23 @@ class ForegroundUploadService {
     Completer<void>? cancelToken, {
     required UploadCallbacks callbacks,
   }) async {
+    final t = StaticTranslations.instance;
+    final assetNotFoundOnDevice = CurrentPlatform.isAndroid
+        ? t.asset_not_found_on_device_android
+        : t.asset_not_found_on_device_ios;
     File? file;
     File? livePhotoFile;
 
     try {
+      final remoteId = (await _assetService.getLocalAsset(asset.id))?.remoteId;
+      if (remoteId != null) {
+        await _handleUploadSuccess(asset, remoteId, callbacks);
+        return;
+      }
+
       final entity = await _storageRepository.getAssetEntityForAsset(asset);
       if (entity == null) {
-        callbacks.onError?.call(
-          asset.localId!,
-          CurrentPlatform.isAndroid ? "asset_not_found_on_device_android".t() : "asset_not_found_on_device_ios".t(),
-        );
+        callbacks.onError?.call(asset.localId!, assetNotFoundOnDevice);
         return;
       }
 
@@ -283,10 +297,7 @@ class ForegroundUploadService {
         file = await _storageRepository.getFileForAsset(asset.id);
         if (file == null) {
           _logger.warning("Failed to get file ${asset.id} - ${asset.name}");
-          callbacks.onError?.call(
-            asset.localId!,
-            CurrentPlatform.isAndroid ? "asset_not_found_on_device_android".t() : "asset_not_found_on_device_ios".t(),
-          );
+          callbacks.onError?.call(asset.localId!, assetNotFoundOnDevice);
           return;
         }
 
@@ -295,17 +306,14 @@ class ForegroundUploadService {
           livePhotoFile = await _storageRepository.getMotionFileForAsset(asset);
           if (livePhotoFile == null) {
             _logger.warning("Failed to obtain motion part of the livePhoto - ${asset.name}");
-            callbacks.onError?.call(
-              asset.localId!,
-              CurrentPlatform.isAndroid ? "asset_not_found_on_device_android".t() : "asset_not_found_on_device_ios".t(),
-            );
+            callbacks.onError?.call(asset.localId!, assetNotFoundOnDevice);
           }
         }
       }
 
       if (file == null) {
         _logger.warning("Failed to obtain file from iCloud for asset ${asset.id} - ${asset.name}");
-        callbacks.onError?.call(asset.localId!, "asset_not_found_on_icloud".t());
+        callbacks.onError?.call(asset.localId!, t.asset_not_found_on_icloud);
         return;
       }
 
@@ -381,9 +389,8 @@ class ForegroundUploadService {
       );
 
       if (result.isSuccess && result.remoteAssetId != null) {
-        callbacks.onSuccess?.call(asset.localId!, result.remoteAssetId!);
+        await _handleUploadSuccess(asset, result.remoteAssetId!, callbacks);
       } else if (result.isCancelled) {
-        _logger.warning(() => "Backup was cancelled by the user");
         shouldAbortUpload = true;
       } else if (result.errorMessage != null) {
         _logger.severe(
@@ -398,7 +405,7 @@ class ForegroundUploadService {
         }
       }
     } catch (error, stackTrace) {
-      _logger.severe(() => "Error backup asset: ${error.toString()}", stackTrace);
+      _logger.severe(() => "Error backup asset: $error", stackTrace);
       callbacks.onError?.call(asset.localId!, error.toString());
     } finally {
       if (Platform.isIOS) {
@@ -406,9 +413,18 @@ class ForegroundUploadService {
           await file?.delete();
           await livePhotoFile?.delete();
         } catch (error, stackTrace) {
-          _logger.severe(() => "ERROR deleting file: ${error.toString()}", stackTrace);
+          _logger.severe(() => "ERROR deleting file: $error", stackTrace);
         }
       }
+    }
+  }
+
+  Future<void> _handleUploadSuccess(LocalAsset asset, String remoteId, UploadCallbacks callbacks) async {
+    callbacks.onSuccess?.call(asset.localId!, remoteId);
+    try {
+      await _assetService.stackEditedUpload(asset.localId!, remoteId, asset.checksum);
+    } catch (error) {
+      _logger.warning("Failed to stack the upload of ${asset.localId}: $error");
     }
   }
 
@@ -419,6 +435,7 @@ class ForegroundUploadService {
     void Function(int bytes, int totalBytes)? onProgress,
   }) async {
     try {
+      // ignore: avoid_slow_async_io
       final stats = await file.stat();
       final fileCreatedAt = stats.changed;
       final fileModifiedAt = stats.modified;

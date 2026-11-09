@@ -1,8 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { AssetResponseDto, mapAsset } from 'src/dtos/asset-response.dto';
-import { AuthDto } from 'src/dtos/auth.dto';
-import { BaseService } from 'src/services/base.service';
-import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
+import { AssetResponseDto, mapAsset } from 'src/dtos/asset-response.dto.js';
+import { AuthDto } from 'src/dtos/auth.dto.js';
+import { BaseService } from 'src/services/base.service.js';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
 
 @Injectable()
 export class ViewService extends BaseService {

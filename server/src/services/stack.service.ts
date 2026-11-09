@@ -1,12 +1,13 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { BulkIdsDto } from 'src/dtos/asset-ids.response.dto';
-import { AuthDto } from 'src/dtos/auth.dto';
-import { StackCreateDto, StackResponseDto, StackSearchDto, StackUpdateDto, mapStack } from 'src/dtos/stack.dto';
-import { Permission } from 'src/enum';
-import { BaseService } from 'src/services/base.service';
-import { OwnerLockVisibility } from 'src/utils/database';
-import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
-import { UUIDAssetIDParamDto } from 'src/validation';
+import { BulkIdsDto } from 'src/dtos/asset-ids.response.dto.js';
+import { AuthDto } from 'src/dtos/auth.dto.js';
+import { StackCreateDto, StackResponseDto, StackSearchDto, StackUpdateDto, mapStack } from 'src/dtos/stack.dto.js';
+import { Permission } from 'src/enum.js';
+import { BaseService } from 'src/services/base.service.js';
+import { OwnerLockVisibility } from 'src/utils/database.js';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
+import { findOrFail } from 'src/utils/misc.js';
+import { UUIDAssetIDParamDto } from 'src/validation.js';
 
 @Injectable()
 export class StackService extends BaseService {
@@ -149,8 +150,9 @@ export class StackService extends BaseService {
   }
 
   private async findOrFail(id: string, lockVisibility?: OwnerLockVisibility[]) {
-    const stack = await this.stackRepository.getById(id, lockVisibility);
-    const visible = stack && (!lockVisibility?.length || stack.assets.length > 0) ? this.toVisibleStack(stack) : null;
+    // Fork: a stack whose every asset is hidden by the viewer's locks reads as not found.
+    const stack = await findOrFail(() => this.stackRepository.getById(id, lockVisibility), 'Asset stack');
+    const visible = !lockVisibility?.length || stack.assets.length > 0 ? this.toVisibleStack(stack) : null;
     if (!visible) {
       throw new BadRequestException('Asset stack not found');
     }
