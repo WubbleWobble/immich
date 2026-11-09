@@ -846,6 +846,50 @@ export type AssetStatsResponseDto = {
     /** Number of videos */
     videos: number;
 };
+export type AlbumContainerUserResponseDto = {
+    role: AlbumUserRole;
+    user: UserResponseDto;
+    /** User ID */
+    userId: string;
+};
+export type AlbumContainerResponseDto = {
+    /** Users this folder is shared with (owner not included); only present for the owner */
+    albumContainerUsers?: AlbumContainerUserResponseDto[];
+    /** Creation date */
+    createdAt: string;
+    /** Container ID */
+    id: string;
+    /** Folder name */
+    name: string;
+    /** Owner user ID */
+    ownerId: string;
+    /** Parent folder ID (null for root) */
+    parentId: string | null;
+    /** Up to 4 recent descendant asset IDs for a folder mosaic thumbnail */
+    thumbnailAssetIds: string[];
+    /** Last update date */
+    updatedAt: string;
+};
+export type CreateAlbumContainerDto = {
+    /** Folder name */
+    name: string;
+    /** Parent folder ID (null for root) */
+    parentId?: string | null;
+};
+export type UpdateAlbumContainerDto = {
+    /** Folder name */
+    name?: string;
+    /** Parent folder ID */
+    parentId?: string | null;
+};
+export type AlbumContainerUserCreateDto = {
+    role: AlbumUserRole;
+    /** User ID */
+    userId: string;
+};
+export type AlbumContainerUserUpdateDto = {
+    role: AlbumUserRole;
+};
 export type AlbumUserResponseDto = {
     role: AlbumUserRole;
     user: UserResponseDto;
@@ -856,6 +900,58 @@ export type ContributorCountResponseDto = {
     /** User ID */
     userId: string;
 };
+export type SmartAlbumFilter = {
+    /** Filter by album IDs */
+    albumIds?: string[];
+    /** Filter by city name */
+    city?: string | null;
+    /** Filter by country name */
+    country?: string | null;
+    /** Filter by creation date (after) */
+    createdAfter?: string;
+    /** Filter by creation date (before) */
+    createdBefore?: string;
+    /** Filter by description text */
+    description?: string;
+    /** Filter by encoded status */
+    isEncoded?: boolean;
+    /** Filter by favorite status */
+    isFavorite?: boolean;
+    /** Filter by motion photo status */
+    isMotion?: boolean;
+    /** Filter assets not in any album */
+    isNotInAlbum?: boolean;
+    /** Filter by lens model */
+    lensModel?: string | null;
+    /** Library ID to filter by */
+    libraryId?: string | null;
+    /** Filter by camera make */
+    make?: string | null;
+    /** Filter by camera model */
+    model?: string | null;
+    /** Filter by OCR text content */
+    ocr?: string;
+    /** Filter by original file name */
+    originalFileName?: string;
+    /** Filter by person IDs */
+    personIds?: string[];
+    /** Filter by rating [1-5], or null for unrated */
+    rating?: number | null;
+    /** Filter by state/province name */
+    state?: string | null;
+    /** Filter by tag IDs */
+    tagIds?: string[] | null;
+    /** Filter by taken date (after) */
+    takenAfter?: string;
+    /** Filter by taken date (before) */
+    takenBefore?: string;
+    "type"?: AssetTypeEnum;
+    /** Filter by update date (after) */
+    updatedAfter?: string;
+    /** Filter by update date (before) */
+    updatedBefore?: string;
+    visibility?: Visibility;
+};
 export type AlbumResponseDto = {
     /** Album name */
     albumName: string;
@@ -865,6 +961,8 @@ export type AlbumResponseDto = {
     albumUsers: AlbumUserResponseDto[];
     /** Number of assets */
     assetCount: number;
+    /** Containing folder ID, or null if at root */
+    containerId: string | null;
     contributorCounts?: ContributorCountResponseDto[];
     /** Creation date */
     createdAt: string;
@@ -872,12 +970,15 @@ export type AlbumResponseDto = {
     description: string;
     /** UTC representation of (local) end date (latest asset) */
     endDate?: string;
+    /** Filter for smart albums */
+    filter: (SmartAlbumFilter) | null;
     /** Has shared link */
     hasSharedLink: boolean;
     /** Album ID */
     id: string;
     /** Activity feed enabled */
     isActivityEnabled: boolean;
+    kind: AlbumKind;
     /** Last modified asset timestamp */
     lastModifiedAssetTimestamp?: string;
     order?: AssetOrder;
@@ -900,8 +1001,14 @@ export type CreateAlbumDto = {
     albumUsers?: AlbumUserCreateDto[];
     /** Initial asset IDs */
     assetIds?: string[];
+    /** Target folder (null/omit for root) */
+    containerId?: string | null;
     /** Album description */
     description?: string | null;
+    /** Filter for smart albums */
+    filter?: SmartAlbumFilter;
+    /** Album kind */
+    kind?: AlbumKind;
 };
 export type AlbumsAddAssetsDto = {
     /** Album IDs */
@@ -927,8 +1034,12 @@ export type UpdateAlbumDto = {
     albumName?: string;
     /** Album thumbnail asset ID */
     albumThumbnailAssetId?: string;
+    /** Move album to this folder (null for root) */
+    containerId?: string | null;
     /** Album description */
     description?: string | null;
+    /** Updated filter (smart albums only) */
+    filter?: SmartAlbumFilter;
     /** Enable activity feed */
     isActivityEnabled?: boolean;
     order?: AssetOrder;
@@ -1863,6 +1974,26 @@ export type ValidateLibraryImportPathResponseDto = {
 export type ValidateLibraryResponseDto = {
     /** Validation results for import paths */
     importPaths?: ValidateLibraryImportPathResponseDto[];
+};
+export type LocksResponseDto = {
+    /** Albums the requesting user has locked */
+    lockedAlbumIds: string[];
+    /** Folders the requesting user has locked */
+    lockedContainerIds: string[];
+};
+export type MoveToLockedAlbumDto = {
+    /** The locked destination album (must be locked by the requesting user) */
+    albumId: string;
+    /** Assets to move into the locked album */
+    assetIds: string[];
+};
+export type MoveToLockedAlbumResponseDto = {
+    /** Never made it into the locked album; existing memberships were left untouched */
+    failed: string[];
+    /** Fully moved: in the locked album and no longer visible anywhere else */
+    moved: string[];
+    /** In the locked album, but still visible elsewhere (unremovable membership or a matching saved search) */
+    stillVisible: string[];
 };
 export type MapReverseGeocodeResponseDto = {
     /** City name */
@@ -4366,6 +4497,133 @@ export function getUserStatisticsAdmin({ id, isFavorite, isTrashed, visibility }
     }));
 }
 /**
+ * List folders
+ */
+export function getAllAlbumContainers(opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchJson<{
+        status: 200;
+        data: AlbumContainerResponseDto[];
+    }>("/album-containers", {
+        ...opts
+    }));
+}
+/**
+ * Create folder
+ */
+export function createAlbumContainer({ createAlbumContainerDto }: {
+    createAlbumContainerDto: CreateAlbumContainerDto;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchJson<{
+        status: 201;
+        data: AlbumContainerResponseDto;
+    }>("/album-containers", oazapfts.json({
+        ...opts,
+        method: "POST",
+        body: createAlbumContainerDto
+    })));
+}
+/**
+ * Delete folder
+ */
+export function deleteAlbumContainer({ id }: {
+    id: string;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchText(`/album-containers/${encodeURIComponent(id)}`, {
+        ...opts,
+        method: "DELETE"
+    }));
+}
+/**
+ * Get folder
+ */
+export function getAlbumContainer({ id }: {
+    id: string;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchJson<{
+        status: 200;
+        data: AlbumContainerResponseDto;
+    }>(`/album-containers/${encodeURIComponent(id)}`, {
+        ...opts
+    }));
+}
+/**
+ * Rename or move folder
+ */
+export function updateAlbumContainer({ id, updateAlbumContainerDto }: {
+    id: string;
+    updateAlbumContainerDto: UpdateAlbumContainerDto;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchJson<{
+        status: 200;
+        data: AlbumContainerResponseDto;
+    }>(`/album-containers/${encodeURIComponent(id)}`, oazapfts.json({
+        ...opts,
+        method: "PUT",
+        body: updateAlbumContainerDto
+    })));
+}
+/**
+ * Unlock folder for the requesting user (requires an elevated session)
+ */
+export function unlockAlbumContainer({ id }: {
+    id: string;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchText(`/album-containers/${encodeURIComponent(id)}/lock`, {
+        ...opts,
+        method: "DELETE"
+    }));
+}
+/**
+ * Lock folder for the requesting user (requires an elevated session)
+ */
+export function lockAlbumContainer({ id }: {
+    id: string;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchText(`/album-containers/${encodeURIComponent(id)}/lock`, {
+        ...opts,
+        method: "POST"
+    }));
+}
+/**
+ * Add user to folder
+ */
+export function addUserToAlbumContainer({ id, albumContainerUserCreateDto }: {
+    id: string;
+    albumContainerUserCreateDto: AlbumContainerUserCreateDto;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchText(`/album-containers/${encodeURIComponent(id)}/users`, oazapfts.json({
+        ...opts,
+        method: "POST",
+        body: albumContainerUserCreateDto
+    })));
+}
+/**
+ * Remove user from folder
+ */
+export function removeUserFromAlbumContainer({ id, userId }: {
+    id: string;
+    userId: string;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchText(`/album-containers/${encodeURIComponent(id)}/users/${encodeURIComponent(userId)}`, {
+        ...opts,
+        method: "DELETE"
+    }));
+}
+/**
+ * Update folder user role
+ */
+export function updateAlbumContainerUser({ id, userId, albumContainerUserUpdateDto }: {
+    id: string;
+    userId: string;
+    albumContainerUserUpdateDto: AlbumContainerUserUpdateDto;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchText(`/album-containers/${encodeURIComponent(id)}/users/${encodeURIComponent(userId)}`, oazapfts.json({
+        ...opts,
+        method: "PUT",
+        body: albumContainerUserUpdateDto
+    })));
+}
+/**
  * List all albums
  */
 export function getAllAlbums({ assetId, id, isOwned, isShared, name }: {
@@ -4505,6 +4763,28 @@ export function addAssetsToAlbum({ id, bulkIdsDto }: {
         method: "PUT",
         body: bulkIdsDto
     })));
+}
+/**
+ * Unlock album for the requesting user (requires an elevated session)
+ */
+export function unlockAlbum({ id }: {
+    id: string;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchText(`/albums/${encodeURIComponent(id)}/lock`, {
+        ...opts,
+        method: "DELETE"
+    }));
+}
+/**
+ * Lock album for the requesting user (requires an elevated session)
+ */
+export function lockAlbum({ id }: {
+    id: string;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchText(`/albums/${encodeURIComponent(id)}/lock`, {
+        ...opts,
+        method: "POST"
+    }));
 }
 /**
  * Retrieve album map markers
@@ -5683,6 +5963,32 @@ export function validate({ id, validateLibraryDto }: {
         ...opts,
         method: "POST",
         body: validateLibraryDto
+    })));
+}
+/**
+ * Get the locks of the requesting user (requires an elevated session)
+ */
+export function getLocks(opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchJson<{
+        status: 200;
+        data: LocksResponseDto;
+    }>("/locks", {
+        ...opts
+    }));
+}
+/**
+ * Move assets into a locked album: add them and detach their other memberships (requires an elevated session)
+ */
+export function moveAssetsToLockedAlbum({ moveToLockedAlbumDto }: {
+    moveToLockedAlbumDto: MoveToLockedAlbumDto;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchJson<{
+        status: 201;
+        data: MoveToLockedAlbumResponseDto;
+    }>("/locks/move-assets", oazapfts.json({
+        ...opts,
+        method: "POST",
+        body: moveToLockedAlbumDto
     })));
 }
 /**
@@ -8108,6 +8414,20 @@ export enum AlbumUserRole {
     Owner = "owner",
     Viewer = "viewer"
 }
+export enum AssetTypeEnum {
+    Image = "IMAGE",
+    Video = "VIDEO",
+    Audio = "AUDIO",
+    Other = "OTHER"
+}
+export enum Visibility {
+    Timeline = "timeline",
+    Archive = "archive"
+}
+export enum AlbumKind {
+    Regular = "regular",
+    Smart = "smart"
+}
 export enum BulkIdErrorReason {
     Duplicate = "duplicate",
     NoPermission = "no_permission",
@@ -8314,12 +8634,6 @@ export enum PersonUserRole {
     Read = "read",
     Write = "write",
     Admin = "admin"
-}
-export enum AssetTypeEnum {
-    Image = "IMAGE",
-    Video = "VIDEO",
-    Audio = "AUDIO",
-    Other = "OTHER"
 }
 export enum AssetEditAction {
     Crop = "crop",

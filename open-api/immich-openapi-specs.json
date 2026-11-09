@@ -2157,6 +2157,545 @@
         "x-immich-state": "Stable"
       }
     },
+    "/album-containers": {
+      "get": {
+        "operationId": "getAllAlbumContainers",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AlbumContainerResponseDto"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "List folders",
+        "tags": [
+          "Album Containers"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2",
+            "state": "Added"
+          },
+          {
+            "version": "v2",
+            "state": "Alpha"
+          }
+        ],
+        "x-immich-state": "Alpha"
+      },
+      "post": {
+        "operationId": "createAlbumContainer",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAlbumContainerDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlbumContainerResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Create folder",
+        "tags": [
+          "Album Containers"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2",
+            "state": "Added"
+          },
+          {
+            "version": "v2",
+            "state": "Alpha"
+          }
+        ],
+        "x-immich-state": "Alpha"
+      }
+    },
+    "/album-containers/{id}": {
+      "delete": {
+        "operationId": "deleteAlbumContainer",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Delete folder",
+        "tags": [
+          "Album Containers"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2",
+            "state": "Added"
+          },
+          {
+            "version": "v2",
+            "state": "Alpha"
+          }
+        ],
+        "x-immich-state": "Alpha"
+      },
+      "get": {
+        "operationId": "getAlbumContainer",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlbumContainerResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Get folder",
+        "tags": [
+          "Album Containers"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2",
+            "state": "Added"
+          },
+          {
+            "version": "v2",
+            "state": "Alpha"
+          }
+        ],
+        "x-immich-state": "Alpha"
+      },
+      "put": {
+        "operationId": "updateAlbumContainer",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAlbumContainerDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlbumContainerResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Rename or move folder",
+        "tags": [
+          "Album Containers"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2",
+            "state": "Added"
+          },
+          {
+            "version": "v2",
+            "state": "Alpha"
+          }
+        ],
+        "x-immich-state": "Alpha"
+      }
+    },
+    "/album-containers/{id}/lock": {
+      "delete": {
+        "operationId": "unlockAlbumContainer",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Unlock folder for the requesting user (requires an elevated session)",
+        "tags": [
+          "Album Containers"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2",
+            "state": "Added"
+          },
+          {
+            "version": "v2",
+            "state": "Alpha"
+          }
+        ],
+        "x-immich-state": "Alpha"
+      },
+      "post": {
+        "operationId": "lockAlbumContainer",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Lock folder for the requesting user (requires an elevated session)",
+        "tags": [
+          "Album Containers"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2",
+            "state": "Added"
+          },
+          {
+            "version": "v2",
+            "state": "Alpha"
+          }
+        ],
+        "x-immich-state": "Alpha"
+      }
+    },
+    "/album-containers/{id}/users": {
+      "post": {
+        "operationId": "addUserToAlbumContainer",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlbumContainerUserCreateDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Add user to folder",
+        "tags": [
+          "Album Containers"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2",
+            "state": "Added"
+          },
+          {
+            "version": "v2",
+            "state": "Alpha"
+          }
+        ],
+        "x-immich-state": "Alpha"
+      }
+    },
+    "/album-containers/{id}/users/{userId}": {
+      "delete": {
+        "operationId": "removeUserFromAlbumContainer",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Folder ID",
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "description": "Folder user ID, or \"me\" to reference the current user.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Remove user from folder",
+        "tags": [
+          "Album Containers"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2",
+            "state": "Added"
+          },
+          {
+            "version": "v2",
+            "state": "Alpha"
+          }
+        ],
+        "x-immich-state": "Alpha"
+      },
+      "put": {
+        "operationId": "updateAlbumContainerUser",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Folder ID",
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "description": "Folder user ID, or \"me\" to reference the current user.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlbumContainerUserUpdateDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Update folder user role",
+        "tags": [
+          "Album Containers"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2",
+            "state": "Added"
+          },
+          {
+            "version": "v2",
+            "state": "Alpha"
+          }
+        ],
+        "x-immich-state": "Alpha"
+      }
+    },
     "/albums": {
       "get": {
         "description": "Retrieve a list of albums available to the authenticated user.",
@@ -2770,6 +3309,100 @@
         ],
         "x-immich-permission": "albumAsset.create",
         "x-immich-state": "Stable"
+      }
+    },
+    "/albums/{id}/lock": {
+      "delete": {
+        "operationId": "unlockAlbum",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Unlock album for the requesting user (requires an elevated session)",
+        "tags": [
+          "Albums"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2",
+            "state": "Added"
+          },
+          {
+            "version": "v2",
+            "state": "Alpha"
+          }
+        ],
+        "x-immich-state": "Alpha"
+      },
+      "post": {
+        "operationId": "lockAlbum",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Lock album for the requesting user (requires an elevated session)",
+        "tags": [
+          "Albums"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2",
+            "state": "Added"
+          },
+          {
+            "version": "v2",
+            "state": "Alpha"
+          }
+        ],
+        "x-immich-state": "Alpha"
       }
     },
     "/albums/{id}/map-markers": {
@@ -7902,6 +8535,104 @@
           }
         ],
         "x-immich-state": "Stable"
+      }
+    },
+    "/locks": {
+      "get": {
+        "operationId": "getLocks",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocksResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Get the locks of the requesting user (requires an elevated session)",
+        "tags": [
+          "Locks"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2",
+            "state": "Added"
+          },
+          {
+            "version": "v2",
+            "state": "Alpha"
+          }
+        ],
+        "x-immich-state": "Alpha"
+      }
+    },
+    "/locks/move-assets": {
+      "post": {
+        "operationId": "moveAssetsToLockedAlbum",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveToLockedAlbumDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MoveToLockedAlbumResponseDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "cookie": []
+          },
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Move assets into a locked album: add them and detach their other memberships (requires an elevated session)",
+        "tags": [
+          "Locks"
+        ],
+        "x-immich-history": [
+          {
+            "version": "v2",
+            "state": "Added"
+          },
+          {
+            "version": "v2",
+            "state": "Alpha"
+          }
+        ],
+        "x-immich-state": "Alpha"
       }
     },
     "/map/markers": {
@@ -18220,6 +18951,10 @@
       "description": "An activity is a like or a comment made by a user on an asset or album."
     },
     {
+      "name": "Album Containers",
+      "description": "A folder that groups albums and other folders. Folders can be shared, granting cascading access to all descendants."
+    },
+    {
       "name": "Albums",
       "description": "An album is a collection of assets that can be shared with other users or via shared links."
     },
@@ -18290,6 +19025,10 @@
     {
       "name": "Libraries",
       "description": "An external library is made up of input file paths or expressions that are scanned for asset files. Discovered files are automatically imported. Assets much be unique within a library, but can be duplicated across libraries. Each user has a default upload library, and can have one or more external libraries."
+    },
+    {
+      "name": "Locks",
+      "description": "Per-user lock state for albums and folders. Locked items are hidden from their locker until revealed in an elevated session; other users are unaffected."
     },
     {
       "name": "Maintenance (admin)",
@@ -19744,6 +20483,129 @@
         ],
         "type": "object"
       },
+      "AlbumContainerResponseDto": {
+        "properties": {
+          "albumContainerUsers": {
+            "description": "Users this folder is shared with (owner not included); only present for the owner",
+            "items": {
+              "$ref": "#/components/schemas/AlbumContainerUserResponseDto"
+            },
+            "type": "array"
+          },
+          "createdAt": {
+            "description": "Creation date",
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "description": "Container ID",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "name": {
+            "description": "Folder name",
+            "type": "string"
+          },
+          "ownerId": {
+            "description": "Owner user ID",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "parentId": {
+            "description": "Parent folder ID (null for root)",
+            "format": "uuid",
+            "nullable": true,
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "thumbnailAssetIds": {
+            "description": "Up to 4 recent descendant asset IDs for a folder mosaic thumbnail",
+            "items": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            },
+            "maxItems": 4,
+            "type": "array"
+          },
+          "updatedAt": {
+            "description": "Last update date",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "createdAt",
+          "id",
+          "name",
+          "ownerId",
+          "parentId",
+          "thumbnailAssetIds",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "AlbumContainerUserCreateDto": {
+        "properties": {
+          "role": {
+            "$ref": "#/components/schemas/AlbumUserRole"
+          },
+          "userId": {
+            "description": "User ID",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "userId"
+        ],
+        "type": "object"
+      },
+      "AlbumContainerUserResponseDto": {
+        "properties": {
+          "role": {
+            "$ref": "#/components/schemas/AlbumUserRole"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserResponseDto"
+          },
+          "userId": {
+            "description": "User ID",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "user",
+          "userId"
+        ],
+        "type": "object"
+      },
+      "AlbumContainerUserUpdateDto": {
+        "properties": {
+          "role": {
+            "$ref": "#/components/schemas/AlbumUserRole"
+          }
+        },
+        "required": [
+          "role"
+        ],
+        "type": "object"
+      },
+      "AlbumKind": {
+        "description": "Album kind",
+        "enum": [
+          "regular",
+          "smart"
+        ],
+        "type": "string"
+      },
       "AlbumResponseDto": {
         "properties": {
           "albumName": {
@@ -19770,6 +20632,11 @@
             "maximum": 9007199254740991,
             "minimum": 0,
             "type": "integer"
+          },
+          "containerId": {
+            "description": "Containing folder ID, or null if at root",
+            "nullable": true,
+            "type": "string"
           },
           "contributorCounts": {
             "items": {
@@ -19802,6 +20669,15 @@
             "format": "date-time",
             "type": "string"
           },
+          "filter": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SmartAlbumFilter"
+              }
+            ],
+            "description": "Filter for smart albums",
+            "nullable": true
+          },
           "hasSharedLink": {
             "description": "Has shared link",
             "type": "boolean"
@@ -19815,6 +20691,9 @@
           "isActivityEnabled": {
             "description": "Activity feed enabled",
             "type": "boolean"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AlbumKind"
           },
           "lastModifiedAssetTimestamp": {
             "description": "Last modified asset timestamp",
@@ -19844,11 +20723,14 @@
           "albumThumbnailAssetId",
           "albumUsers",
           "assetCount",
+          "containerId",
           "createdAt",
           "description",
+          "filter",
           "hasSharedLink",
           "id",
           "isActivityEnabled",
+          "kind",
           "shared",
           "updatedAt"
         ],
@@ -21799,6 +22681,26 @@
         ],
         "type": "object"
       },
+      "CreateAlbumContainerDto": {
+        "properties": {
+          "name": {
+            "description": "Folder name",
+            "minLength": 1,
+            "type": "string"
+          },
+          "parentId": {
+            "description": "Parent folder ID (null for root)",
+            "format": "uuid",
+            "nullable": true,
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
       "CreateAlbumDto": {
         "properties": {
           "albumName": {
@@ -21821,6 +22723,13 @@
             },
             "type": "array"
           },
+          "containerId": {
+            "description": "Target folder (null/omit for root)",
+            "format": "uuid",
+            "nullable": true,
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
           "description": {
             "description": "Album description",
             "nullable": true,
@@ -21836,6 +22745,15 @@
                 "description": "Sending an empty string is deprecated; send null instead. Empty strings will no longer be coerced to null in v4."
               }
             ]
+          },
+          "filter": {
+            "$ref": "#/components/schemas/SmartAlbumFilter",
+            "description": "Filter for smart albums"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AlbumKind",
+            "default": "regular",
+            "description": "Album kind"
           }
         },
         "required": [
@@ -22972,6 +23890,33 @@
       },
       "LicenseResponseDto": {
         "$ref": "#/components/schemas/UserLicense"
+      },
+      "LocksResponseDto": {
+        "properties": {
+          "lockedAlbumIds": {
+            "description": "Albums the requesting user has locked",
+            "items": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "lockedContainerIds": {
+            "description": "Folders the requesting user has locked",
+            "items": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "lockedAlbumIds",
+          "lockedContainerIds"
+        ],
+        "type": "object"
       },
       "LogLevel": {
         "description": "Log level",
@@ -24472,6 +25417,69 @@
         },
         "required": [
           "axis"
+        ],
+        "type": "object"
+      },
+      "MoveToLockedAlbumDto": {
+        "properties": {
+          "albumId": {
+            "description": "The locked destination album (must be locked by the requesting user)",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "assetIds": {
+            "description": "Assets to move into the locked album",
+            "items": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            },
+            "maxItems": 5000,
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "albumId",
+          "assetIds"
+        ],
+        "type": "object"
+      },
+      "MoveToLockedAlbumResponseDto": {
+        "properties": {
+          "failed": {
+            "description": "Never made it into the locked album; existing memberships were left untouched",
+            "items": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "moved": {
+            "description": "Fully moved: in the locked album and no longer visible anywhere else",
+            "items": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "stillVisible": {
+            "description": "In the locked album, but still visible elsewhere (unremovable membership or a matching saved search)",
+            "items": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "failed",
+          "moved",
+          "stillVisible"
         ],
         "type": "object"
       },
@@ -28569,6 +29577,164 @@
         ],
         "type": "object"
       },
+      "SmartAlbumFilter": {
+        "additionalProperties": false,
+        "properties": {
+          "albumIds": {
+            "description": "Filter by album IDs",
+            "items": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "city": {
+            "description": "Filter by city name",
+            "nullable": true,
+            "type": "string"
+          },
+          "country": {
+            "description": "Filter by country name",
+            "nullable": true,
+            "type": "string"
+          },
+          "createdAfter": {
+            "description": "Filter by creation date (after)",
+            "example": "2024-01-01T00:00:00.000Z",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+            "type": "string"
+          },
+          "createdBefore": {
+            "description": "Filter by creation date (before)",
+            "example": "2024-01-01T00:00:00.000Z",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+            "type": "string"
+          },
+          "description": {
+            "description": "Filter by description text",
+            "type": "string"
+          },
+          "isEncoded": {
+            "description": "Filter by encoded status",
+            "type": "boolean"
+          },
+          "isFavorite": {
+            "description": "Filter by favorite status",
+            "type": "boolean"
+          },
+          "isMotion": {
+            "description": "Filter by motion photo status",
+            "type": "boolean"
+          },
+          "isNotInAlbum": {
+            "description": "Filter assets not in any album",
+            "type": "boolean"
+          },
+          "lensModel": {
+            "description": "Filter by lens model",
+            "nullable": true,
+            "type": "string"
+          },
+          "libraryId": {
+            "description": "Library ID to filter by",
+            "format": "uuid",
+            "nullable": true,
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "make": {
+            "description": "Filter by camera make",
+            "nullable": true,
+            "type": "string"
+          },
+          "model": {
+            "description": "Filter by camera model",
+            "nullable": true,
+            "type": "string"
+          },
+          "ocr": {
+            "description": "Filter by OCR text content",
+            "type": "string"
+          },
+          "originalFileName": {
+            "description": "Filter by original file name",
+            "type": "string"
+          },
+          "personIds": {
+            "description": "Filter by person IDs",
+            "items": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "rating": {
+            "description": "Filter by rating [1-5], or null for unrated",
+            "maximum": 5,
+            "minimum": 1,
+            "nullable": true,
+            "type": "integer"
+          },
+          "state": {
+            "description": "Filter by state/province name",
+            "nullable": true,
+            "type": "string"
+          },
+          "tagIds": {
+            "description": "Filter by tag IDs",
+            "items": {
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+              "type": "string"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "takenAfter": {
+            "description": "Filter by taken date (after)",
+            "example": "2024-01-01T00:00:00.000Z",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+            "type": "string"
+          },
+          "takenBefore": {
+            "description": "Filter by taken date (before)",
+            "example": "2024-01-01T00:00:00.000Z",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/components/schemas/AssetTypeEnum"
+          },
+          "updatedAfter": {
+            "description": "Filter by update date (after)",
+            "example": "2024-01-01T00:00:00.000Z",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+            "type": "string"
+          },
+          "updatedBefore": {
+            "description": "Filter by update date (before)",
+            "example": "2024-01-01T00:00:00.000Z",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+            "type": "string"
+          },
+          "visibility": {
+            "enum": [
+              "timeline",
+              "archive"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "SmartSearchDto": {
         "properties": {
           "albumIds": {
@@ -32591,6 +33757,23 @@
         ],
         "type": "object"
       },
+      "UpdateAlbumContainerDto": {
+        "properties": {
+          "name": {
+            "description": "Folder name",
+            "minLength": 1,
+            "type": "string"
+          },
+          "parentId": {
+            "description": "Parent folder ID",
+            "format": "uuid",
+            "nullable": true,
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "UpdateAlbumDto": {
         "properties": {
           "albumName": {
@@ -32600,6 +33783,13 @@
           "albumThumbnailAssetId": {
             "description": "Album thumbnail asset ID",
             "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
+            "type": "string"
+          },
+          "containerId": {
+            "description": "Move album to this folder (null for root)",
+            "format": "uuid",
+            "nullable": true,
             "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$",
             "type": "string"
           },
@@ -32618,6 +33808,10 @@
                 "description": "Sending an empty string is deprecated; send null instead. Empty strings will no longer be coerced to null in v4."
               }
             ]
+          },
+          "filter": {
+            "$ref": "#/components/schemas/SmartAlbumFilter",
+            "description": "Updated filter (smart albums only)"
           },
           "isActivityEnabled": {
             "description": "Enable activity feed",
