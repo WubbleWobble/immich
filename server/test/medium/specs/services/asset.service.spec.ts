@@ -1,4 +1,6 @@
+import { BadRequestException } from '@nestjs/common';
 import { Kysely } from 'kysely';
+import { StorageCore } from 'src/cores/storage.core.js';
 import { AssetEditAction } from 'src/dtos/editing.dto.js';
 import {
   AssetFileType,
@@ -404,6 +406,54 @@ describe(AssetService.name, () => {
           .where('id', '=', still.id)
           .executeTakeFirstOrThrow(),
       ).resolves.toEqual({ livePhotoVideoId: motion.id });
+    });
+
+    it('refuses to unlink a lock-hidden motion part outside elevation like a missing live photo video', async () => {
+      const { sut, ctx } = setup();
+      ctx.getMock(JobRepository).queue.mockResolvedValue();
+      ctx.getMock(EventRepository).emit.mockResolvedValue();
+      ctx.getMock(WebsocketRepository).clientSend.mockReturnValue();
+      const { user } = await ctx.newUser();
+      const { asset: motion } = await ctx.newAsset({
+        ownerId: user.id,
+        type: AssetType.Video,
+        visibility: AssetVisibility.Hidden,
+      });
+      const { asset: still } = await ctx.newAsset({ ownerId: user.id, livePhotoVideoId: motion.id });
+      // the motion part is filed into a locked album on its own: hidden, while the uncontained still stays visible
+      const { album } = await ctx.newAlbum({ ownerId: user.id }, [motion.id]);
+      await ctx.get(LockRepository).lockAlbum(user.id, album.id);
+      const ordinary = factory.auth({ user, session: { hasElevatedPermission: false } });
+      const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+      const rows = () =>
+        ctx.database
+          .selectFrom('asset')
+          .select(['id', 'visibility', 'livePhotoVideoId'])
+          .where('id', 'in', [still.id, motion.id])
+          .orderBy('id')
+          .execute();
+      const before = await rows();
+      StorageCore.setMediaLocation('/photos');
+      onTestFinished(() => StorageCore.reset());
+
+      await expect(sut.update(ordinary, still.id, { livePhotoVideoId: null })).rejects.toThrow(
+        new BadRequestException('Live photo video not found'),
+      );
+      await expect(rows()).resolves.toEqual(before);
+      expect(ctx.getMock(EventRepository).emit).not.toHaveBeenCalledWith('AssetShow', expect.anything());
+
+      await sut.update(elevated, still.id, { livePhotoVideoId: null });
+      await expect(
+        ctx.database
+          .selectFrom('asset')
+          .select('livePhotoVideoId')
+          .where('id', '=', still.id)
+          .executeTakeFirstOrThrow(),
+      ).resolves.toEqual({ livePhotoVideoId: null });
+      expect(ctx.getMock(EventRepository).emit).toHaveBeenCalledWith('AssetShow', {
+        assetId: motion.id,
+        userId: user.id,
+      });
     });
 
     it('should not update an asset of another user', async () => {

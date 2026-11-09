@@ -160,6 +160,11 @@ export class AssetService extends BaseService {
     } else if (rest.livePhotoVideoId === null) {
       const asset = await this.findOrFail(id);
       if (asset.livePhotoVideoId) {
+        // Fork (§15.2, R32): unlinking writes the motion part's visibility (and announces it), so a motion part hidden
+        // for a non-elevated caller is refused like a missing live photo video.
+        if (await BaseService.create(LockService, this).isOwnAssetHiddenForWrite(auth, asset.livePhotoVideoId)) {
+          throw new BadRequestException('Live photo video not found');
+        }
         previousMotion = await onBeforeUnlink(repos, { livePhotoVideoId: asset.livePhotoVideoId });
       }
     }
