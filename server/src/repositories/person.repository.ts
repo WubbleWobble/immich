@@ -1243,6 +1243,42 @@ export class PersonRepository {
   }
 
   /**
+   * Fork (ruling R60): whether `userId`'s person group passes the person-list rule (getAllForUser's face scope) with the
+   * given entries: some live face on a timeline asset that is the user's or a partner's and passes its owner's locks,
+   * or that sits in an album shared with the user and not hidden for them.
+   */
+  @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID, [DummyValue.UUID], []] })
+  async hasVisibleFace(
+    userId: string,
+    personGroupId: string,
+    partnerIds: string[],
+    lockVisibility: OwnerLockVisibility[],
+  ): Promise<boolean> {
+    const ownerIds = anyUuid([userId, ...partnerIds]);
+    const hiddenSharedAlbumIds = getViewerHiddenAlbumIds(userId, lockVisibility);
+    const row = await this.db
+      .selectFrom('asset_face')
+      .select('asset_face.id')
+      .where('asset_face.personGroupId', '=', personGroupId)
+      .where('asset_face.deletedAt', 'is', null)
+      .where('asset_face.isVisible', 'is', true)
+      .where('asset_face.assetVisibility', '=', sql.lit(AssetVisibility.Timeline))
+      .where('asset_face.assetDeletedAt', 'is', null)
+      .where((eb) =>
+        eb.or([
+          lockVisibility.length > 0
+            ? eb.and([eb('asset_face.ownerId', '=', ownerIds), faceLockVisible(eb, this.db, lockVisibility)])
+            : eb('asset_face.ownerId', '=', ownerIds),
+          inSharedAlbum(userId, 'asset_face.assetId', hiddenSharedAlbumIds),
+        ]),
+      )
+      .$if(lockVisibility.length > 0, (qb) => qb.withPlugin(joinDeduplicationPlugin))
+      .limit(1)
+      .executeTakeFirst();
+    return row !== undefined;
+  }
+
+  /**
    * Fork: a feature-face candidate restricted to `eligibleOwnerIds` and, with lock entries, to faces whose asset passes
    * its owner's locks. Callers run in job context (never elevated, no reveal). The asset is joined only when entries
    * exist.

@@ -130,7 +130,11 @@ export class JobService extends BaseService {
 
       case JobName.PersonGenerateThumbnail: {
         const { ownerId, personGroupId } = item.data;
-        this.websocketRepository.clientSend('on_person_thumbnail', ownerId, personGroupId);
+        // Fork (R60): a person group the owner's ordinary sessions do not list is announced to elevated sessions only.
+        const hidden = await this.lockService().isPersonGroupHiddenForOwnerEvents(ownerId, personGroupId);
+        for (const room of await this.lockService().getOwnerEventRooms(ownerId, hidden)) {
+          this.websocketRepository.clientSend('on_person_thumbnail', room, personGroupId);
+        }
         break;
       }
 

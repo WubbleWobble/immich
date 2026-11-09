@@ -2056,5 +2056,53 @@ describe(AssetService.name, () => {
         await expect(sut.search(factory.auth({ user }), {})).resolves.toHaveLength(1);
       });
     });
+
+    it('on_person_thumbnail follows the person-list rule: a person seen only on hidden assets goes to elevated sessions (R60)', async () => {
+      const { ctx } = setup();
+      const { sut: jobs, ctx: jobCtx } = newMediumService(JobService, {
+        database: defaultDatabase,
+        real: [
+          AccessRepository,
+          AlbumRepository,
+          AssetRepository,
+          LockRepository,
+          PartnerRepository,
+          PersonRepository,
+          SessionRepository,
+        ],
+        mock: [EventRepository, JobRepository, LoggingRepository, WebsocketRepository],
+      });
+      jobCtx.getMock(EventRepository).emit.mockResolvedValue();
+      jobCtx.getMock(JobRepository).run.mockResolvedValue(JobStatus.Success);
+      jobCtx.getMock(WebsocketRepository).clientSend.mockReturnValue();
+      const newPersonOn = async (assetId: string, ownerId: string) => {
+        const { person } = await ctx.newPerson({ ownerId });
+        await ctx.newAssetFace({ assetId, personGroupId: person.personGroupId });
+        return person.personGroupId;
+      };
+      const thumbnail = (ownerId: string, personGroupId: string) =>
+        jobs.onJobRun(QueueName.ThumbnailGeneration, {
+          name: JobName.PersonGenerateThumbnail,
+          data: { ownerId, personGroupId },
+        });
+
+      const { user, visible, hidden, elevatedRoom } = await newLibrary(ctx);
+      const hiddenPerson = await newPersonOn(hidden.id, user.id);
+      const visiblePerson = await newPersonOn(visible.id, user.id);
+      const { user: lockless, hidden: unlocked } = await newLibrary(ctx, { lock: false });
+      const locklessPerson = await newPersonOn(unlocked.id, lockless.id);
+
+      await thumbnail(user.id, hiddenPerson);
+      await thumbnail(user.id, visiblePerson);
+      await thumbnail(lockless.id, locklessPerson);
+
+      expect(
+        jobCtx.getMock(WebsocketRepository).clientSend.mock.calls.map(([event, room, id]) => ({ event, room, id })),
+      ).toEqual([
+        { event: 'on_person_thumbnail', room: elevatedRoom, id: hiddenPerson },
+        { event: 'on_person_thumbnail', room: user.id, id: visiblePerson },
+        { event: 'on_person_thumbnail', room: lockless.id, id: locklessPerson },
+      ]);
+    });
   });
 });

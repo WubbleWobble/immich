@@ -8,6 +8,7 @@ import { DB } from 'src/schema/index.js';
 import { AlbumService } from 'src/services/album.service.js';
 import { BaseService } from 'src/services/base.service.js';
 import { requireElevatedPermission } from 'src/utils/access.js';
+import { getMyPartnerIds } from 'src/utils/asset.util.js';
 import { OwnerLockVisibility } from 'src/utils/database.js';
 import { NO_REVEALED_LOCKS, RevealedLocks } from 'src/utils/lock-visibility.js';
 import { setDifference } from 'src/utils/set.js';
@@ -432,6 +433,29 @@ export class LockService extends BaseService {
       }
     }
     return hidden;
+  }
+
+  /**
+   * Ruling R60, `on_person_thumbnail`: whether the owner's person group is invisible to the owner under the
+   * non-elevated person-list rule (no face in scope that passes the locks - see PersonRepository.hasVisibleFace).
+   * Owners whose relevant users (the owner and the partners in their people scope) hold no locks pay one partner lookup
+   * and one probe, and the event is unchanged.
+   */
+  async isPersonGroupHiddenForOwnerEvents(ownerId: string, personGroupId: string): Promise<boolean> {
+    const partnerIds = await getMyPartnerIds({ userId: ownerId, repository: this.partnerRepository });
+    if (!(await this.lockRepository.anyHasLocks([ownerId, ...partnerIds]))) {
+      return false;
+    }
+    const lockVisibility = await this.lockRepository.getOwnerLockVisibility({
+      viewerId: ownerId,
+      ownerIds: [ownerId, ...partnerIds],
+      revealed: NO_REVEALED_LOCKS,
+      isElevated: false,
+    });
+    if (lockVisibility.length === 0) {
+      return false;
+    }
+    return !(await this.personRepository.hasVisibleFace(ownerId, personGroupId, partnerIds, lockVisibility));
   }
 
   /** The owner's sessions that are elevated right now (the PIN window of AuthService.validateSession). */

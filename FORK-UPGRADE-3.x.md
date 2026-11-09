@@ -136,8 +136,11 @@ State these plainly to users.
   (a hidden member and fewer than two visible members). Album updates and
   in-app notifications about an album you locked (or an asset hidden from
   you) likewise reach only your elevated sessions, and such notifications
-  are left out of the notification list outside elevation. Sharees who did
-  not lock the album are unaffected.
+  are left out of the notification list outside elevation (and cannot be
+  opened, marked read or deleted there; bulk actions skip them). Sharees who
+  did not lock the album are unaffected. A person's thumbnail-ready event
+  for a person you only see on hidden photos also reaches elevated sessions
+  only (R60).
 - **CLI and API-key uploads re-send hidden files every run (R49).** API-key
   sessions are never elevated. So `immich-cli` and `immich-go` see an
   already-hidden file as new each time, upload it again and get a phantom

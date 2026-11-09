@@ -1457,6 +1457,35 @@ where
   and "asset_face"."personGroupId" in ($6)
   and "asset_face"."deletedAt" is null
 
+-- PersonRepository.hasVisibleFace
+select
+  "asset_face"."id"
+from
+  "asset_face"
+where
+  "asset_face"."personGroupId" = $1
+  and "asset_face"."deletedAt" is null
+  and "asset_face"."isVisible" is true
+  and "asset_face"."assetVisibility" = 'timeline'
+  and "asset_face"."assetDeletedAt" is null
+  and (
+    "asset_face"."ownerId" = any ($2::uuid[])
+    or exists (
+      select
+        1 as "exists"
+      from
+        "album_asset"
+        inner join "album" on "album"."id" = "album_asset"."albumId"
+        and "album"."deletedAt" is null
+        inner join "album_user" on "album_user"."albumId" = "album"."id"
+        and "album_user"."userId" = $3
+      where
+        "album_asset"."assetId" = "asset_face"."assetId"
+    )
+  )
+limit
+  $4
+
 -- PersonRepository.getRandomFace
 select
   "asset_face".*
