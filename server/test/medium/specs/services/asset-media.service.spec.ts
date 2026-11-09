@@ -1,8 +1,12 @@
+import { ExecutionContext } from '@nestjs/common';
 import { Kysely } from 'kysely';
 import { randomBytes } from 'node:crypto';
-import { AssetMediaStatus } from 'src/dtos/asset-media-response.dto.js';
+import { lastValueFrom, of } from 'rxjs';
+import { AssetMediaStatus, AssetRejectReason, AssetUploadAction } from 'src/dtos/asset-media-response.dto.js';
 import { AssetMediaSize } from 'src/dtos/asset-media.dto.js';
-import { AlbumKind, AssetFileType, SharedLinkType } from 'src/enum.js';
+import { AuthDto } from 'src/dtos/auth.dto.js';
+import { AlbumKind, AssetFileType, ImmichHeader, SharedLinkType } from 'src/enum.js';
+import { AssetUploadInterceptor } from 'src/middleware/asset-upload.interceptor.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { AlbumRepository } from 'src/repositories/album.repository.js';
 import { AssetRepository } from 'src/repositories/asset.repository.js';
@@ -43,6 +47,46 @@ const setup = (db?: Kysely<DB>) => {
 beforeAll(async () => {
   defaultDatabase = await getKyselyDB();
 });
+
+const lockUploadDto = () => ({
+  fileModifiedAt: new Date(),
+  fileCreatedAt: new Date(),
+  assetData: Buffer.from('some data'),
+});
+
+const setupLocked = async () => {
+  const { sut, ctx } = setup();
+  ctx.getMock(StorageRepository).utimes.mockResolvedValue();
+  ctx.getMock(EventRepository).emit.mockResolvedValue();
+  ctx.getMock(JobRepository).queue.mockResolvedValue();
+
+  const { user } = await ctx.newUser();
+  const { asset: hidden } = await ctx.newAsset({ ownerId: user.id });
+  const { asset: hiddenTrashed } = await ctx.newAsset({ ownerId: user.id, deletedAt: new Date() });
+  const { asset: visible } = await ctx.newAsset({ ownerId: user.id });
+  const { album: locked } = await ctx.newAlbum({ ownerId: user.id }, [hidden.id, hiddenTrashed.id]);
+  await ctx.get(LockRepository).lockAlbum(user.id, locked.id);
+  const ordinary = factory.auth({ user: { id: user.id }, session: { hasElevatedPermission: false } });
+  const elevated = factory.auth({ user: { id: user.id }, session: { hasElevatedPermission: true } });
+  const countAssets = async () => {
+    const rows = await ctx.database.selectFrom('asset').select('id').where('ownerId', '=', user.id).execute();
+    return rows.length;
+  };
+  return { sut, ctx, user, hidden, hiddenTrashed, visible, ordinary, elevated, countAssets };
+};
+
+const intercept = async (sut: AssetMediaService, auth: AuthDto, checksum: Buffer) => {
+  const interceptor = new AssetUploadInterceptor(sut);
+  const res = { status: vitest.fn() };
+  const req = { user: auth, headers: { [ImmichHeader.Checksum]: checksum.toString('hex') } };
+  const context = {
+    switchToHttp: () => ({ getRequest: () => req, getResponse: () => res }),
+  } as unknown as ExecutionContext;
+  const handled = of({ status: AssetMediaStatus.CREATED, id: 'from-the-upload-handler' });
+  const next = { handle: vitest.fn(() => handled) };
+  const observable = await interceptor.intercept(context, next);
+  return { result: await lastValueFrom(observable), next, res };
+};
 
 describe(AssetService.name, () => {
   describe('uploadAsset', () => {
@@ -319,6 +363,8 @@ describe(AssetService.name, () => {
         );
         expect(response).toEqual({ id: expect.any(String), status: AssetMediaStatus.CREATED });
         expect(response.id).not.toEqual(hidden.id);
+        // same keys in the same order as a fresh upload (the body is not schema-serialized)
+        expect(JSON.stringify(Object.keys(response))).toBe(JSON.stringify(['id', 'status']));
       }
 
       // the hidden asset was added to neither the individual link nor the album behind the album link
@@ -386,6 +432,139 @@ describe(AssetService.name, () => {
           .execute(),
       ).resolves.toEqual([]);
       expect(ctx.getMock(EventRepository).emit).not.toHaveBeenCalledWith('AlbumUpdate', expect.anything());
+    });
+
+    describe('ordinary-session duplicates (R49)', () => {
+      it('the checksum pre-check names no hidden asset and falls through like a brand-new checksum', async () => {
+        const { sut, hidden, hiddenTrashed, ordinary } = await setupLocked();
+
+        for (const checksum of [hidden.checksum, hiddenTrashed.checksum, randomBytes(20)]) {
+          await expect(sut.getUploadAssetIdByChecksum(ordinary, checksum.toString('hex'))).resolves.toBeUndefined();
+
+          const { result, next, res } = await intercept(sut, ordinary, checksum);
+          expect(next.handle).toHaveBeenCalledTimes(1);
+          expect(res.status).not.toHaveBeenCalled();
+          expect(result).toEqual({ status: AssetMediaStatus.CREATED, id: 'from-the-upload-handler' });
+        }
+      });
+
+      it('bulkUploadCheck reports a hidden match exactly like a brand-new checksum', async () => {
+        const { sut, hidden, hiddenTrashed, visible, ordinary } = await setupLocked();
+
+        const response = await sut.bulkUploadCheck(ordinary, {
+          assets: [
+            { id: 'hidden', checksum: hidden.checksum.toString('hex') },
+            { id: 'hidden-trashed', checksum: hiddenTrashed.checksum.toString('hex') },
+            { id: 'brand-new', checksum: randomBytes(20).toString('hex') },
+            { id: 'visible', checksum: visible.checksum.toString('hex') },
+          ],
+        });
+
+        expect(response).toEqual({
+          results: [
+            { id: 'hidden', action: AssetUploadAction.ACCEPT },
+            { id: 'hidden-trashed', action: AssetUploadAction.ACCEPT },
+            { id: 'brand-new', action: AssetUploadAction.ACCEPT },
+            {
+              id: 'visible',
+              action: AssetUploadAction.REJECT,
+              reason: AssetRejectReason.DUPLICATE,
+              assetId: visible.id,
+              isTrashed: false,
+            },
+          ],
+        });
+        expect(Object.keys(response.results[0])).toEqual(Object.keys(response.results[2]));
+      });
+
+      it('an upload hitting the checksum conflict of a hidden asset answers with a phantom CREATED and stores nothing', async () => {
+        const { sut, ctx, hidden, hiddenTrashed, ordinary, countAssets } = await setupLocked();
+        const before = await countAssets();
+
+        for (const checksum of [hidden.checksum, hiddenTrashed.checksum]) {
+          const response = await sut.uploadAsset(ordinary, lockUploadDto(), mediumFactory.uploadFile({ checksum }));
+          expect(response).toEqual({ id: expect.any(String), status: AssetMediaStatus.CREATED });
+          // same keys in the same order as a fresh upload: the JSON body is not serialized through a schema
+          expect(JSON.stringify(Object.keys(response))).toBe(JSON.stringify(['id', 'status']));
+          expect([hidden.id, hiddenTrashed.id]).not.toContain(response.id);
+          // the phantom id is never stored
+          await expect(
+            ctx.database.selectFrom('asset').select('id').where('id', '=', response.id).execute(),
+          ).resolves.toEqual([]);
+        }
+
+        expect(await countAssets()).toBe(before);
+        expect(ctx.getMock(EventRepository).emit).not.toHaveBeenCalledWith('AssetCreate', expect.anything());
+
+        // a brand-new checksum has the same response shape (and is stored)
+        const fresh = await sut.uploadAsset(ordinary, lockUploadDto(), mediumFactory.uploadFile());
+        expect(fresh).toEqual({ id: expect.any(String), status: AssetMediaStatus.CREATED });
+        expect(JSON.stringify(Object.keys(fresh))).toBe(JSON.stringify(['id', 'status']));
+        expect(await countAssets()).toBe(before + 1);
+      });
+
+      it('an elevated owner keeps the real duplicate behaviour', async () => {
+        const { sut, hidden, hiddenTrashed, elevated, countAssets } = await setupLocked();
+        const before = await countAssets();
+
+        await expect(sut.getUploadAssetIdByChecksum(elevated, hidden.checksum.toString('hex'))).resolves.toEqual({
+          id: hidden.id,
+          status: AssetMediaStatus.DUPLICATE,
+        });
+        const { result, next } = await intercept(sut, elevated, hidden.checksum);
+        expect(next.handle).not.toHaveBeenCalled();
+        expect(result).toEqual({ id: hidden.id, status: AssetMediaStatus.DUPLICATE });
+
+        await expect(
+          sut.bulkUploadCheck(elevated, {
+            assets: [
+              { id: 'hidden', checksum: hidden.checksum.toString('hex') },
+              { id: 'hidden-trashed', checksum: hiddenTrashed.checksum.toString('hex') },
+            ],
+          }),
+        ).resolves.toEqual({
+          results: [
+            {
+              id: 'hidden',
+              action: AssetUploadAction.REJECT,
+              reason: AssetRejectReason.DUPLICATE,
+              assetId: hidden.id,
+              isTrashed: false,
+            },
+            {
+              id: 'hidden-trashed',
+              action: AssetUploadAction.REJECT,
+              reason: AssetRejectReason.DUPLICATE,
+              assetId: hiddenTrashed.id,
+              isTrashed: true,
+            },
+          ],
+        });
+
+        await expect(
+          sut.uploadAsset(elevated, lockUploadDto(), mediumFactory.uploadFile({ checksum: hidden.checksum })),
+        ).resolves.toEqual({ id: hidden.id, status: AssetMediaStatus.DUPLICATE });
+        expect(await countAssets()).toBe(before);
+      });
+
+      it('a visible duplicate keeps the upstream behaviour in an ordinary session', async () => {
+        const { sut, visible, ordinary, countAssets } = await setupLocked();
+        const before = await countAssets();
+
+        await expect(sut.getUploadAssetIdByChecksum(ordinary, visible.checksum.toString('hex'))).resolves.toEqual({
+          id: visible.id,
+          status: AssetMediaStatus.DUPLICATE,
+        });
+        const { result, next, res } = await intercept(sut, ordinary, visible.checksum);
+        expect(next.handle).not.toHaveBeenCalled();
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(result).toEqual({ id: visible.id, status: AssetMediaStatus.DUPLICATE });
+
+        await expect(
+          sut.uploadAsset(ordinary, lockUploadDto(), mediumFactory.uploadFile({ checksum: visible.checksum })),
+        ).resolves.toEqual({ id: visible.id, status: AssetMediaStatus.DUPLICATE });
+        expect(await countAssets()).toBe(before);
+      });
     });
 
     it('an upload through a (legacy, upload-enabled) smart-album link files nothing into the smart album', async () => {

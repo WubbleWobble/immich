@@ -199,9 +199,18 @@ export class LockService extends BaseService {
    * every link holder.
    */
   async isAssetHiddenForSharedLinkOwner(auth: AuthDto, assetId: string): Promise<boolean> {
-    const owner = { user: auth.user };
-    const hidden = await this.getHiddenAssetIds(owner, [assetId], 'direct', { ownOnly: true });
+    const hidden = await this.getOwnHiddenAssetIdsForUpload({ user: auth.user }, [assetId]);
     return hidden.has(assetId);
+  }
+
+  /**
+   * Upload duplicate guard (7A.8a, ruling R49): the subset of `assetIds` that are the uploader's OWN assets hidden by
+   * their own locks under the direct-by-id rule. Empty in an elevated session (elevation bypasses the viewer's own
+   * locks); the reveal set never applies (an upload is a write, spec §15.3). A shared-link visitor is judged as the
+   * link owner without a session (see isAssetHiddenForSharedLinkOwner), so the owner's locks apply in full.
+   */
+  getOwnHiddenAssetIdsForUpload(auth: AuthDto, assetIds: string[]): Promise<Set<string>> {
+    return this.getHiddenAssetIds(auth, assetIds, 'direct', { ownOnly: true });
   }
 
   /**

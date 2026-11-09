@@ -51,8 +51,8 @@ export class AssetMediaService extends BaseService {
     }
 
     const assetId = await this.assetRepository.getUploadAssetIdByChecksum(auth.user.id, fromChecksum(checksum));
-    // Fork (7A.8a): never name a hidden asset; the upload proceeds and takes the checksum-constraint path below.
-    if (!assetId || (await this.getSharedLinkHiddenDuplicate(auth, assetId)) === 'ungranted') {
+    // Fork (7A.8a, R49): never name a hidden asset; the upload proceeds and takes the checksum-constraint path below.
+    if (!assetId || (await this.getHiddenDuplicate(auth, assetId)) === 'ungranted') {
       return;
     }
 
@@ -212,13 +212,14 @@ export class AssetMediaService extends BaseService {
           throw new InternalServerErrorException();
         }
 
-        const hiddenDuplicate = await this.getSharedLinkHiddenDuplicate(auth, duplicateId);
+        const hiddenDuplicate = await this.getHiddenDuplicate(auth, duplicateId);
         if (hiddenDuplicate === 'ungranted') {
-          // Fork (7A.8a): neither add the hidden asset to the link nor name it. Reply exactly like a fresh upload with
-          // an id that is never persisted - the result for "no duplicate exists" (ruling R32), so the response is no
-          // existence or lock-state oracle for the link holder.
-          this.logger.debug(`Duplicate asset upload rejected: existing asset is hidden for the link owner`);
-          return { status: AssetMediaStatus.CREATED, id: this.cryptoRepository.randomUUID() };
+          // Fork (7A.8a, R49): neither add the hidden asset to a link nor name it. Reply exactly like a fresh upload
+          // (same keys, same order - the body is not schema-serialized) with an id that is never persisted - the
+          // result for "no duplicate exists" (ruling R32), so the response is no existence or lock-state oracle for
+          // the link holder or for an ordinary session of the owner.
+          this.logger.debug(`Duplicate asset upload rejected: existing asset is hidden for the uploader`);
+          return { id: this.cryptoRepository.randomUUID(), status: AssetMediaStatus.CREATED };
         }
 
         // Fork (R36-5): a hidden duplicate the link already grants is named (that reveals nothing new) but never
@@ -333,9 +334,18 @@ export class AssetMediaService extends BaseService {
   async bulkUploadCheck(auth: AuthDto, dto: AssetBulkUploadCheckDto): Promise<AssetBulkUploadCheckResponseDto> {
     const checksums: Buffer[] = dto.assets.map((asset) => fromChecksum(asset.checksum));
     const results = await this.assetRepository.getByChecksums(auth.user.id, checksums);
+    // Fork (R49): an asset hidden for an ordinary session is reported like a brand-new checksum (accept, no id, no
+    // trash state); a visible asset with the same checksum (e.g. in an external library) is still reported.
+    const hidden = await this.getOwnHiddenDuplicateIds(
+      auth,
+      results.map(({ id }) => id),
+    );
     const checksumMap: Record<string, { id: string; isTrashed: boolean }> = {};
 
     for (const { id, deletedAt, checksum } of results) {
+      if (hidden.has(id)) {
+        continue;
+      }
       checksumMap[checksum.toString('hex')] = { id, isTrashed: !!deletedAt };
     }
 
@@ -361,22 +371,30 @@ export class AssetMediaService extends BaseService {
   }
 
   /**
-   * Fork (7A.8a, R36-5): how a shared-link upload's checksum duplicate relates to the link owner's locks - `visible`
-   * (not hidden, or no link), `granted` (hidden for the owner but already reachable through the link, e.g. an album
-   * link to the locked album itself, so naming it reveals nothing new) or `ungranted` (hidden and not reachable).
+   * Fork (7A.8a, R36-5, R49): how an upload's checksum duplicate relates to the locks that govern the uploader -
+   * `visible` (not hidden), `granted` (shared link only: hidden for the link owner but already reachable through the
+   * link, e.g. an album link to the locked album itself, so naming it reveals nothing new) or `ungranted` (hidden and
+   * not reachable). An ordinary session is judged by the owner's direct-access rule: hidden by the owner's own locks
+   * unless elevated, never revealed (ruling R49).
    */
-  private async getSharedLinkHiddenDuplicate(
-    auth: AuthDto,
-    assetId: string,
-  ): Promise<'visible' | 'granted' | 'ungranted'> {
+  private async getHiddenDuplicate(auth: AuthDto, assetId: string): Promise<'visible' | 'granted' | 'ungranted'> {
     if (!auth.sharedLink) {
-      return 'visible';
+      const hidden = await this.getOwnHiddenDuplicateIds(auth, [assetId]);
+      return hidden.has(assetId) ? 'ungranted' : 'visible';
     }
     if (!(await BaseService.create(LockService, this).isAssetHiddenForSharedLinkOwner(auth, assetId))) {
       return 'visible';
     }
     const granted = await this.checkAccess({ auth, permission: Permission.AssetRead, ids: [assetId] });
     return granted.has(assetId) ? 'granted' : 'ungranted';
+  }
+
+  /** Fork (R49): the subset of an ordinary session's checksum matches hidden for it (empty when elevated). */
+  private getOwnHiddenDuplicateIds(auth: AuthDto, assetIds: string[]): Promise<Set<string>> {
+    if (auth.sharedLink || auth.session?.hasElevatedPermission || assetIds.length === 0) {
+      return Promise.resolve(new Set());
+    }
+    return BaseService.create(LockService, this).getOwnHiddenAssetIdsForUpload(auth, assetIds);
   }
 
   private async addToSharedLink(sharedLink: AuthSharedLink, assetId: string) {
