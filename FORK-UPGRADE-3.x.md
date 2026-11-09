@@ -25,6 +25,12 @@ deploy and rollback checklist.
 The layout is unchanged. Fork migrations keep their names and all sort after
 upstream's, so kysely runs them as a plain ordered pass.
 
+Why the ordering matters: production kysely refuses to run a pending migration
+that sorts before an already-applied one (`allowUnorderedMigrations` is
+dev-only). So every fork migration must be timestamped after upstream's newest
+migration, and any new fork migration (for example in the v3.4 merge) must be
+timestamped after upstream's newest at that point.
+
 | Migration | Purpose |
 |---|---|
 | `1784900000000-RetireWorkflowLockSteps` | Disables workflows using the retired per-asset lock steps |
@@ -32,7 +38,7 @@ upstream's, so kysely runs them as a plain ordered pass.
 | `1784910000002-AddAlbumSmartAlbumCache` | Smart albums: list-view cache columns |
 | `1784910000003-AddAlbumContainers` | Album folders: container tables + closure |
 | `1784910000004-AddLockedContent` | Lock tables; moves any `visibility=locked` assets into per-user "Locked Folder" albums |
-| `1784910000005-ForkSchemaDriftFix` | Schema drift fix |
+| `1784910000005-ForkSchemaDriftFix` | Adds the missing `userId` indexes on `locked_album` and `locked_container`, and the `album.cachedThumbnailAssetId` column comment (found by `schema-check` after the first production upgrade) |
 | `1792300000000-AddPersonThumbnailSourceFace` | **New.** Records which face a person thumbnail was cropped from |
 | `1792300000001-AddAlbumCacheRevision` | **New.** `cacheRevision` for smart-album list cache freshness |
 | `1792300000002-AddAssetVisibilityNotLockedCheck` | **New.** CHECK constraint rejecting `asset.visibility = 'locked'` |
@@ -75,7 +81,8 @@ commits.
 
 | Area | Behaviour |
 |---|---|
-| Search album filter (v3) naming a smart album | 400 `Smart albums cannot be used as a search album filter` |
+| Search album filter (v1 `albumIds` and v3) naming a smart album | 400 `Smart albums cannot be used as a search album filter` |
+| Search album filter naming an album with no access, or a hidden album (non-elevated) | 400 `Not found or no album.read access` |
 | v1 statistics, random, large-asset and smart search with `albumIds` | Now require album access and reject hidden albums |
 | Shared-link metadata search naming a smart album | 400 |
 | Album shared link to a smart album | `allowUpload` defaults to `false`; explicit `true` returns 400 `Smart albums do not accept uploads` |
@@ -93,11 +100,15 @@ State these plainly to users.
   - rows already synced to a partner's phone before a lock stay there until
     that device re-syncs;
   - assets withheld while locked are not re-sent after an unlock until a
-    re-sync.
-- **Locking does not revoke shared links already handed out.** Revoke a link by
-  deleting it; the link owner can always do so.
-- **Residual lock-state oracle (R37):** a shared-link uploader who already holds
-  the exact file bytes can infer that the owner's matching photo is hidden.
+    re-sync. Cause: lock toggles do not bump `updateId`, so the sync cursor
+    does not move.
+- **Locking does not revoke shared links already handed out.** To revoke a
+  link to your own locked content, elevate your session (PIN) first, then
+  delete it. While you are not elevated, such a link is neither listed nor
+  deletable, and it keeps working for visitors. Links hidden only by a
+  partner's lock can be revoked in any session.
+- **Residual lock-state oracle (R37):** an uploader on an upload-enabled shared
+  link who already holds the exact file bytes can infer that the owner's matching photo is hidden.
 
 ## Deploy checklist
 
@@ -111,20 +122,34 @@ Deploy only inside a window the user has confirmed.
    the disposable database afterwards.
 3. Back up `/media/immich-media/thumbs` (at least the person-thumbnail
    directory). Regeneration deletes old crops, and a rollback needs them.
-4. In `compose.env`: `IMMICH_VERSION=v3.3.6` and
+4. Tell users in advance (about 1 minute of blank avatars on prod-sized data).
+5. In `/home/wobble/web/home-network/immich/compose.env` (prod runs on host
+   `docker-lxc`): `IMMICH_VERSION=v3.3.6` and
    `IMMICH_SERVER_IMAGE=ghcr.io/wubblewobble/immich-server:v3.3.6-wobble.1`.
-5. `docker compose pull && docker compose up -d`. Leave it alone for the
+6. `docker compose pull && docker compose up -d`. Leave it alone for the
    geodata import and thumbnail regeneration (see above).
-6. Repeat the checks: 110 ledger rows, last three being the new fork
-   migrations, asset count unchanged, people thumbnails regenerating.
+7. Repeat the rehearsal checks:
+   - `kysely_migrations` = 110 rows with exact names and order (94 old rows
+     unchanged, then 13 upstream, then 3 fork);
+   - asset count and person count unchanged;
+   - the `asset.visibility` CHECK constraint is present, and 0 assets have
+     `visibility = 'locked'`;
+   - person thumbnails are regenerating.
 
 ## Rollback
 
-Stop the stack, restore the deployment dump and the thumbs backup, and set
-`compose.env` back to `IMMICH_VERSION=v3.1.0` and
-`IMMICH_SERVER_IMAGE=ghcr.io/wubblewobble/immich-server:v3.1.0-wobble.2`.
-Upstream v3.2 and v3.3 migrations are not reversible in practice, so there is
-no down-migration path.
+**Warning: rolling back loses everything uploaded or changed since the
+deploy.** Upstream v3.2 and v3.3 migrations are not reversible in practice, so
+the only path is restoring the pre-deploy dump. In order:
+
+1. Stop the stack.
+2. Drop and recreate the `immich` database, or restore into a fresh volume.
+3. `pg_restore --no-owner --exit-on-error` the deployment dump. Verify
+   `kysely_migrations` = 94 and the asset count.
+4. Restore the thumbs backup **before** starting v3.1.
+5. Set `compose.env` back to `IMMICH_VERSION=v3.1.0` and
+   `IMMICH_SERVER_IMAGE=ghcr.io/wubblewobble/immich-server:v3.1.0-wobble.2`.
+6. Start the stack.
 
 ## Follow-ups (not done)
 
