@@ -12,6 +12,7 @@ import {
   unlockAlbumContainer,
 } from '@immich/sdk';
 import { SvelteSet } from 'svelte/reactivity';
+import { eventManager } from '$lib/managers/event-manager.svelte';
 
 const REVEALED_ALBUMS_HEADER = 'x-immich-revealed-albums';
 const REVEALED_CONTAINERS_HEADER = 'x-immich-revealed-containers';
@@ -32,11 +33,26 @@ class LockManager {
   revealedAlbumIds = new SvelteSet<string>();
   revealedContainerIds = new SvelteSet<string>();
 
+  constructor() {
+    // Spec §8.2: lock state is per session and per user. Logging out, losing the session or locking it must not carry
+    // reveals (and their request headers) over to the next user of a shared device.
+    eventManager.on({
+      AuthLogout: () => this.resetLocal(),
+      SessionDelete: () => this.resetLocal(),
+      SessionLocked: () => this.resetLocal(),
+    });
+  }
+
   /** Refresh elevation status; while elevated, also refresh the lock sets. */
   async refresh() {
+    const wasElevated = this.isElevated;
     const { isElevated, pinCode } = await getAuthStatus();
     this.isElevated = isElevated;
     this.hasPinCode = pinCode;
+    if (isElevated && !wasElevated) {
+      // Reveal defaults to off each time elevation is (re)acquired.
+      this.clearReveals();
+    }
     if (isElevated) {
       const { lockedAlbumIds, lockedContainerIds } = await getLocks();
       this.lockedAlbumIds.clear();
@@ -115,6 +131,20 @@ class LockManager {
     const album = await createAlbum({ createAlbumDto: { albumName: 'Locked Folder' } });
     await this.lockAlbum(album.id);
     return album.id;
+  }
+
+  /** Elevation was just (re)acquired (PIN prompt): reveal starts off again. */
+  onElevationAcquired() {
+    this.clearReveals();
+  }
+
+  /** Forget all client-side lock state without a server call (logout, session deleted or locked elsewhere). */
+  resetLocal() {
+    this.isElevated = false;
+    this.hasPinCode = false;
+    this.lockedAlbumIds.clear();
+    this.lockedContainerIds.clear();
+    this.clearReveals();
   }
 
   /** Drop server-side elevation and every client-side reveal. */

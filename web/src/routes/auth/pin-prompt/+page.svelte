@@ -1,6 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import AuthPageLayout from '$lib/components/layouts/AuthPageLayout.svelte';
+  import { lockManager } from '$lib/managers/lock-manager.svelte';
   import PinCodeCreateForm from '$lib/components/user-settings-page/PinCodeCreateForm.svelte';
   import { Route } from '$lib/route';
   import { handleError } from '$lib/utils/handle-error';
@@ -25,6 +26,7 @@
   const handleUnlockSession = async (code: string) => {
     try {
       await unlockAuthSession({ sessionUnlockDto: { pinCode: code } });
+      lockManager.onElevationAcquired();
 
       isVerified = true;
 
