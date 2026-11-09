@@ -38,6 +38,7 @@ import {
   OwnerLockVisibility,
   anyUuid,
   asUuid,
+  getViewerHiddenAlbumIds,
   hasPeople,
   inSharedAlbum,
   joinDeduplicationPlugin,
@@ -841,15 +842,23 @@ export class AssetRepository {
                 )
                 .where((eb) => eb.or([eb('asset.stackId', 'is', null), eb(eb.table('stack'), 'is not', null)])),
             )
-            // FORK-PORT: lock-audit — new upstream path (28bd3a550): with personId, assets in any album shared with
-            // auth.user (inSharedAlbum) are included even when their owner is not in userIds. The fork's
-            // lockVisibility above is computed by TimelineService for the userIds owners only; the shared-album
-            // owners' locks must also be covered (each owner's own locks hide that owner's content).
+            // Fork (28bd3a550 lock audit): with personId, assets in albums shared with the viewer are included.
+            // TimelineService passes lock entries for every lock-holding owner on person timelines, so each owner's
+            // locks hide that owner's content here too, and shares the viewer locked for themselves do not count.
             .$if(!!options.userIds, (qb) =>
               qb.where((eb) => {
                 // TODO this should become a shared `hasAccess` style helper once implement sharing in more places
                 const isOwner = eb('asset.ownerId', '=', anyUuid(options.userIds!));
-                return options.personId ? eb.or([isOwner, inSharedAlbum(auth.user.id, 'asset.id')]) : isOwner;
+                return options.personId
+                  ? eb.or([
+                      isOwner,
+                      inSharedAlbum(
+                        auth.user.id,
+                        'asset.id',
+                        getViewerHiddenAlbumIds(auth.user.id, options.lockVisibility),
+                      ),
+                    ])
+                  : isOwner;
               }),
             )
             .$if(options.isFavorite !== undefined, (qb) => qb.where('asset.isFavorite', '=', options.isFavorite!))
@@ -948,13 +957,21 @@ export class AssetRepository {
             withLockVisibility(qb, this.db, options.lockVisibility!),
           )
           .$if(!!options.personId, (qb) => hasPeople(qb, [options.personId!]))
-          // FORK-PORT: lock-audit — new upstream path (28bd3a550, auto-merged): with personId, assets in albums shared
-          // with auth.user (inSharedAlbum) are returned even when their owner is not in userIds; the fork's
-          // lockVisibility must also cover those shared-album owners' locks.
+          // Fork (28bd3a550 lock audit): see getTimeBuckets - every owner's locks apply, and the viewer's own locked
+          // shares do not count.
           .$if(!!options.userIds, (qb) =>
             qb.where((eb) => {
               const isOwner = eb('asset.ownerId', '=', anyUuid(options.userIds!));
-              return options.personId ? eb.or([isOwner, inSharedAlbum(auth.user.id, 'asset.id')]) : isOwner;
+              return options.personId
+                ? eb.or([
+                    isOwner,
+                    inSharedAlbum(
+                      auth.user.id,
+                      'asset.id',
+                      getViewerHiddenAlbumIds(auth.user.id, options.lockVisibility),
+                    ),
+                  ])
+                : isOwner;
             }),
           )
           .$if(options.isFavorite !== undefined, (qb) => qb.where('asset.isFavorite', '=', options.isFavorite!))

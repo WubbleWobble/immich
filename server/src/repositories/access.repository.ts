@@ -783,8 +783,11 @@ class ClusterGroupRequestAccess {
 class PersonAccess {
   constructor(private db: Kysely<DB>) {}
 
-  // FORK-PORT: lock-audit — new upstream person access (c12d5e6d3 person_user sharing). Person sharing is not an
-  // asset grant; shared people must follow the source owner's locks (D10, Task 4).
+  // Fork lock audit (c12d5e6d3 person_user sharing): this grants access to the PERSON (name, birth date, sharing,
+  // merge), never to assets - person sharing is not an asset grant. Everything derived from assets stays lock-aware
+  // downstream: the thumbnail is served only when its recorded source face passes that face's asset owner's locks
+  // (PersonService.isFaceVisibleToViewer), and lists/statistics/name search/person timelines keep upstream's asset
+  // scope with every source owner's locks applied (D10).
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID_SET, [PersonUserRole.Admin]] })
   @ChunkedSet({ paramIndex: 1 })
   async checkAccess(userId: string, personIds: Set<PersonId>, roles: PersonUserRole[]) {

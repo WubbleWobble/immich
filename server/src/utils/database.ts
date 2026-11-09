@@ -288,7 +288,16 @@ export function hasPeople<O>(qb: SelectQueryBuilder<DB, 'asset', O>, personGroup
   );
 }
 
-export function inSharedAlbum(userId: string, assetId: 'asset.id' | 'asset_face.assetId') {
+/**
+ * Fork: `hiddenAlbumIds` are the viewer's own effectively hidden albums (their lock entry, reveal already applied).
+ * A share the viewer locked for themselves must not surface its assets through this path (spec §15.1), while another,
+ * unlocked share of the same asset still counts.
+ */
+export function inSharedAlbum(
+  userId: string,
+  assetId: 'asset.id' | 'asset_face.assetId',
+  hiddenAlbumIds: string[] = [],
+) {
   const eb = expressionBuilder<DB, 'asset' | 'asset_face'>();
   return eb.exists(
     eb
@@ -300,7 +309,8 @@ export function inSharedAlbum(userId: string, assetId: 'asset.id' | 'asset_face.
       .innerJoin('album_user', (join) =>
         join.onRef('album_user.albumId', '=', 'album.id').on('album_user.userId', '=', userId),
       )
-      .whereRef('album_asset.assetId', '=', assetId),
+      .whereRef('album_asset.assetId', '=', assetId)
+      .$if(hiddenAlbumIds.length > 0, (qb) => qb.where((eb) => eb.not(eb('album.id', '=', anyUuid(hiddenAlbumIds))))),
   );
 }
 
@@ -561,6 +571,34 @@ export function withLockVisibility<O>(
     ]);
   });
 }
+
+/**
+ * Fork: {@link withLockVisibility} for a face row - the face passes when its asset passes the asset owner's locks.
+ * Faces of owners without an entry short-circuit on the denormalized `asset_face.ownerId`, and the `asset` row is
+ * only consulted when entries exist, so callers apply this only when `entries` is non-empty (no locks anywhere keeps
+ * the `asset_face_personGroupId_ownerId_assetId_timeline_idx` fast path). The root query must attach
+ * {@link joinDeduplicationPlugin}.
+ */
+export function faceLockVisible(
+  eb: ExpressionBuilder<DB, 'asset_face'>,
+  db: Kysely<DB>,
+  entries: OwnerLockVisibility[],
+) {
+  return eb.or([
+    eb.not(eb('asset_face.ownerId', '=', anyUuid(entries.map(({ ownerId }) => ownerId)))),
+    eb.exists(
+      withLockVisibility(
+        eb.selectFrom('asset').select('asset.id').whereRef('asset.id', '=', 'asset_face.assetId'),
+        db,
+        entries,
+      ),
+    ),
+  ]);
+}
+
+/** The viewer's own effectively hidden album ids from a lock-visibility list (empty when the viewer hides nothing). */
+export const getViewerHiddenAlbumIds = (viewerId: string, entries: OwnerLockVisibility[] | undefined) =>
+  entries?.find(({ ownerId }) => ownerId === viewerId)?.hiddenAlbumIds ?? [];
 
 export function searchAssetBuilderLegacy(kysely: Kysely<DB>, options: AssetSearchBuilderOptions) {
   options.withDeleted ||= !!(options.trashedAfter || options.trashedBefore || options.isOffline);

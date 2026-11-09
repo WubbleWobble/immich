@@ -88,6 +88,17 @@ where
   and "asset_face"."deletedAt" is null
   and "asset_face"."isVisible" is true
 
+-- PersonRepository.hasUnverifiedThumbnails
+select
+  1 as "one"
+from
+  "person"
+where
+  "person"."thumbnailPath" <> ''
+  and "person"."thumbnailSourceFaceId" is null
+limit
+  $1
+
 -- PersonRepository.forBirthdayMemories
 select
   "person"."personGroupId",
@@ -806,6 +817,7 @@ where
 -- PersonRepository.getDataForThumbnailGenerationJob
 select
   "person"."ownerId",
+  "asset_face"."id" as "faceId",
   "asset_face"."boundingBoxX1" as "x1",
   "asset_face"."boundingBoxY1" as "y1",
   "asset_face"."boundingBoxX2" as "x2",
@@ -920,33 +932,88 @@ where
 
 -- PersonRepository.getForThumbnail
 select
-  (
-    select
-      "person"."thumbnailPath"
-    from
-      "person"
-    where
-      "person"."personGroupId" = "person_group"."id"
-      and "person"."ownerId" = $1
-  ) as "thumbnailPath",
-  (
-    select
-      "person"."thumbnailPath"
-    from
-      "person"
-      inner join "person_user" on "person_user"."personGroupId" = "person"."personGroupId"
-      and "person_user"."sharedById" = "person"."ownerId"
-      and "person_user"."sharedWithId" = $2
-    where
-      "person"."personGroupId" = "person_group"."id"
-      and "person"."thumbnailPath" != $3
-    limit
-      $4
-  ) as "sharedThumbnailPath"
+  "person"."thumbnailPath" as "path",
+  "person"."thumbnailSourceFaceId" as "faceId",
+  "asset"."id" as "assetId",
+  "asset"."ownerId" as "assetOwnerId"
 from
-  "person_group"
+  "person"
+  left join "asset_face" on "asset_face"."id" = "person"."thumbnailSourceFaceId"
+  left join "asset" on "asset"."id" = "asset_face"."assetId"
 where
-  "person_group"."id" = $5
+  "person"."personGroupId" = $1
+  and "person"."thumbnailPath" != ''
+  and (
+    "person"."ownerId" = $2
+    or exists (
+      select
+        "person_user"."personGroupId"
+      from
+        "person_user"
+      where
+        "person_user"."personGroupId" = "person"."personGroupId"
+        and "person_user"."sharedById" = "person"."ownerId"
+        and "person_user"."sharedWithId" = $3
+    )
+  )
+order by
+  "person"."ownerId" = $4 desc,
+  "person"."ownerId" asc
+
+-- PersonRepository.publishThumbnail
+WITH
+  old AS (
+    SELECT
+      "thumbnailPath"
+    FROM
+      "person"
+    WHERE
+      "ownerId" = $1
+      AND "personGroupId" = $2
+      AND "faceAssetId" = $3
+    FOR UPDATE
+  )
+UPDATE "person" p
+SET
+  "thumbnailPath" = $4,
+  "thumbnailSourceFaceId" = $5
+FROM
+  old
+WHERE
+  p."ownerId" = $6
+  AND p."personGroupId" = $7
+RETURNING
+  old."thumbnailPath" AS "previousPath"
+
+-- PersonRepository.updateThumbnailPathIfUnchanged
+update "person"
+set
+  "thumbnailPath" = $1
+where
+  "person"."ownerId" = $2
+  and "person"."personGroupId" = $3
+  and "person"."thumbnailPath" = $4
+  and "person"."thumbnailSourceFaceId" IS NOT DISTINCT FROM $5::uuid
+
+-- PersonRepository.getThumbnailPair
+select
+  "person"."thumbnailPath",
+  "person"."thumbnailSourceFaceId"
+from
+  "person"
+where
+  "person"."ownerId" = $1
+  and "person"."personGroupId" = $2
+
+-- PersonRepository.isThumbnailPathReferenced
+select
+  1 as "one"
+from
+  "person"
+where
+  "person"."thumbnailPath" = $1
+limit
+  $2
 
 -- PersonRepository.getByName
 select
@@ -1377,6 +1444,23 @@ where
   "asset_face"."personGroupId" = $1
   and "asset_face"."deletedAt" is null
   and "asset_face"."isVisible" is true
+  and "asset_face"."ownerId" = any ($2::uuid[])
+
+-- PersonRepository.getClusterMemberIds
+select
+  "user"."id"
+from
+  "user"
+where
+  "user"."deletedAt" is null
+  and "user"."clusterGroupId" = (
+    select
+      "owner"."clusterGroupId"
+    from
+      "user" as "owner"
+    where
+      "owner"."id" = $1
+  )
 
 -- PersonRepository.getLatestFaceDate
 select

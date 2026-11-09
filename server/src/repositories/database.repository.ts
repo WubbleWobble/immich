@@ -443,6 +443,8 @@ export class DatabaseRepository {
         .set((eb) => ({ path: eb.fn('REGEXP_REPLACE', ['path', source, target]) }))
         .execute();
 
+      // fork: safe for thumbnail provenance as is - one in-place UPDATE rewrites whatever path is current under the
+      // row lock and leaves "thumbnailSourceFaceId" alone, so it never pairs an old path with a newer source
       await tx
         .updateTable('person')
         .set((eb) => ({ thumbnailPath: eb.fn('REGEXP_REPLACE', ['thumbnailPath', source, target]) }))

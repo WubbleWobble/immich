@@ -1,12 +1,13 @@
 import { Injectable } from '@nestjs/common';
-import { Kysely } from 'kysely';
+import { Kysely, sql } from 'kysely';
 import { InjectKysely } from 'nestjs-kysely';
 import { DummyValue, GenerateSql } from 'src/decorators.js';
 import { DB } from 'src/schema/index.js';
-import { OwnerLockVisibility } from 'src/utils/database.js';
+import { OwnerLockVisibility, joinDeduplicationPlugin, withLockVisibility } from 'src/utils/database.js';
 import {
   LockVisibilityRequest,
   RevealedLocks,
+  getAllOwnersLockVisibility,
   getHiddenAlbumIdsQuery,
   getHiddenContainerIdsQuery,
   getOwnerLockVisibility,
@@ -92,6 +93,24 @@ export class LockRepository {
    */
   getOwnerLockVisibility(request: LockVisibilityRequest): Promise<OwnerLockVisibility[]> {
     return getOwnerLockVisibility(this.db, request);
+  }
+
+  /** See getAllOwnersLockVisibility: entries for every lock holder, for surfaces whose source owners are open-ended. */
+  getAllOwnersLockVisibility(request: Omit<LockVisibilityRequest, 'ownerIds'>): Promise<OwnerLockVisibility[]> {
+    return getAllOwnersLockVisibility(this.db, request);
+  }
+
+  /** Whether one asset passes the given per-owner lock entries (an empty list passes everything that exists). */
+  @GenerateSql({ params: [DummyValue.UUID, []] })
+  async isAssetVisible(assetId: string, entries: OwnerLockVisibility[]): Promise<boolean> {
+    const row = await withLockVisibility(
+      this.db.selectFrom('asset').select(sql.lit(1).as('one')).where('asset.id', '=', assetId),
+      this.db,
+      entries,
+    )
+      .withPlugin(joinDeduplicationPlugin)
+      .executeTakeFirst();
+    return row !== undefined;
   }
 
   isAlbumHiddenForViewer(viewerId: string, albumId: string): Promise<boolean> {

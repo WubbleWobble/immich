@@ -8,6 +8,7 @@ import {
 } from 'src/dtos/cluster-group.dto.js';
 import { UserResponseDto, mapUser } from 'src/dtos/user.dto.js';
 import { JobName, Permission } from 'src/enum.js';
+import { AlbumService } from 'src/services/album.service.js';
 import { BaseService } from 'src/services/base.service.js';
 import { findOrFail } from 'src/utils/misc.js';
 
@@ -64,6 +65,7 @@ export class ClusterGroupService extends BaseService {
 
     await this.personRepository.reassignCluster({ userId: auth.user.id, newClusterId: request.clusterGroupId });
     await this.userRepository.update(auth.user.id, { clusterGroupId: request.clusterGroupId });
+    await this.invalidatePersonFilteredSmartAlbums(auth.user.id);
     await this.clusterGroupRepository.deleteRequest(request.id);
   }
 
@@ -95,5 +97,15 @@ export class ClusterGroupService extends BaseService {
     const clusterGroup = await this.clusterGroupRepository.create();
     await this.personRepository.reassignCluster({ userId: auth.user.id, newClusterId: clusterGroup.id });
     await this.userRepository.update(auth.user.id, { clusterGroupId: clusterGroup.id });
+    await this.invalidatePersonFilteredSmartAlbums(auth.user.id);
+  }
+
+  /**
+   * Fork: reassigning a cluster gives the user's shared person groups new ids (on their person rows and the faces of
+   * their assets), so the user's smart albums filtering by person shift membership. Only the user's albums are
+   * affected: smart albums match their owner's assets only.
+   */
+  private async invalidatePersonFilteredSmartAlbums(userId: string) {
+    await BaseService.create(AlbumService, this).invalidateAllSmartAlbumsForOwnerSafe(userId);
   }
 }

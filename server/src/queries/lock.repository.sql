@@ -39,3 +39,11 @@ from
   "locked_container"
 where
   "userId" = $1
+
+-- LockRepository.isAssetVisible
+select
+  1 as "one"
+from
+  "asset"
+where
+  "asset"."id" = $1

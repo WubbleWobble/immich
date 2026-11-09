@@ -1,4 +1,5 @@
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
+import { v5 as uuidv5 } from 'uuid';
 import type { VideoInterfaces } from 'src/types.js';
 import { StorageAsset } from 'src/database.js';
 import {
@@ -38,6 +39,22 @@ export interface MoveRequest {
 export type ThumbnailPathEntity = { id: string; ownerId: string };
 
 export type PersonThumbnailPathEntity = { personGroupId: string; ownerId: string };
+
+/** fork: one immutable file per thumbnail generation; `generationId` is a fresh uuidv7 */
+export type PersonThumbnailGeneration = PersonThumbnailPathEntity & { generationId: string };
+
+/** fork: a person row's published thumbnail pair, as a move reads it */
+export type PersonThumbnailMoveEntity = PersonThumbnailPathEntity & {
+  thumbnailPath: string;
+  thumbnailSourceFaceId: string | null;
+};
+
+/**
+ * Fork: namespace for per-owner person move keys. `move_history` is unique on (entityId, pathType), and a person group
+ * id is shared by every owner of a shared person, so face moves are keyed by uuidv5(ownerId:personGroupId) instead.
+ * Never change this value: keys of unfinished moves are derived from it.
+ */
+export const FORK_PERSON_MOVE_NS = '3f0a2d55-8c1e-4b7a-9d6e-5b2c1f8e4a90';
 
 export type HlsSessionFolder = { ownerId: string; sessionId: string };
 
@@ -117,8 +134,14 @@ export class StorageCore {
     return join(StorageCore.getMediaLocation(), folder);
   }
 
-  static getPersonThumbnailPath(person: PersonThumbnailPathEntity) {
-    return StorageCore.getNestedPath(StorageFolder.Thumbnails, person.ownerId, `${person.personGroupId}.jpeg`);
+  /** Fork: `<thumbs>/<ownerId>/<xx>/<yy>/<personGroupId>-<generationId>.jpeg`; a published file is never rewritten. */
+  static getPersonThumbnailPath({ ownerId, personGroupId, generationId }: PersonThumbnailGeneration) {
+    return StorageCore.getNestedPath(StorageFolder.Thumbnails, ownerId, `${personGroupId}-${generationId}.jpeg`);
+  }
+
+  /** Fork: the move_history key of one owner's person thumbnail (see FORK_PERSON_MOVE_NS). */
+  static getPersonMoveKey(ownerId: string, personGroupId: string) {
+    return uuidv5(`${ownerId}:${personGroupId}`, FORK_PERSON_MOVE_NS);
   }
 
   static getImagePath(asset: ThumbnailPathEntity, { fileType, format, isEdited }: ImagePathOptions) {
@@ -180,19 +203,195 @@ export class StorageCore {
     });
   }
 
-  async movePersonFile(person: PersonThumbnailPathEntity & { thumbnailPath: string }, pathType: PersonPathType) {
-    const { ownerId, personGroupId, thumbnailPath } = person;
+  async movePersonFile(person: PersonThumbnailMoveEntity, pathType: PersonPathType) {
     switch (pathType) {
       case PersonPathType.Face: {
-        await this.moveFile({
-          entityId: personGroupId,
-          ownerId,
-          pathType,
-          oldPath: thumbnailPath,
-          newPath: StorageCore.getPersonThumbnailPath(person),
-        });
+        await this.movePersonFace(person);
       }
     }
+  }
+
+  /**
+   * Fork: relocate one owner's published person thumbnail into the current layout, keeping its basename (the
+   * generation) and its source. Unlike moveFile, the publish is conditional - it applies only while the row still
+   * holds the generation this move read - so a regeneration that publishes meanwhile always wins and a relocated
+   * old crop can never end up paired with a newer source. A publish that matches nothing, and every resumed move,
+   * goes through settlePersonMove (completed / pending / obsolete).
+   */
+  private async movePersonFace(person: PersonThumbnailMoveEntity) {
+    const { ownerId, personGroupId, thumbnailPath: oldPath, thumbnailSourceFaceId: sourceFaceId } = person;
+    const pathType = PersonPathType.Face;
+
+    // upstream keyed person moves by personGroupId, which every owner of a shared person has in common; such a row
+    // could relocate another owner's file, so it is never acted on
+    const legacy = await this.moveRepository.getByEntity(personGroupId, pathType);
+    if (legacy) {
+      this.logger.warn(
+        `[fork] foreign move_history row ignored: ${legacy.id} (${legacy.oldPath} => ${legacy.newPath})`,
+      );
+    }
+
+    const entityId = StorageCore.getPersonMoveKey(ownerId, personGroupId);
+    const move = await this.moveRepository.getByEntity(entityId, pathType);
+    if (move) {
+      if (
+        !StorageCore.isOwnPersonThumbnailPath(move.oldPath, person) ||
+        !StorageCore.isOwnPersonThumbnailPath(move.newPath, person)
+      ) {
+        this.logger.warn(`[fork] foreign move_history row ignored: ${move.id} (${move.oldPath} => ${move.newPath})`);
+        return;
+      }
+
+      this.logger.log(`Attempting to finish incomplete move: ${move.oldPath} => ${move.newPath}`);
+      await this.settlePersonMove(move, person, sourceFaceId);
+      return;
+    }
+
+    if (!oldPath) {
+      return;
+    }
+
+    const newPath = StorageCore.getNestedPath(StorageFolder.Thumbnails, ownerId, basename(oldPath));
+    if (oldPath === newPath) {
+      return;
+    }
+
+    // only files this row can own are moved: anything else (pre-upgrade `<group>.jpeg` crops, files named after
+    // another group after a merge) stays where it is until regeneration replaces it, and never gets a history row
+    // that a resume would have to reject
+    if (!StorageCore.isOwnPersonThumbnailPath(oldPath, person)) {
+      this.logger.debug(`Not moving person thumbnail ${oldPath}: not a generation file of ${ownerId}/${personGroupId}`);
+      return;
+    }
+
+    this.ensureFolders(newPath);
+    const created = await this.moveRepository.create({ entityId, pathType, oldPath, newPath });
+    if (!(await this.relocatePersonFile(oldPath, newPath))) {
+      return;
+    }
+
+    const published = await this.personRepository.updateThumbnailPathIfUnchanged({
+      ownerId,
+      personGroupId,
+      oldPath,
+      newPath,
+      sourceFaceId,
+    });
+    if (published) {
+      await this.moveRepository.delete(created.id);
+      return;
+    }
+
+    await this.settlePersonMove(created, person, sourceFaceId);
+  }
+
+  /**
+   * Fork: decide what an unfinished person move means from the row's CURRENT pair. `capturedSourceFaceId` is the
+   * source the move read with the row. Never unlinks a path that some person row references.
+   * - completed (row already points at newPath, e.g. a crash after the publish): keep newPath, drop the history, and
+   *   remove an unreferenced leftover at oldPath;
+   * - pending (row still holds oldPath with the captured source): finish with the conditional publish;
+   * - obsolete (anything else, e.g. regeneration replaced it): remove an unreferenced newPath, drop the history, and
+   *   leave the newer pair untouched.
+   */
+  private async settlePersonMove(
+    move: { id: string; oldPath: string; newPath: string },
+    { ownerId, personGroupId }: PersonThumbnailPathEntity,
+    capturedSourceFaceId: string | null,
+    canFinish = true,
+  ): Promise<void> {
+    const current = await this.personRepository.getThumbnailPair({ ownerId, personGroupId });
+
+    if (current?.thumbnailPath === move.newPath) {
+      if (
+        (await this.storageRepository.checkFileExists(move.oldPath)) &&
+        !(await this.personRepository.isThumbnailPathReferenced(move.oldPath))
+      ) {
+        await this.storageRepository.unlink(move.oldPath);
+      }
+      await this.moveRepository.delete(move.id);
+      return;
+    }
+
+    const isPending = current?.thumbnailPath === move.oldPath && current.thumbnailSourceFaceId === capturedSourceFaceId;
+    if (isPending) {
+      if (!canFinish) {
+        this.logger.warn(`Unable to complete move ${move.oldPath} => ${move.newPath}; it will be retried`);
+        return;
+      }
+
+      this.ensureFolders(move.newPath);
+      if (!(await this.relocatePersonFile(move.oldPath, move.newPath))) {
+        return;
+      }
+
+      const published = await this.personRepository.updateThumbnailPathIfUnchanged({
+        ownerId,
+        personGroupId,
+        oldPath: move.oldPath,
+        newPath: move.newPath,
+        sourceFaceId: capturedSourceFaceId,
+      });
+      if (published) {
+        await this.moveRepository.delete(move.id);
+        return;
+      }
+
+      await this.settlePersonMove(move, { ownerId, personGroupId }, capturedSourceFaceId, false);
+      return;
+    }
+
+    this.logger.log(`Discarding obsolete move ${move.oldPath} => ${move.newPath}: the thumbnail was replaced`);
+    if (!(await this.personRepository.isThumbnailPathReferenced(move.newPath))) {
+      await this.storageRepository.unlink(move.newPath);
+    }
+    await this.moveRepository.delete(move.id);
+  }
+
+  /** Fork: put the file at newPath (rename, or copy-verify-delete across devices). True when it is there. */
+  private async relocatePersonFile(oldPath: string, newPath: string): Promise<boolean> {
+    if (!(await this.storageRepository.checkFileExists(oldPath))) {
+      if (await this.storageRepository.checkFileExists(newPath)) {
+        return true;
+      }
+      this.logger.warn(`Unable to complete move. File does not exist at either location: ${oldPath}, ${newPath}`);
+      return false;
+    }
+
+    try {
+      await this.storageRepository.rename(oldPath, newPath);
+      return true;
+    } catch (error: any) {
+      if (error.code !== 'EXDEV') {
+        this.logger.warn(`Unable to complete move. Error renaming file with code ${error.code}: ${error.message}`);
+        return false;
+      }
+    }
+
+    await this.storageRepository.copyFile(oldPath, newPath);
+    if (!(await this.verifyNewPathContentsMatchesExpected(oldPath, newPath))) {
+      this.logger.warn(`Skipping move due to file size mismatch`);
+      await this.storageRepository.unlink(newPath);
+      return false;
+    }
+
+    const { atime, mtime } = await this.storageRepository.stat(oldPath);
+    await this.storageRepository.utimes(newPath, atime, mtime);
+    try {
+      await this.storageRepository.unlink(oldPath);
+    } catch (error: any) {
+      this.logger.warn(`Unable to delete old file, it will now no longer be tracked by Immich: ${error.message}`);
+    }
+    return true;
+  }
+
+  /**
+   * Fork: a path a person move may act on - inside the owner's own thumbs folder, named after the person group
+   * (`<personGroupId>-<generationId>.jpeg`).
+   */
+  static isOwnPersonThumbnailPath(path: string, { ownerId, personGroupId }: PersonThumbnailPathEntity) {
+    const root = resolve(StorageCore.getFolderLocation(StorageFolder.Thumbnails, ownerId)) + sep;
+    return resolve(path).startsWith(root) && basename(path).startsWith(`${personGroupId}-`);
   }
 
   async moveFile(request: MoveRequest) {
@@ -338,12 +537,10 @@ export class StorageCore {
       }
 
       case PersonPathType.Face: {
-        if (!ownerId) {
-          this.logger.warn('Unable to save person path without an owner');
-          return;
-        }
-
-        return this.personRepository.update({ ownerId, personGroupId: id, thumbnailPath: newPath });
+        // fork: person thumbnails move through movePersonFace, whose publish is conditional on the generation; an
+        // unconditional path write here could pair an old crop with a newer source
+        this.logger.error(`Refusing unconditional person thumbnail path update for ${ownerId}/${id}`);
+        return;
       }
 
       case UserPathType.Profile: {

@@ -23,6 +23,7 @@ export class PersonFactory {
       sharedWith: [],
       ownerId: newUuid(),
       thumbnailPath: '/data/thumbs/person-thumbnail.jpg',
+      thumbnailSourceFaceId: null,
       updatedAt: newDate(),
       updateId: newUuidV7(),
       ...dto,

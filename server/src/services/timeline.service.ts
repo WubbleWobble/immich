@@ -48,12 +48,12 @@ export class TimelineService extends BaseService {
       return await this.assetRepository.getTimeBuckets(timeBucketOptions, auth);
     }
 
-    // FORK-PORT: lock-audit — upstream now passes auth so getTimeBuckets can include, for personId requests, assets in
-    // albums shared with the viewer (inSharedAlbum, 28bd3a550); getLockVisibility below only covers the userIds owners.
+    // Person timelines also include assets in albums shared with the viewer (upstream 28bd3a550), whose owners are
+    // not in userIds; getLockVisibility covers every lock-holding owner for them.
     return await this.assetRepository.getTimeBuckets(
       {
         ...timeBucketOptions,
-        lockVisibility: await this.getLockVisibility(auth, timeBucketOptions.userIds),
+        lockVisibility: await this.getLockVisibility(auth, timeBucketOptions.userIds, timeBucketOptions.personId),
       },
       auth,
     );
@@ -85,7 +85,10 @@ export class TimelineService extends BaseService {
       dto.timeBucket,
       dto.albumId
         ? timeBucketOptions
-        : { ...timeBucketOptions, lockVisibility: await this.getLockVisibility(auth, timeBucketOptions.userIds) },
+        : {
+            ...timeBucketOptions,
+            lockVisibility: await this.getLockVisibility(auth, timeBucketOptions.userIds, timeBucketOptions.personId),
+          },
       auth,
     );
     return bucket.assets;
@@ -97,18 +100,24 @@ export class TimelineService extends BaseService {
    * set applies only to the viewer's own locks and only in an elevated session. Album-scoped
    * views are deliberately not filtered: an album the viewer can open IS the container being
    * inspected (spec §8.4).
+   *
+   * Person timelines (personId) can also return assets of owners outside `ownerIds` (albums shared with the viewer),
+   * so they get entries for every lock-holding owner; the viewer's own entry also drops the viewer's locked shares.
    */
   private async getLockVisibility(
     auth: AuthDto,
     ownerIds: string[] | undefined,
+    personId?: string,
   ): Promise<OwnerLockVisibility[] | undefined> {
-    const owners = ownerIds && ownerIds.length > 0 ? ownerIds : [auth.user.id];
-    const entries = await this.lockRepository.getOwnerLockVisibility({
+    const request = {
       viewerId: auth.user.id,
-      ownerIds: owners,
       revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
       isElevated: !!auth.session?.hasElevatedPermission,
-    });
+    };
+    const owners = ownerIds && ownerIds.length > 0 ? ownerIds : [auth.user.id];
+    const entries = personId
+      ? await this.lockRepository.getAllOwnersLockVisibility(request)
+      : await this.lockRepository.getOwnerLockVisibility({ ...request, ownerIds: owners });
     return entries.length > 0 ? entries : undefined;
   }
 

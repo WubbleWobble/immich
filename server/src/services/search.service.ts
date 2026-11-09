@@ -39,11 +39,19 @@ export class SearchService extends BaseService {
   private embeddingCache = new LRUMap<string, string>(100);
 
   async searchPerson(auth: AuthDto, dto: SearchPeopleDto): Promise<PersonResponseDto[]> {
+    // D10: a person's faces can sit on assets of the viewer, partners and owners of albums shared with the viewer, so
+    // every source owner's locks apply (the viewer's reveal set only to the viewer's own locks, when elevated).
+    const partnerIds = await getMyPartnerIds({ userId: auth.user.id, repository: this.partnerRepository });
+    const lockVisibility = await this.lockRepository.getAllOwnersLockVisibility({
+      viewerId: auth.user.id,
+      revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
+      isElevated: !!auth.session?.hasElevatedPermission,
+    });
     const people = await this.personRepository.getByName(
       auth.user.id,
       dto.name,
-      { withHidden: dto.withHidden },
-      await this.getLockVisibility(auth, [auth.user.id]),
+      { withHidden: dto.withHidden, partnerIds },
+      lockVisibility,
     );
     return people.map((person) => mapPerson(person));
   }

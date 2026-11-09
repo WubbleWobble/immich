@@ -118,11 +118,13 @@ describe(MediaService.name, () => {
       mocks.assetJob.streamForThumbnailJob.mockReturnValue(makeStream([AssetFactory.create()]));
       mocks.person.getAll.mockReturnValue(makeStream([person1, person2]));
       mocks.person.getRandomFace.mockResolvedValueOnce(AssetFaceFactory.create());
+      mocks.person.getClusterMemberIds.mockResolvedValue([person1.ownerId]);
+      mocks.lock.getAllOwnersLockVisibility.mockResolvedValue([]);
 
       await sut.handleQueueGenerateThumbnails({ force: false });
 
       expect(mocks.assetJob.streamForThumbnailJob).toHaveBeenCalledWith({ force: false, fullsizeEnabled: false });
-      expect(mocks.person.getAll).toHaveBeenCalledWith({ thumbnailPath: '' });
+      expect(mocks.person.getAll).toHaveBeenCalledWith({ withoutVerifiedThumbnail: true });
       expect(mocks.person.getRandomFace).toHaveBeenCalled();
       expect(mocks.person.update).toHaveBeenCalledTimes(1);
       expect(mocks.job.queueAll).toHaveBeenCalledWith([
@@ -150,7 +152,7 @@ describe(MediaService.name, () => {
         },
       ]);
 
-      expect(mocks.person.getAll).toHaveBeenCalledWith({ thumbnailPath: '' });
+      expect(mocks.person.getAll).toHaveBeenCalledWith({ withoutVerifiedThumbnail: true });
     });
 
     it('should queue all assets with missing preview', async () => {
@@ -163,7 +165,7 @@ describe(MediaService.name, () => {
       expect(mocks.job.queueAll).toHaveBeenCalledWith([
         { name: JobName.AssetGenerateThumbnails, data: { id: asset.id } },
       ]);
-      expect(mocks.person.getAll).toHaveBeenCalledWith({ thumbnailPath: '' });
+      expect(mocks.person.getAll).toHaveBeenCalledWith({ withoutVerifiedThumbnail: true });
     });
 
     it('should queue all assets with missing thumbhash', async () => {
@@ -179,7 +181,7 @@ describe(MediaService.name, () => {
         { name: JobName.AssetGenerateThumbnails, data: { id: asset.id } },
       ]);
 
-      expect(mocks.person.getAll).toHaveBeenCalledWith({ thumbnailPath: '' });
+      expect(mocks.person.getAll).toHaveBeenCalledWith({ withoutVerifiedThumbnail: true });
     });
 
     it('should queue all assets with missing fullsize when feature is enabled', async () => {
@@ -197,7 +199,7 @@ describe(MediaService.name, () => {
         },
       ]);
 
-      expect(mocks.person.getAll).toHaveBeenCalledWith({ thumbnailPath: '' });
+      expect(mocks.person.getAll).toHaveBeenCalledWith({ withoutVerifiedThumbnail: true });
     });
 
     it('should not queue assets with missing fullsize when feature is disabled', async () => {
@@ -209,7 +211,7 @@ describe(MediaService.name, () => {
 
       expect(mocks.assetJob.streamForThumbnailJob).toHaveBeenCalledWith({ force: false, fullsizeEnabled: false });
       expect(mocks.job.queueAll).toHaveBeenCalledTimes(1);
-      expect(mocks.person.getAll).toHaveBeenCalledWith({ thumbnailPath: '' });
+      expect(mocks.person.getAll).toHaveBeenCalledWith({ withoutVerifiedThumbnail: true });
     });
 
     it('should queue assets with edits but missing edited thumbnails', async () => {
@@ -226,7 +228,7 @@ describe(MediaService.name, () => {
         },
       ]);
 
-      expect(mocks.person.getAll).toHaveBeenCalledWith({ thumbnailPath: '' });
+      expect(mocks.person.getAll).toHaveBeenCalledWith({ withoutVerifiedThumbnail: true });
     });
 
     it('should not queue assets with missing edited fullsize when feature is disabled', async () => {
@@ -242,7 +244,7 @@ describe(MediaService.name, () => {
         { name: JobName.AssetEditThumbnailGeneration, data: { id: asset.id } },
       ]);
 
-      expect(mocks.person.getAll).toHaveBeenCalledWith({ thumbnailPath: '' });
+      expect(mocks.person.getAll).toHaveBeenCalledWith({ withoutVerifiedThumbnail: true });
     });
 
     it('should queue assets with missing fullsize when force is true, regardless of setting', async () => {
@@ -1503,6 +1505,68 @@ describe(MediaService.name, () => {
   });
 
   describe('handleGeneratePersonThumbnail', () => {
+    beforeEach(() => {
+      mocks.person.publishThumbnail.mockResolvedValue({ previousPath: '' });
+    });
+
+    it('should publish a new generation file and unlink the previous one', async () => {
+      const person = PersonFactory.create();
+      mocks.person.getDataForThumbnailGenerationJob.mockResolvedValue(personThumbnailStub.newThumbnailMiddle);
+      mocks.media.decodeImage.mockResolvedValue({
+        data: Buffer.from(''),
+        info: { width: 1000, height: 1000 } as OutputInfo,
+      });
+      mocks.media.generateThumbnail.mockResolvedValue();
+      mocks.person.publishThumbnail.mockResolvedValue({ previousPath: '/old/generation.jpeg' });
+      mocks.person.isThumbnailPathReferenced.mockResolvedValue(false);
+
+      await expect(
+        sut.handleGeneratePersonThumbnail({ ownerId: person.ownerId, personGroupId: person.personGroupId }),
+      ).resolves.toBe(JobStatus.Success);
+      const path = mocks.media.generateThumbnail.mock.calls[0][2];
+      expect(mocks.person.publishThumbnail).toHaveBeenCalledWith({
+        ownerId: person.ownerId,
+        personGroupId: person.personGroupId,
+        faceId: 'feature-face-1',
+        path,
+      });
+      expect(mocks.storage.unlink).toHaveBeenCalledWith('/old/generation.jpeg');
+      expect(mocks.storage.unlink).not.toHaveBeenCalledWith(path);
+      expect(mocks.person.update).not.toHaveBeenCalled();
+    });
+
+    it('should discard its file when the feature face changed while it ran', async () => {
+      const person = PersonFactory.create();
+      mocks.person.getDataForThumbnailGenerationJob.mockResolvedValue(personThumbnailStub.newThumbnailMiddle);
+      mocks.media.decodeImage.mockResolvedValue({
+        data: Buffer.from(''),
+        info: { width: 1000, height: 1000 } as OutputInfo,
+      });
+      mocks.media.generateThumbnail.mockResolvedValue();
+      mocks.person.publishThumbnail.mockResolvedValue(undefined);
+
+      await expect(
+        sut.handleGeneratePersonThumbnail({ ownerId: person.ownerId, personGroupId: person.personGroupId }),
+      ).resolves.toBe(JobStatus.Skipped);
+      expect(mocks.storage.unlink).toHaveBeenCalledTimes(1);
+      expect(mocks.storage.unlink).toHaveBeenCalledWith(mocks.media.generateThumbnail.mock.calls[0][2]);
+    });
+
+    it('should never unlink a previous path that a person row still references', async () => {
+      const person = PersonFactory.create();
+      mocks.person.getDataForThumbnailGenerationJob.mockResolvedValue(personThumbnailStub.newThumbnailMiddle);
+      mocks.media.decodeImage.mockResolvedValue({
+        data: Buffer.from(''),
+        info: { width: 1000, height: 1000 } as OutputInfo,
+      });
+      mocks.media.generateThumbnail.mockResolvedValue();
+      mocks.person.publishThumbnail.mockResolvedValue({ previousPath: '/shared/generation.jpeg' });
+      mocks.person.isThumbnailPathReferenced.mockResolvedValue(true);
+
+      await sut.handleGeneratePersonThumbnail({ ownerId: person.ownerId, personGroupId: person.personGroupId });
+      expect(mocks.storage.unlink).not.toHaveBeenCalled();
+    });
+
     it('should generate a thumbnail even if machine learning is disabled', async () => {
       mocks.systemMetadata.get.mockResolvedValue(systemConfigStub.machineLearningDisabled);
       mocks.person.getDataForThumbnailGenerationJob.mockResolvedValue(personThumbnailStub.newThumbnailMiddle);
@@ -1580,10 +1644,11 @@ describe(MediaService.name, () => {
         },
         expect.any(String),
       );
-      expect(mocks.person.update).toHaveBeenCalledWith({
+      expect(mocks.person.publishThumbnail).toHaveBeenCalledWith({
         ownerId: person.ownerId,
         personGroupId: person.personGroupId,
-        thumbnailPath: expect.any(String),
+        faceId: 'feature-face-1',
+        path: expect.stringMatching(new RegExp(String.raw`/${person.personGroupId}-[0-9a-f-]{36}\.jpeg$`)),
       });
     });
 
@@ -1633,10 +1698,11 @@ describe(MediaService.name, () => {
         },
         expect.any(String),
       );
-      expect(mocks.person.update).toHaveBeenCalledWith({
+      expect(mocks.person.publishThumbnail).toHaveBeenCalledWith({
         ownerId: person.ownerId,
         personGroupId: person.personGroupId,
-        thumbnailPath: expect.any(String),
+        faceId: 'feature-face-1',
+        path: expect.stringMatching(new RegExp(String.raw`/${person.personGroupId}-[0-9a-f-]{36}\.jpeg$`)),
       });
     });
 

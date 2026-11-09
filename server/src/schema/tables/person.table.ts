@@ -36,6 +36,13 @@ import { UserTable } from 'src/schema/tables/user.table.js';
   referencingOldTableAs: 'deleted_rows',
 })
 @Check({ name: 'person_birthDate_chk', expression: `"birthDate" <= CURRENT_DATE` })
+// Fork: rows whose published thumbnail has no verifiable source (pre-upgrade crops, or the source face was deleted).
+// Startup regeneration counts these on every boot, so the check must stay an index-only probe.
+@Index({
+  name: 'person_thumbnail_unverified_idx',
+  columns: ['ownerId'],
+  where: `"thumbnailPath" <> '' AND "thumbnailSourceFaceId" IS NULL`,
+})
 export class PersonTable {
   @ForeignKeyColumn(() => UserTable, {
     onDelete: 'CASCADE',
@@ -73,6 +80,14 @@ export class PersonTable {
 
   @ForeignKeyColumn(() => AssetFaceTable, { onDelete: 'SET NULL', nullable: true })
   faceAssetId!: string | null;
+
+  /**
+   * Fork: the face whose crop is the file at `thumbnailPath`. Provenance is the pair (thumbnailPath,
+   * thumbnailSourceFaceId), always written together in one UPDATE; `faceAssetId` is only the requested feature face
+   * and can run ahead of the file. NULL means unverifiable: the thumbnail is never served.
+   */
+  @ForeignKeyColumn(() => AssetFaceTable, { onDelete: 'SET NULL', nullable: true })
+  thumbnailSourceFaceId!: string | null;
 
   @Column({ type: 'boolean', default: false })
   isFavorite!: Generated<boolean>;

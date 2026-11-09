@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { v7 as uuidv7 } from 'uuid';
 import type {
   AudioStreamInfo,
   DecodeToBufferOptions,
@@ -38,6 +39,7 @@ import {
 import { AssetJobRepository } from 'src/repositories/asset-job.repository.js';
 import { BoundingBox } from 'src/repositories/machine-learning.repository.js';
 import { BaseService } from 'src/services/base.service.js';
+import { PersonService } from 'src/services/person.service.js';
 import { getAssetFile, getDimensions } from 'src/utils/asset.util.js';
 import { checkFaceVisibility, checkOcrVisibility } from 'src/utils/editor.js';
 import { BaseConfig, ThumbnailConfig } from 'src/utils/media.js';
@@ -63,6 +65,51 @@ export class MediaService extends BaseService {
   @OnEvent({ name: 'AppBootstrap', workers: [ImmichWorker.Microservices] })
   async onBootstrap() {
     this.videoInterfaces = await this.storageCore.getVideoInterfaces();
+    await this.queueUnverifiedPersonThumbnails();
+  }
+
+  /**
+   * Fork: stateless startup regeneration of person thumbnails without a verifiable source (pre-upgrade crops, deleted
+   * source faces, failed or stale generations). The data is the state: a row stops matching only once a generation
+   * publishes, so an interrupted enqueue resumes on the next start and a failed job stays retryable. Duplicate jobs
+   * are harmless (each publish writes a self-consistent pair under the row lock). Costs one index probe per start
+   * when nothing matches; a failure is logged and never blocks the start.
+   */
+  private async queueUnverifiedPersonThumbnails() {
+    try {
+      if (!(await this.personRepository.hasUnverifiedThumbnails())) {
+        return;
+      }
+      this.logger.log('Queueing person thumbnails without a verified source for regeneration');
+      await this.queuePersonThumbnails({ force: false });
+    } catch (error: any) {
+      this.logger.error(`Unable to queue person thumbnail regeneration: ${error}`, error?.stack);
+    }
+  }
+
+  private async queuePersonThumbnails({ force }: { force?: boolean }) {
+    // non-force: rows without any thumbnail and rows whose thumbnail has no verified source
+    const personService = BaseService.create(PersonService, this);
+    for await (const people of batched(
+      this.personRepository.getAll(force ? undefined : { withoutVerifiedThumbnail: true }),
+    )) {
+      const jobs: JobItem[] = [];
+      for (const person of people) {
+        const { ownerId, personGroupId } = person;
+        if (!person.faceAssetId) {
+          const face = await personService.pickFeatureFace({ ownerId, personGroupId });
+          if (!face) {
+            continue;
+          }
+
+          await this.personRepository.update({ ownerId, personGroupId, faceAssetId: face.id });
+        }
+
+        jobs.push({ name: JobName.PersonGenerateThumbnail, data: { ownerId, personGroupId } });
+      }
+
+      await this.jobRepository.queueAll(jobs);
+    }
   }
 
   @OnJob({ name: JobName.AssetGenerateThumbnailsQueueAll, queue: QueueName.ThumbnailGeneration })
@@ -87,24 +134,7 @@ export class MediaService extends BaseService {
       await this.jobRepository.queueAll(jobs);
     }
 
-    for await (const people of batched(this.personRepository.getAll(force ? undefined : { thumbnailPath: '' }))) {
-      const jobs: JobItem[] = [];
-      for (const person of people) {
-        const { ownerId, personGroupId } = person;
-        if (!person.faceAssetId) {
-          const face = await this.personRepository.getRandomFace(personGroupId);
-          if (!face) {
-            continue;
-          }
-
-          await this.personRepository.update({ ownerId, personGroupId, faceAssetId: face.id });
-        }
-
-        jobs.push({ name: JobName.PersonGenerateThumbnail, data: { ownerId, personGroupId } });
-      }
-
-      await this.jobRepository.queueAll(jobs);
-    }
+    await this.queuePersonThumbnails({ force });
 
     return JobStatus.Success;
   }
@@ -400,7 +430,7 @@ export class MediaService extends BaseService {
       return JobStatus.Failed;
     }
 
-    const { x1, y1, x2, y2, oldWidth, oldHeight, exifOrientation, previewPath, originalPath } = data;
+    const { faceId, x1, y1, x2, y2, oldWidth, oldHeight, exifOrientation, previewPath, originalPath } = data;
     let inputImage: string | Buffer;
     if (data.type === AssetType.Video) {
       if (!previewPath) {
@@ -422,7 +452,8 @@ export class MediaService extends BaseService {
       orientation: Buffer.isBuffer(inputImage) && exifOrientation ? Number(exifOrientation) : undefined,
     });
 
-    const thumbnailPath = StorageCore.getPersonThumbnailPath({ ownerId, personGroupId });
+    // fork: every generation is a new immutable file; it becomes visible only through the compare-and-set publish
+    const thumbnailPath = StorageCore.getPersonThumbnailPath({ ownerId, personGroupId, generationId: uuidv7() });
     this.storageCore.ensureFolders(thumbnailPath);
 
     const thumbnailOptions: GenerateThumbnailOptions = {
@@ -446,8 +477,31 @@ export class MediaService extends BaseService {
       ],
     };
 
-    await this.mediaRepository.generateThumbnail(decoded, thumbnailOptions, thumbnailPath);
-    await this.personRepository.update({ ownerId, personGroupId, thumbnailPath });
+    let published: { previousPath: string } | undefined;
+    try {
+      await this.mediaRepository.generateThumbnail(decoded, thumbnailOptions, thumbnailPath);
+      published = await this.personRepository.publishThumbnail({ ownerId, personGroupId, faceId, path: thumbnailPath });
+    } catch (error) {
+      await this.storageRepository.unlink(thumbnailPath);
+      throw error;
+    }
+
+    if (!published) {
+      // the feature face changed while this job ran; the job queued for the new face publishes instead
+      this.logger.debug(`Discarding stale thumbnail for ${ownerId}/${personGroupId}: feature face changed`);
+      await this.storageRepository.unlink(thumbnailPath);
+      return JobStatus.Skipped;
+    }
+
+    const { previousPath } = published;
+    if (
+      previousPath &&
+      previousPath !== thumbnailPath &&
+      !(await this.personRepository.isThumbnailPathReferenced(previousPath))
+    ) {
+      // an in-flight read of the old path may 404; it never gets a different image under the old provenance
+      await this.storageRepository.unlink(previousPath);
+    }
 
     return JobStatus.Success;
   }

@@ -251,4 +251,56 @@ describe(TimelineService.name, () => {
     const response = JSON.parse(rawResponse);
     expect(response).not.toEqual(expect.objectContaining({ city: expect.any(Array), country: expect.any(Array) }));
   });
+  describe('person timelines and locks', () => {
+    it("shared-album assets follow their owner's locks and the viewer's own locked shares stay hidden", async () => {
+      const { sut, ctx } = setup(await getKyselyDB());
+      const { user: viewer } = await ctx.newUser();
+      const { user: other } = await ctx.newUser({ clusterGroupId: viewer.clusterGroupId });
+      const { person } = await ctx.newPerson({ ownerId: viewer.id });
+      const personId = person.personGroupId;
+      const newFaceAsset = async (ownerId: string, localDateTime: string) => {
+        const { asset } = await ctx.newAsset({ ownerId, localDateTime });
+        await ctx.newExif({ assetId: asset.id, make: 'Canon' });
+        await ctx.newAssetFace({ assetId: asset.id, personGroupId: personId });
+        return asset;
+      };
+      await newFaceAsset(viewer.id, '1970-01-15T00:00:00.000Z');
+      const lockedByOwner = await newFaceAsset(other.id, '1970-02-15T00:00:00.000Z');
+      const lockedByViewer = await newFaceAsset(other.id, '1970-03-15T00:00:00.000Z');
+      // a stranger's asset outside any share never shows up
+      await newFaceAsset(other.id, '1970-04-15T00:00:00.000Z');
+      const { album: ownerLockedAlbum } = await ctx.newAlbum({ ownerId: other.id }, [lockedByOwner.id]);
+      const { album: viewerLockedAlbum } = await ctx.newAlbum({ ownerId: other.id }, [lockedByViewer.id]);
+      await ctx.newAlbumUser({ albumId: ownerLockedAlbum.id, userId: viewer.id });
+      await ctx.newAlbumUser({ albumId: viewerLockedAlbum.id, userId: viewer.id });
+
+      const plain = factory.auth({ user: viewer });
+      const elevated = factory.auth({ user: viewer, session: { hasElevatedPermission: true } });
+      const revealing = {
+        ...elevated,
+        revealedLocks: { albumIds: [ownerLockedAlbum.id, viewerLockedAlbum.id], containerIds: [] },
+      };
+      const buckets = async (auth: typeof plain) => {
+        const items = await sut.getTimeBuckets(auth, { personId });
+        return items.map(({ timeBucket }) => timeBucket).toSorted();
+      };
+
+      await expect(buckets(plain)).resolves.toEqual(['1970-01-01', '1970-02-01', '1970-03-01']);
+
+      await ctx.get(LockRepository).lockAlbum(other.id, ownerLockedAlbum.id);
+      await ctx.get(LockRepository).lockAlbum(viewer.id, viewerLockedAlbum.id);
+
+      await expect(buckets(plain)).resolves.toEqual(['1970-01-01']);
+      await expect(buckets(elevated)).resolves.toEqual(['1970-01-01']);
+      // the reveal set un-hides only the viewer's own lock, never the owner's
+      await expect(buckets(revealing)).resolves.toEqual(['1970-01-01', '1970-03-01']);
+
+      const bucket = async (auth: typeof plain, timeBucket: string) =>
+        JSON.parse(await sut.getTimeBucket(auth, { personId, timeBucket })).id as string[];
+      await expect(bucket(plain, '1970-02-01')).resolves.toEqual([]);
+      await expect(bucket(plain, '1970-03-01')).resolves.toEqual([]);
+      await expect(bucket(revealing, '1970-02-01')).resolves.toEqual([]);
+      await expect(bucket(revealing, '1970-03-01')).resolves.toEqual([lockedByViewer.id]);
+    });
+  });
 });

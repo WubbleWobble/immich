@@ -24,11 +24,12 @@ import {
   type OwnerLockVisibility,
   anyUuid,
   dummy,
+  faceLockVisible,
+  getViewerHiddenAlbumIds,
   inSharedAlbum,
   joinDeduplicationPlugin,
   removeUndefinedKeys,
   withFilePath,
-  withLockVisibility,
 } from 'src/utils/database.js';
 import { isLeapDayObserved } from 'src/utils/date.js';
 import { type PaginationOptions, paginationHelper } from 'src/utils/pagination.js';
@@ -51,6 +52,8 @@ export interface PersonSearchOptions extends PersonFilterOptions {
 
 export interface PersonNameSearchOptions {
   withHidden?: boolean;
+  /** fork: scopes the lock check to the faces the viewer can see (own + partner + shared-album) */
+  partnerIds?: string[];
 }
 
 export interface PersonNameResponse {
@@ -89,6 +92,42 @@ export interface GetAllPeopleOptions {
   thumbnailPath?: string;
   faceAssetId?: string | null;
   isHidden?: boolean;
+  /**
+   * fork: rows without a verified thumbnail - none at all (`thumbnailPath = ''`) or one whose source is unknown
+   * (`thumbnailSourceFaceId IS NULL`: pre-upgrade crops, deleted source faces, failed or stale generations)
+   */
+  withoutVerifiedThumbnail?: boolean;
+}
+
+/** fork: where a candidate thumbnail's crop came from, resolved from the candidate row's `thumbnailSourceFaceId` */
+export interface ThumbnailProvenance {
+  faceId: string | null;
+  assetId: string | null;
+  assetOwnerId: string | null;
+}
+
+export interface ThumbnailCandidate {
+  path: string;
+  provenance: ThumbnailProvenance;
+}
+
+export interface PublishThumbnailRequest extends PersonId {
+  /** the feature face the job read at its start and cropped */
+  faceId: string;
+  path: string;
+}
+
+export interface MoveThumbnailRequest extends PersonId {
+  oldPath: string;
+  newPath: string;
+  sourceFaceId: string | null;
+}
+
+export interface RandomFaceOptions {
+  /** only faces on assets of these owners are eligible */
+  eligibleOwnerIds: string[];
+  /** per-owner lock entries the chosen face's asset must pass */
+  lockVisibility?: OwnerLockVisibility[];
 }
 
 export interface GetAllFacesOptions {
@@ -339,7 +378,26 @@ export class PersonRepository {
       .$if(options.faceAssetId === null, (qb) => qb.where('person.faceAssetId', 'is', null))
       .$if(!!options.faceAssetId, (qb) => qb.where('person.faceAssetId', '=', options.faceAssetId!))
       .$if(options.isHidden !== undefined, (qb) => qb.where('person.isHidden', '=', options.isHidden!))
+      .$if(!!options.withoutVerifiedThumbnail, (qb) =>
+        qb.where((eb) => eb.or([eb('person.thumbnailPath', '=', ''), eb('person.thumbnailSourceFaceId', 'is', null)])),
+      )
       .stream();
+  }
+
+  /**
+   * fork: whether any row holds a thumbnail with no verifiable source. Probes the partial index
+   * `person_thumbnail_unverified_idx`; the startup regeneration pass runs this on every start.
+   */
+  @GenerateSql()
+  async hasUnverifiedThumbnails(): Promise<boolean> {
+    const row = await this.db
+      .selectFrom('person')
+      .select(sql.lit(1).as('one'))
+      .where('person.thumbnailPath', '<>', sql.lit(''))
+      .where('person.thumbnailSourceFaceId', 'is', null)
+      .limit(1)
+      .executeTakeFirst();
+    return row !== undefined;
   }
 
   // FORK-PORT: lock-audit — new upstream query (d6d094738 birthday memories): selects the owner's named people with
@@ -391,11 +449,13 @@ export class PersonRepository {
       .execute();
   }
 
-  // FORK-PORT: the fork's getAllForUser(pagination, userId, options, lockVisibility) applied
-  // withLockVisibility(qb, this.db, lockVisibility).withPlugin(joinDeduplicationPlugin) to the asset join, so people
-  // whose only faces are on locked-away assets vanished from the list. Upstream rewrote this into faces/people CTEs
-  // over visibleFaces (own+partner faces UNION faces in albums shared with userId via inSharedAlbum); re-apply the
-  // lock filter inside the faces CTE for every union arm, keyed by each source asset owner's locks (D10).
+  /**
+   * Fork (D10): `lockVisibility` holds entries for every source owner that has locks (see getAllOwnersLockVisibility).
+   * Upstream's scope is kept - own + partner faces, plus faces on assets in albums shared with the viewer - and inside
+   * it each face counts only when its asset passes ITS OWNER's locks; the shared-album arm also skips shares the
+   * viewer locked for themselves. People whose every in-scope face is hidden drop out of the list and of
+   * total/hidden. Without any lock entries the query is upstream's, on the timeline face index.
+   */
   @GenerateSql(
     { params: [{ take: 1, skip: 0 }, DummyValue.UUID, { withHidden: false, partnerIds: [DummyValue.UUID] }] },
     {
@@ -407,13 +467,21 @@ export class PersonRepository {
       ],
     },
   )
-  async getAllForUser(pagination: PaginationOptions, userId: string, options: PersonSearchOptions) {
+  async getAllForUser(
+    pagination: PaginationOptions,
+    userId: string,
+    options: PersonSearchOptions,
+    lockVisibility: OwnerLockVisibility[] = [],
+  ) {
     const ownerIds = anyUuid([userId, ...options.partnerIds]);
+    const hasLocks = lockVisibility.length > 0;
     const groupFaces = visibleFaces
       .select('asset_face.personGroupId')
       .where('asset_face.personGroupId', 'in', (eb) =>
         eb.selectFrom('person').select('person.personGroupId').where('person.ownerId', '=', userId),
-      );
+      )
+      .$if(hasLocks, (qb) => qb.where((eb) => faceLockVisible(eb, this.db, lockVisibility)));
+    const hiddenSharedAlbumIds = getViewerHiddenAlbumIds(userId, lockVisibility);
 
     const { people, total, hidden } = await this.db
       .with('faces', (db) =>
@@ -424,7 +492,7 @@ export class PersonRepository {
               .unionAll(
                 groupFaces
                   .where((eb) => eb.not(eb('asset_face.ownerId', '=', ownerIds)))
-                  .where(inSharedAlbum(userId, 'asset_face.assetId')),
+                  .where(inSharedAlbum(userId, 'asset_face.assetId', hiddenSharedAlbumIds)),
               )
               .as('visible'),
           )
@@ -505,6 +573,8 @@ export class PersonRepository {
       .select((eb) =>
         jsonArrayFrom(eb.selectFrom('page as person').selectAll('person').select(withSharing(userId))).as('people'),
       )
+      // embedded lock-visibility subqueries rely on the root query for join deduplication
+      .$if(hasLocks, (qb) => qb.withPlugin(joinDeduplicationPlugin))
       .executeTakeFirstOrThrow();
 
     return { ...paginationHelper(people, pagination.take), total, hidden };
@@ -536,15 +606,6 @@ export class PersonRepository {
       .$if(isVisible !== undefined, (qb) => qb.where('asset_face.isVisible', '=', isVisible!))
       .orderBy('asset_face.boundingBoxX1', 'asc')
       .execute();
-  }
-
-  // FORK-PORT: fork-added getFaceAssetId (the asset behind a feature face; person.faceAssetId is a FK to asset_face,
-  // not asset) kept verbatim; the fork's person thumbnail lock check used it. Re-check against upstream's
-  // PersonId/personGroupId model and shared-person thumbnails (Review Focus 1).
-  /** The asset behind a feature face; faceAssetId on person is a FK to asset_face, not asset. */
-  @GenerateSql({ params: [DummyValue.UUID] })
-  getFaceAssetId(id: string): Promise<{ assetId: string } | undefined> {
-    return this.db.selectFrom('asset_face').select('assetId').where('id', '=', id).executeTakeFirst();
   }
 
   @GenerateSql({ params: [DummyValue.UUID, { viewingUserId: DummyValue.UUID }] })
@@ -588,6 +649,7 @@ export class PersonRepository {
       .leftJoin('asset_exif', 'asset_exif.assetId', 'asset.id')
       .select([
         'person.ownerId',
+        'asset_face.id as faceId',
         'asset_face.boundingBoxX1 as x1',
         'asset_face.boundingBoxY1 as y1',
         'asset_face.boundingBoxX2 as x2',
@@ -627,86 +689,189 @@ export class PersonRepository {
       .executeTakeFirst();
   }
 
+  /**
+   * Fork: every thumbnail candidate for the viewer, own row first, then each sharer's row (by owner id). Each
+   * candidate carries the provenance of ITS OWN row - the face recorded together with the file in
+   * `thumbnailSourceFaceId`, never `faceAssetId` (which can run ahead of the file) - resolved to that face's asset and
+   * the asset's owner. A null `faceId` means unverifiable (pre-upgrade crop, or the source face was deleted).
+   */
   @GenerateSql({ params: [{ ownerId: DummyValue.UUID, personGroupId: DummyValue.UUID }] })
-  getForThumbnail({ ownerId, personGroupId }: PersonId) {
-    return this.db
-      .selectFrom('person_group')
-      .select(({ selectFrom }) => [
-        // TODO-DANIEL I would've done a left join of person_user and sorted by person.ownerId = ownerId desc.
-        // should probably discuss with Mert which approach is more efficient.
-        selectFrom('person')
-          .select('person.thumbnailPath')
-          .whereRef('person.personGroupId', '=', 'person_group.id')
-          .where('person.ownerId', '=', ownerId)
-          .as('thumbnailPath'),
-        selectFrom('person')
-          .innerJoin('person_user', (join) =>
-            join
-              .onRef('person_user.personGroupId', '=', 'person.personGroupId')
-              .onRef('person_user.sharedById', '=', 'person.ownerId')
-              .on('person_user.sharedWithId', '=', ownerId),
-          )
-          .select('person.thumbnailPath')
-          .whereRef('person.personGroupId', '=', 'person_group.id')
-          .where('person.thumbnailPath', '!=', '')
-          .limit(1)
-          .as('sharedThumbnailPath'),
+  async getForThumbnail({ ownerId, personGroupId }: PersonId): Promise<ThumbnailCandidate[]> {
+    const rows = await this.db
+      .selectFrom('person')
+      .leftJoin('asset_face', 'asset_face.id', 'person.thumbnailSourceFaceId')
+      .leftJoin('asset', 'asset.id', 'asset_face.assetId')
+      .select([
+        'person.thumbnailPath as path',
+        'person.thumbnailSourceFaceId as faceId',
+        'asset.id as assetId',
+        'asset.ownerId as assetOwnerId',
       ])
-      .where('person_group.id', '=', personGroupId)
+      .where('person.personGroupId', '=', personGroupId)
+      .where('person.thumbnailPath', '!=', sql.lit(''))
+      .where((eb) =>
+        eb.or([
+          eb('person.ownerId', '=', ownerId),
+          eb.exists(
+            eb
+              .selectFrom('person_user')
+              .select('person_user.personGroupId')
+              .whereRef('person_user.personGroupId', '=', 'person.personGroupId')
+              .whereRef('person_user.sharedById', '=', 'person.ownerId')
+              .where('person_user.sharedWithId', '=', ownerId),
+          ),
+        ]),
+      )
+      .orderBy((eb) => eb('person.ownerId', '=', ownerId), 'desc')
+      .orderBy('person.ownerId', 'asc')
+      .execute();
+
+    return rows.map(({ path, faceId, assetId, assetOwnerId }) => ({
+      path,
+      provenance: { faceId, assetId: faceId ? assetId : null, assetOwnerId: faceId ? assetOwnerId : null },
+    }));
+  }
+
+  /**
+   * Fork: publish a generation - the new file and the face it was cropped from - as one compare-and-set. It applies
+   * only while the row's feature face is still the face the job cropped; otherwise the feature face changed while the
+   * job ran (stale job) and nothing is written. The old path comes from a locked CTE because RETURNING yields new
+   * values. Returns the previously published path, or undefined when the job was stale.
+   */
+  @GenerateSql({
+    params: [
+      { ownerId: DummyValue.UUID, personGroupId: DummyValue.UUID, faceId: DummyValue.UUID, path: DummyValue.STRING },
+    ],
+  })
+  async publishThumbnail({
+    ownerId,
+    personGroupId,
+    faceId,
+    path,
+  }: PublishThumbnailRequest): Promise<{ previousPath: string } | undefined> {
+    const { rows } = await sql<{ previousPath: string }>`
+      WITH old AS (
+        SELECT "thumbnailPath"
+        FROM "person"
+        WHERE "ownerId" = ${ownerId} AND "personGroupId" = ${personGroupId} AND "faceAssetId" = ${faceId}
+        FOR UPDATE
+      )
+      UPDATE "person" p
+      SET "thumbnailPath" = ${path}, "thumbnailSourceFaceId" = ${faceId}
+      FROM old
+      WHERE p."ownerId" = ${ownerId} AND p."personGroupId" = ${personGroupId}
+      RETURNING old."thumbnailPath" AS "previousPath"
+    `.execute(this.db);
+    return rows[0];
+  }
+
+  /**
+   * Fork: a storage move's publish. Only the path changes, and only while the row still holds the generation the move
+   * read (path AND source unchanged); a concurrent regeneration therefore always wins. Returns whether it applied.
+   */
+  @GenerateSql({
+    params: [
+      {
+        ownerId: DummyValue.UUID,
+        personGroupId: DummyValue.UUID,
+        oldPath: DummyValue.STRING,
+        newPath: DummyValue.STRING,
+        sourceFaceId: DummyValue.UUID,
+      },
+    ],
+  })
+  async updateThumbnailPathIfUnchanged({
+    ownerId,
+    personGroupId,
+    oldPath,
+    newPath,
+    sourceFaceId,
+  }: MoveThumbnailRequest): Promise<boolean> {
+    const result = await this.db
+      .updateTable('person')
+      .set({ thumbnailPath: newPath })
+      .where('person.ownerId', '=', ownerId)
+      .where('person.personGroupId', '=', personGroupId)
+      .where('person.thumbnailPath', '=', oldPath)
+      .where(sql<SqlBool>`"person"."thumbnailSourceFaceId" IS NOT DISTINCT FROM ${sourceFaceId}::uuid`)
+      .executeTakeFirst();
+    return Number(result.numUpdatedRows) > 0;
+  }
+
+  /** Fork: the row's current published pair. */
+  @GenerateSql({ params: [{ ownerId: DummyValue.UUID, personGroupId: DummyValue.UUID }] })
+  getThumbnailPair({ ownerId, personGroupId }: PersonId) {
+    return this.db
+      .selectFrom('person')
+      .select(['person.thumbnailPath', 'person.thumbnailSourceFaceId'])
+      .where('person.ownerId', '=', ownerId)
+      .where('person.personGroupId', '=', personGroupId)
       .executeTakeFirst();
   }
 
-  // FORK-PORT: the fork's lock EXISTS is re-applied on personGroupId (Task 2, to keep searchPerson fail-closed): a
-  // person whose every face is on an asset hidden by the passed lock visibility does not surface. The entries are the
-  // caller's (SearchService passes only the viewer's own locks); faces on partner/shared assets now included by
-  // upstream are not checked against THEIR owners' locks yet (D10, Task 4).
+  /** Fork: whether any person row references this file; such a file must never be unlinked. */
+  @GenerateSql({ params: [DummyValue.STRING] })
+  async isThumbnailPathReferenced(path: string): Promise<boolean> {
+    const row = await this.db
+      .selectFrom('person')
+      .select(sql.lit(1).as('one'))
+      .where('person.thumbnailPath', '=', path)
+      .limit(1)
+      .executeTakeFirst();
+    return row !== undefined;
+  }
+
+  /**
+   * Fork (D10): with lock entries (every source owner's, see getAllOwnersLockVisibility), a person whose every face in
+   * the viewer's scope (own + partner + shared-album, as in getAllForUser) is hidden by its asset owner's locks does not
+   * surface. People with no in-scope faces at all are left as upstream returns them - only locks remove a name.
+   */
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.STRING, { withHidden: true }] })
   getByName(
     userId: string,
     personName: string,
-    { withHidden }: PersonNameSearchOptions,
-    lockVisibility?: OwnerLockVisibility[],
+    { withHidden, partnerIds = [] }: PersonNameSearchOptions,
+    lockVisibility: OwnerLockVisibility[] = [],
   ) {
-    return (
-      this.db
-        .selectFrom('person')
-        .selectAll('person')
-        .select(withSharing(userId))
-        .where('person.ownerId', '=', userId)
-        .where(sql<SqlBool>`f_unaccent("person"."name") %> ${unaccentWithThreshold(personName)}`)
-        .orderBy(sql`f_unaccent("person"."name") <->>> f_unaccent(${personName})`)
-        .limit(100)
-        .$if(!withHidden, (qb) => qb.where('person.isHidden', '=', false))
-        // A person whose every face is on a locked-away asset must not surface in search.
-        .$if(!!lockVisibility?.length, (qb) =>
-          qb
-            .where((eb) =>
-              eb.exists((eb) =>
-                eb
-                  .selectFrom('asset_face')
-                  .whereRef('asset_face.personGroupId', '=', 'person.personGroupId')
-                  .where('asset_face.deletedAt', 'is', null)
-                  .where('asset_face.isVisible', '=', true)
-                  .where((eb) =>
-                    eb.exists((eb) =>
-                      withLockVisibility(
-                        eb
-                          .selectFrom('asset')
-                          .whereRef('asset.id', '=', 'asset_face.assetId')
-                          .where('asset.visibility', '=', sql.lit(AssetVisibility.Timeline))
-                          .where('asset.deletedAt', 'is', null),
-                        this.db,
-                        lockVisibility!,
-                      ),
-                    ),
-                  ),
-              ),
-            )
-            // Embedded lock-visibility subqueries rely on the root query for join deduplication.
-            .withPlugin(joinDeduplicationPlugin),
-        )
-        .execute()
-    );
+    const ownerIds = anyUuid([userId, ...partnerIds]);
+    const hiddenSharedAlbumIds = getViewerHiddenAlbumIds(userId, lockVisibility);
+    const inScopeFaces = (eb: ExpressionBuilder<DB, 'person'>) =>
+      eb
+        .selectFrom('asset_face')
+        .select('asset_face.id')
+        .whereRef('asset_face.personGroupId', '=', 'person.personGroupId')
+        .where('asset_face.deletedAt', 'is', null)
+        .where('asset_face.isVisible', 'is', true)
+        .where('asset_face.assetVisibility', '=', sql.lit(AssetVisibility.Timeline))
+        .where('asset_face.assetDeletedAt', 'is', null)
+        .where((eb) =>
+          eb.or([
+            eb('asset_face.ownerId', '=', ownerIds),
+            inSharedAlbum(userId, 'asset_face.assetId', hiddenSharedAlbumIds),
+          ]),
+        );
+
+    return this.db
+      .selectFrom('person')
+      .selectAll('person')
+      .select(withSharing(userId))
+      .where('person.ownerId', '=', userId)
+      .where(sql<SqlBool>`f_unaccent("person"."name") %> ${unaccentWithThreshold(personName)}`)
+      .orderBy(sql`f_unaccent("person"."name") <->>> f_unaccent(${personName})`)
+      .limit(100)
+      .$if(!withHidden, (qb) => qb.where('person.isHidden', '=', false))
+      .$if(lockVisibility.length > 0, (qb) =>
+        qb
+          .where((eb) =>
+            eb.or([
+              eb.not(eb.exists(inScopeFaces(eb))),
+              eb.exists(inScopeFaces(eb).where((eb) => faceLockVisible(eb, this.db, lockVisibility))),
+            ]),
+          )
+          // embedded lock-visibility subqueries rely on the root query for join deduplication
+          .withPlugin(joinDeduplicationPlugin),
+      )
+      .execute();
   }
 
   @GenerateSql({ params: [DummyValue.UUID, { withHidden: true }] })
@@ -720,17 +885,19 @@ export class PersonRepository {
       .execute();
   }
 
-  // FORK-PORT: the fork's getStatistics(personId, lockVisibility) rooted the count at asset (timeline, not deleted)
-  // and applied withLockVisibility(...).withPlugin(joinDeduplicationPlugin) so locked-away assets did not count
-  // toward a person's asset total. Upstream's rewrite counts visibleFaces over own+partner faces plus faces in albums
-  // shared with ownerId (inSharedAlbum); re-thread lockVisibility (per source asset owner, D10) into both union arms.
+  /** Fork (D10): upstream's asset scope, with each source owner's locks applied inside it (see getAllForUser). */
   @GenerateSql({ params: [DummyValue.UUID, { ownerId: DummyValue.UUID, partnerIds: [DummyValue.UUID] }] })
   getStatistics(
     personGroupId: string,
     { ownerId, partnerIds }: { ownerId: string; partnerIds: string[] },
+    lockVisibility: OwnerLockVisibility[] = [],
   ): Promise<PersonStatistics> {
     const ownerIds = anyUuid([ownerId, ...partnerIds]);
-    const groupFaces = visibleFaces.select('asset_face.assetId').where('asset_face.personGroupId', '=', personGroupId);
+    const hasLocks = lockVisibility.length > 0;
+    const groupFaces = visibleFaces
+      .select('asset_face.assetId')
+      .where('asset_face.personGroupId', '=', personGroupId)
+      .$if(hasLocks, (qb) => qb.where((eb) => faceLockVisible(eb, this.db, lockVisibility)));
     return this.db
       .selectFrom(
         groupFaces
@@ -738,11 +905,12 @@ export class PersonRepository {
           .unionAll(
             groupFaces
               .where((eb) => eb.not(eb('asset_face.ownerId', '=', ownerIds)))
-              .where(inSharedAlbum(ownerId, 'asset_face.assetId')),
+              .where(inSharedAlbum(ownerId, 'asset_face.assetId', getViewerHiddenAlbumIds(ownerId, lockVisibility))),
           )
           .as('visible'),
       )
       .select((eb) => eb.fn.count<number>('visible.assetId').distinct().as('assets'))
+      .$if(hasLocks, (qb) => qb.withPlugin(joinDeduplicationPlugin))
       .executeTakeFirstOrThrow();
   }
 
@@ -763,10 +931,6 @@ export class PersonRepository {
     return this.db.insertInto('person').values(people).returningAll().execute();
   }
 
-  // FORK-PORT: the fork's getNumberOfPeople(userId, lockVisibility) counted total/hidden people only when they had at
-  // least one visible face on a live timeline asset that passes withLockVisibility (people whose only faces are on
-  // locked-away assets vanished from the counts). Upstream removed getNumberOfPeople; total/hidden now come from
-  // getAllForUser's CTEs, so the lock filter must be applied there (see the getAllForUser FORK-PORT).
   @GenerateSql({ params: [DummyValue.UUID] })
   createGroup(ownerId: string) {
     return this.db
@@ -907,7 +1071,11 @@ export class PersonRepository {
     await query.selectFrom(dummy).execute();
   }
 
-  async update(person: Updateable<PersonTable> & PersonId) {
+  /**
+   * Fork: never writes the thumbnail. (thumbnailPath, thumbnailSourceFaceId) is a provenance pair written only by
+   * publishThumbnail (both, together) and updateThumbnailPathIfUnchanged (a move of the same generation).
+   */
+  async update(person: Omit<Updateable<PersonTable>, 'thumbnailPath' | 'thumbnailSourceFaceId'> & PersonId) {
     return this.db
       .updateTable('person')
       .set(person)
@@ -953,12 +1121,15 @@ export class PersonRepository {
               name: eb.ref('excluded.name'),
               birthDate: eb.ref('excluded.birthDate'),
               thumbnailPath: eb.ref('excluded.thumbnailPath'),
+              // fork: the provenance pair is copied together; a copied path never keeps the old row's source
+              thumbnailSourceFaceId: eb.ref('excluded.thumbnailSourceFaceId'),
               faceAssetId: eb.ref('excluded.faceAssetId'),
               isHidden: eb.ref('excluded.isHidden'),
               isFavorite: eb.ref('excluded.isFavorite'),
               color: eb.ref('excluded.color'),
             },
-            people[0],
+            // fork: the template decides which columns are copied; the source travels with the path
+            { ...people[0], thumbnailSourceFaceId: people[0].thumbnailPath === undefined ? undefined : null },
           ),
         ),
       )
@@ -991,17 +1162,45 @@ export class PersonRepository {
       .execute();
   }
 
-  // FORK-PORT: lock-audit — getRandomFace(personGroupId) has no owner constraint; the chosen feature face may sit on
-  // another owner's asset. The served crop must pass the source asset owner's locks (Review Focus 1, Task 4).
-  @GenerateSql({ params: [DummyValue.UUID] })
-  getRandomFace(personGroupId: string) {
+  /**
+   * Fork: a feature-face candidate restricted to `eligibleOwnerIds` and, with lock entries, to faces whose asset passes
+   * its owner's locks. Callers run in job context (never elevated, no reveal). The asset is joined only when entries
+   * exist.
+   */
+  @GenerateSql({ params: [DummyValue.UUID, { eligibleOwnerIds: [DummyValue.UUID] }] })
+  getRandomFace(personGroupId: string, { eligibleOwnerIds, lockVisibility = [] }: RandomFaceOptions) {
+    if (eligibleOwnerIds.length === 0) {
+      return Promise.resolve(undefined);
+    }
+
     return this.db
       .selectFrom('asset_face')
       .selectAll('asset_face')
       .where('asset_face.personGroupId', '=', personGroupId)
       .where('asset_face.deletedAt', 'is', null)
       .where('asset_face.isVisible', 'is', true)
+      .where('asset_face.ownerId', '=', anyUuid(eligibleOwnerIds))
+      .$if(lockVisibility.length > 0, (qb) =>
+        qb.where((eb) => faceLockVisible(eb, this.db, lockVisibility)).withPlugin(joinDeduplicationPlugin),
+      )
       .executeTakeFirst();
+  }
+
+  /**
+   * Fork: the users whose faces may become `ownerId`'s feature face - the members of the owner's cluster group (person
+   * groups are clustered per cluster group), including the owner.
+   */
+  @GenerateSql({ params: [DummyValue.UUID] })
+  async getClusterMemberIds(ownerId: string): Promise<string[]> {
+    const rows = await this.db
+      .selectFrom('user')
+      .select('user.id')
+      .where('user.deletedAt', 'is', null)
+      .where('user.clusterGroupId', '=', (eb) =>
+        eb.selectFrom('user as owner').select('owner.clusterGroupId').where('owner.id', '=', ownerId),
+      )
+      .execute();
+    return rows.map(({ id }) => id);
   }
 
   @GenerateSql()

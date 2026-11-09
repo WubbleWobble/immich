@@ -42,7 +42,7 @@ import {
   VectorIndex,
 } from 'src/enum.js';
 import { BoundingBox } from 'src/repositories/machine-learning.repository.js';
-import { PersonId } from 'src/repositories/person.repository.js';
+import { PersonId, ThumbnailProvenance } from 'src/repositories/person.repository.js';
 import { DB } from 'src/schema/index.js';
 import { AssetFaceTable } from 'src/schema/tables/asset-face.table.js';
 import { FaceSearchTable } from 'src/schema/tables/face-search.table.js';
@@ -61,14 +61,55 @@ const personKey = ({ ownerId, personGroupId }: PersonId) => `${ownerId}/${person
 
 @Injectable()
 export class PersonService extends BaseService {
-  /** People are derived from the viewer's own assets, so the only relevant lock owner is the viewer. */
+  /**
+   * D10: a person's faces can sit on assets of the viewer, partners, owners of albums shared with the viewer, and
+   * other cluster members, so lists and counts use entries for every lock-holding owner. Each owner's own locks hide
+   * that owner's content; the viewer's reveal set applies only to the viewer's own locks, and only when elevated.
+   */
   private getViewerLockVisibility(auth: AuthDto) {
-    return this.lockRepository.getOwnerLockVisibility({
+    return this.lockRepository.getAllOwnersLockVisibility({
       viewerId: auth.user.id,
-      ownerIds: [auth.user.id],
       revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
       isElevated: !!auth.session?.hasElevatedPermission,
     });
+  }
+
+  /**
+   * Fork (D10): whether a face crop may be shown to the viewer - evaluated against the locks of the face's ASSET OWNER.
+   * The viewer's reveal set counts only when that owner is the viewer and the session is elevated; elevation never
+   * bypasses another owner's locks. Unverifiable provenance (no recorded source face) is never visible.
+   */
+  async isFaceVisibleToViewer(auth: AuthDto, provenance: ThumbnailProvenance): Promise<boolean> {
+    const { faceId, assetId, assetOwnerId } = provenance;
+    if (!faceId || !assetId || !assetOwnerId) {
+      return false;
+    }
+
+    const lockVisibility = await this.lockRepository.getOwnerLockVisibility({
+      viewerId: auth.user.id,
+      ownerIds: [assetOwnerId],
+      revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
+      isElevated: !!auth.session?.hasElevatedPermission,
+    });
+    if (lockVisibility.length === 0) {
+      return true;
+    }
+
+    return this.lockRepository.isAssetVisible(assetId, lockVisibility);
+  }
+
+  /**
+   * Fork: pick a feature face for `ownerId`'s person in job context - only faces of the owner's cluster members whose
+   * asset passes its owner's locks with no reveal (background work never acts as elevated).
+   */
+  async pickFeatureFace({ ownerId, personGroupId }: PersonId) {
+    const eligibleOwnerIds = await this.personRepository.getClusterMemberIds(ownerId);
+    const lockVisibility = await this.lockRepository.getAllOwnersLockVisibility({
+      viewerId: ownerId,
+      revealed: NO_REVEALED_LOCKS,
+      isElevated: false,
+    });
+    return this.personRepository.getRandomFace(personGroupId, { eligibleOwnerIds, lockVisibility });
   }
 
   async getAll(auth: AuthDto, dto: PersonSearchDto): Promise<PeopleResponseDto> {
@@ -77,22 +118,23 @@ export class PersonService extends BaseService {
       take: size,
       skip: (page - 1) * size,
     };
-    // FORK-PORT: the fork passed lockVisibility (getViewerLockVisibility(auth)) into
-    // personRepository.getAllForUser(pagination, userId, options, lockVisibility) and
-    // getNumberOfPeople(userId, lockVisibility), so people whose only faces are on assets hidden by the viewer's
-    // locks vanished from the list and from total/hidden. Upstream returns total/hidden from getAllForUser and now
-    // includes partner + shared-album faces; thread lock visibility for every source owner (D10).
     const partnerIds = await getMyPartnerIds({
       userId: auth.user.id,
       repository: this.partnerRepository,
     });
-    const { items, hasNextPage, total, hidden } = await this.personRepository.getAllForUser(pagination, auth.user.id, {
-      withHidden,
-      partnerIds,
-      closestFaceAssetId: closestAssetId,
-      closestPersonId,
-      ...filters,
-    });
+    // People whose every in-scope face is hidden by its owner's locks vanish from the list and from total/hidden.
+    const { items, hasNextPage, total, hidden } = await this.personRepository.getAllForUser(
+      pagination,
+      auth.user.id,
+      {
+        withHidden,
+        partnerIds,
+        closestFaceAssetId: closestAssetId,
+        closestPersonId,
+        ...filters,
+      },
+      await this.getViewerLockVisibility(auth),
+    );
 
     return {
       people: items.map((person) => mapPerson(person)),
@@ -194,7 +236,7 @@ export class PersonService extends BaseService {
 
     const jobs: JobItem[] = [];
     for (const { ownerId, personGroupId } of changeFeaturePhoto) {
-      const assetFace = await this.personRepository.getRandomFace(personGroupId);
+      const assetFace = await this.pickFeatureFace({ ownerId, personGroupId });
 
       if (!assetFace) {
         continue;
@@ -218,10 +260,7 @@ export class PersonService extends BaseService {
     );
   }
 
-  // FORK-PORT: the fork passed lockVisibility (getViewerLockVisibility(auth)) into
-  // personRepository.getStatistics(id, lockVisibility) so the person's asset count excluded assets hidden by the
-  // viewer's locks. Upstream's getStatistics(personGroupId, { ownerId, partnerIds }) now also counts partner and
-  // shared-album faces; thread per-source-owner lock visibility through it (D10).
+  /** Upstream's scope (own + partner + shared-album), with each source owner's locks applied inside it (D10). */
   async getStatistics(auth: AuthDto, personGroupId: string): Promise<PersonStatisticsResponseDto> {
     await this.requirePersonAccess({
       auth,
@@ -233,53 +272,38 @@ export class PersonService extends BaseService {
       userId: auth.user.id,
       repository: this.partnerRepository,
     });
-    return this.personRepository.getStatistics(personGroupId, { ownerId: auth.user.id, partnerIds });
+    return this.personRepository.getStatistics(
+      personGroupId,
+      { ownerId: auth.user.id, partnerIds },
+      await this.getViewerLockVisibility(auth),
+    );
   }
 
+  /**
+   * Fork: serve the first candidate (own row, then each sharer's row) whose PROVENANCE - the face recorded together
+   * with the file - passes isFaceVisibleToViewer. Unverifiable candidates are never served, to anyone. This holds for
+   * elevated sessions too (elevation only applies the viewer's reveal set to the viewer's own locks), and a shared
+   * thumbnail is never rewritten globally to suit one viewer.
+   */
   async getThumbnail(auth: AuthDto, personGroupId: string): Promise<ImmichFileResponse> {
     await this.requirePersonAccess({
       auth,
       permission: Permission.PersonRead,
       ids: [{ personGroupId, ownerId: auth.user.id }],
     });
-    const personGroup = await this.personRepository.getForThumbnail({ ownerId: auth.user.id, personGroupId });
-    // FORK-PORT: fail-closed until Task 4 (Review Focus 1, source-owner thumbnail provenance). Upstream serves
-    // `thumbnailPath || sharedThumbnailPath`, but getForThumbnail returns no source face/owner for either path, so a
-    // shared thumbnail (cropped from another user's asset) cannot be checked against its SOURCE ASSET OWNER's locks
-    // and is withheld (404). The viewer's own crop keeps the fork check below (feature face's asset vs the viewer's
-    // locks), and is also withheld when that asset belongs to someone else. Task 4 replaces all of this with
-    // per-candidate provenance (thumbnailSourceFaceId) and isFaceVisibleToViewer.
-    const thumbnailPath = personGroup?.thumbnailPath;
-    if (!thumbnailPath) {
-      throw new NotFoundException();
-    }
 
-    // The face crop is derived from the feature-face asset; if the viewer has locked that
-    // asset away, the crop must be unreachable too (the person may otherwise be visible).
-    // faceAssetId points at asset_face, so resolve the face to its asset first.
-    if (!auth.sharedLink && !auth.session?.hasElevatedPermission) {
-      const person = await this.personRepository.getByGroupId({ ownerId: auth.user.id, personGroupId });
-      if (!person) {
-        throw new NotFoundException();
-      }
-      const face = person.faceAssetId ? await this.personRepository.getFaceAssetId(person.faceAssetId) : undefined;
-      if (face) {
-        const asset = await this.assetRepository.getById(face.assetId);
-        if (!asset || asset.ownerId !== auth.user.id) {
-          throw new NotFoundException();
-        }
-        const visible = await this.accessRepository.asset.excludeHiddenForLocker(auth.user.id, new Set([face.assetId]));
-        if (visible.size === 0) {
-          throw new NotFoundException();
-        }
+    const candidates = await this.personRepository.getForThumbnail({ ownerId: auth.user.id, personGroupId });
+    for (const { path, provenance } of candidates) {
+      if (await this.isFaceVisibleToViewer(auth, provenance)) {
+        return new ImmichFileResponse({
+          path,
+          contentType: mimeTypes.lookup(path),
+          cacheControl: CacheControl.PrivateWithoutCache,
+        });
       }
     }
 
-    return new ImmichFileResponse({
-      path: thumbnailPath,
-      contentType: mimeTypes.lookup(thumbnailPath),
-      cacheControl: CacheControl.PrivateWithoutCache,
-    });
+    throw new NotFoundException();
   }
 
   async create(auth: AuthDto, dto: PersonCreateDto): Promise<PersonResponseDto> {
@@ -395,12 +419,26 @@ export class PersonService extends BaseService {
     }
 
     const people = await this.personRepository.delete(groupIds, ownerId);
-    await Promise.all(people.map((person) => this.storageRepository.unlink(person.thumbnailPath)));
+    // fork: a file that another person row still references is never unlinked
+    await Promise.all(
+      people.map(async ({ thumbnailPath }) => {
+        if (!(await this.personRepository.isThumbnailPathReferenced(thumbnailPath))) {
+          await this.storageRepository.unlink(thumbnailPath);
+        }
+      }),
+    );
     this.logger.debug(`Deleted ${groupIds.length} people`);
-    // FORK-PORT: the fork self-healed smart album filters after deleting people:
-    // BaseService.create(AlbumService, this).prunePersonIdsFromSmartAlbumsSafe(deletedIds) spliced the deleted person
-    // ids out of filter.personIds. D12 (Task 7A.3) removes this pruning (dangling ids stay and zero-match), but the
-    // smart-album caches filtering on these person groups still need invalidating (Task 4).
+
+    // Smart albums are per owner and filter on that owner's person group ids: each owner whose people were deleted
+    // gets the caches of albums referencing those groups invalidated. The ids themselves stay in the filters (D12).
+    const albumService = BaseService.create(AlbumService, this);
+    const deletedByOwner = Map.groupBy(people, (person) => person.ownerId);
+    for (const [deletedOwnerId, deleted] of deletedByOwner) {
+      await albumService.invalidateSmartAlbumsForPersonMergeSafe(
+        deletedOwnerId,
+        deleted.map((person) => person.personGroupId),
+      );
+    }
   }
 
   @OnJob({ name: JobName.PersonCleanup, queue: QueueName.BackgroundTask })
@@ -749,6 +787,8 @@ export class PersonService extends BaseService {
       results.set(targetId, { id: targetId, success: true });
     }
 
+    const albumService = BaseService.create(AlbumService, this);
+
     for (const id of sourceIds) {
       for (const ownerId of ownerIds) {
         const isAuthUser = ownerId === auth.user.id;
@@ -770,6 +810,8 @@ export class PersonService extends BaseService {
               ownerId,
               await this.personRepository.updateGroupId({ ownerId, oldPersonGroupId: id, newPersonGroupId: targetId }),
             );
+            // the owner's smart albums filtering either group shift membership
+            await albumService.invalidateSmartAlbumsForPersonMergeSafe(ownerId, [id, targetId]);
             continue;
           }
 
@@ -792,17 +834,14 @@ export class PersonService extends BaseService {
           if (isAuthUser) {
             results.set(id, { id, success: true });
           }
+          // only after a successful merge: the owner's smart albums filtering either group shift membership (D11)
+          await albumService.invalidateSmartAlbumsForPersonMergeSafe(ownerId, [id, targetId]);
         } catch (error: any) {
           this.logger.error(`Unable to merge ${id} into ${targetId}: ${error}`, error?.stack);
           if (isAuthUser) {
             results.set(id, { id, success: false, error: BulkIdErrorReason.UNKNOWN });
           }
         }
-        // FORK-PORT: smart-album invalidation — after each successful merge the fork called
-        // BaseService.create(AlbumService, this).invalidateSmartAlbumsForPersonMergeSafe(primaryPerson.ownerId,
-        // [mergeId, id]) so smart albums filtering on either the source or target person id were refreshed. Upstream's
-        // merge is now per-owner over person groups (reassignFaces/removeAllPersonGroups above); re-add the
-        // invalidation for (ownerId, [id, targetId]) here, keyed by personGroupId (D11).
       }
     }
 
@@ -897,10 +936,9 @@ export class PersonService extends BaseService {
   async deleteFace(auth: AuthDto, id: string, dto: AssetFaceDeleteDto): Promise<void> {
     await this.requireAccess({ auth, permission: Permission.FaceDelete, ids: [id] });
 
-    // FORK-PORT: smart-album invalidation on face delete (auto-merged fork code); upstream getFaceById now takes
-    // { viewingUserId } as a second argument. Task 2 passes the viewer; only the face's assetId is read, so it does
-    // not affect what is invalidated. Re-check against Task 4's invalidation helpers.
-    // Look up the face's asset BEFORE deletion so we know what to invalidate.
+    // Look up the face's asset BEFORE deletion so we know what to invalidate. Only the face's assetId is read, so the
+    // viewer passed to upstream's getFaceById({ viewingUserId }) does not change what is invalidated: the asset
+    // owner's smart albums (blanket, see invalidateSmartAlbumsForAssetIdsSafe).
     let assetId: string | undefined;
     try {
       const face = await this.personRepository.getFaceById(id, { viewingUserId: auth.user.id });

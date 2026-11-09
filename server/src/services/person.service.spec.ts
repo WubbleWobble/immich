@@ -30,14 +30,29 @@ import { ServiceMocks, makeStream, newTestService } from 'test/utils.js';
 const PERSON_READ_ROLES = [PersonUserRole.Read, PersonUserRole.Write, PersonUserRole.Admin];
 const PERSON_WRITE_ROLES = [PersonUserRole.Write, PersonUserRole.Admin];
 
-const setupOwnThumbnail = (mocks: ServiceMocks, auth: AuthDto, faceAssetId: string | null) => {
-  const person = PersonFactory.create({ ownerId: auth.user.id, thumbnailPath: '/path/to/thumbnail.jpg', faceAssetId });
+const setupThumbnailAccess = (mocks: ServiceMocks, auth: AuthDto, personGroupId: string) => {
+  mocks.access.person.checkAccess.mockResolvedValue(new Set([{ personGroupId, ownerId: auth.user.id }]));
+};
+
+const visibleProvenance = (assetOwnerId: string) => ({
+  faceId: newUuid(),
+  assetId: newUuid(),
+  assetOwnerId,
+});
+
+const setupMerge = (mocks: ServiceMocks, auth: AuthDto) => {
+  const target = PersonFactory.create({ ownerId: auth.user.id });
+  const source = PersonFactory.create({ ownerId: auth.user.id });
   mocks.access.person.checkAccess.mockResolvedValue(
-    new Set([{ personGroupId: person.personGroupId, ownerId: auth.user.id }]),
+    new Set([
+      { personGroupId: target.personGroupId, ownerId: auth.user.id },
+      { personGroupId: source.personGroupId, ownerId: auth.user.id },
+    ]),
   );
-  mocks.person.getForThumbnail.mockResolvedValue({ thumbnailPath: person.thumbnailPath, sharedThumbnailPath: null });
-  mocks.person.getByGroupId.mockResolvedValue(person);
-  return person;
+  mocks.person.getForMergePerson.mockResolvedValue([target, source]);
+  mocks.person.delete.mockResolvedValue([]);
+  mocks.album.getSmartAlbumsForOwnerByPersonIds.mockResolvedValue([{ id: 'smart-album' }]);
+  return { target, source };
 };
 
 describe(PersonService.name, () => {
@@ -54,6 +69,10 @@ describe(PersonService.name, () => {
 
   describe('getAll', () => {
     it('should get all hidden and visible people with thumbnails', async () => {
+      const lockVisibility = [
+        { ownerId: newUuid(), hiddenAlbumIds: [newUuid()], hiddenSmartFilters: [], visibleSmartFilters: [] },
+      ];
+      mocks.lock.getAllOwnersLockVisibility.mockResolvedValue(lockVisibility);
       const auth = AuthFactory.create();
       const [person, hiddenPerson] = [PersonFactory.create(), PersonFactory.create({ isHidden: true })];
 
@@ -76,15 +95,24 @@ describe(PersonService.name, () => {
           }),
         ],
       });
-      // FORK-PORT: the fork asserted a 4th getAllForUser argument (lockVisibility, [] here) from
-      // getViewerLockVisibility(auth); re-add once lock visibility is threaded through upstream's getAllForUser.
-      expect(mocks.person.getAllForUser).toHaveBeenCalledWith({ skip: 0, take: 10 }, auth.user.id, {
-        withHidden: true,
-        partnerIds: [],
+      expect(mocks.person.getAllForUser).toHaveBeenCalledWith(
+        { skip: 0, take: 10 },
+        auth.user.id,
+        { withHidden: true, partnerIds: [] },
+        lockVisibility,
+      );
+      expect(mocks.lock.getAllOwnersLockVisibility).toHaveBeenCalledWith({
+        viewerId: auth.user.id,
+        revealed: { albumIds: [], containerIds: [] },
+        isElevated: false,
       });
     });
 
     it('should get all visible people and favorites should be first in the array', async () => {
+      const lockVisibility = [
+        { ownerId: newUuid(), hiddenAlbumIds: [newUuid()], hiddenSmartFilters: [], visibleSmartFilters: [] },
+      ];
+      mocks.lock.getAllOwnersLockVisibility.mockResolvedValue(lockVisibility);
       const auth = AuthFactory.create();
       const [isFavorite, person] = [PersonFactory.create({ isFavorite: true }), PersonFactory.create()];
 
@@ -107,15 +135,16 @@ describe(PersonService.name, () => {
           expect.objectContaining({ id: person.personGroupId, isFavorite: false }),
         ],
       });
-      // FORK-PORT: the fork asserted a 4th getAllForUser argument (lockVisibility, [] here) from
-      // getViewerLockVisibility(auth); re-add once lock visibility is threaded through upstream's getAllForUser.
-      expect(mocks.person.getAllForUser).toHaveBeenCalledWith({ skip: 0, take: 10 }, auth.user.id, {
-        withHidden: false,
-        partnerIds: [],
-      });
+      expect(mocks.person.getAllForUser).toHaveBeenCalledWith(
+        { skip: 0, take: 10 },
+        auth.user.id,
+        { withHidden: false, partnerIds: [] },
+        lockVisibility,
+      );
     });
 
     it('should pass the closest person to the query', async () => {
+      mocks.lock.getAllOwnersLockVisibility.mockResolvedValue([]);
       const auth = AuthFactory.create();
       const closestPersonId = newUuid();
 
@@ -127,11 +156,12 @@ describe(PersonService.name, () => {
         total: 0,
         hidden: 0,
       });
-      expect(mocks.person.getAllForUser).toHaveBeenCalledWith({ skip: 0, take: 10 }, auth.user.id, {
-        withHidden: false,
-        partnerIds: [],
-        closestPersonId,
-      });
+      expect(mocks.person.getAllForUser).toHaveBeenCalledWith(
+        { skip: 0, take: 10 },
+        auth.user.id,
+        { withHidden: false, partnerIds: [], closestPersonId },
+        [],
+      );
     });
   });
 
@@ -176,65 +206,12 @@ describe(PersonService.name, () => {
   });
 
   describe('getThumbnail', () => {
-    it('should block the face crop when its source asset is locked away (non-elevated session)', async () => {
-      const auth = AuthFactory.create();
-      const faceId = newUuid();
-      const asset = AssetFactory.create({ ownerId: auth.user.id });
-      const person = setupOwnThumbnail(mocks, auth, faceId);
-
-      // faceAssetId points at asset_face; the service must resolve it to the face's asset.
-      mocks.person.getFaceAssetId.mockResolvedValue({ assetId: asset.id });
-      mocks.asset.getById.mockResolvedValue(getForAsset(asset));
-      mocks.access.asset.excludeHiddenForLocker.mockResolvedValue(new Set());
-
-      await expect(sut.getThumbnail(auth, person.personGroupId)).rejects.toBeInstanceOf(NotFoundException);
-      expect(mocks.storage.createReadStream).not.toHaveBeenCalled();
-      expect(mocks.person.getFaceAssetId).toHaveBeenCalledWith(faceId);
-      expect(mocks.access.asset.excludeHiddenForLocker).toHaveBeenCalledWith(auth.user.id, new Set([asset.id]));
-    });
-
-    it('should block the face crop when its source asset belongs to another user (until Task 4 provenance)', async () => {
-      const auth = AuthFactory.create();
-      const asset = AssetFactory.create();
-      const person = setupOwnThumbnail(mocks, auth, newUuid());
-
-      mocks.person.getFaceAssetId.mockResolvedValue({ assetId: asset.id });
-      mocks.asset.getById.mockResolvedValue(getForAsset(asset));
-      mocks.access.asset.excludeHiddenForLocker.mockResolvedValue(new Set([asset.id]));
-
-      await expect(sut.getThumbnail(auth, person.personGroupId)).rejects.toBeInstanceOf(NotFoundException);
-    });
-
-    it('should serve the face crop when the resolved asset is visible', async () => {
-      const auth = AuthFactory.create();
-      const asset = AssetFactory.create({ ownerId: auth.user.id });
-      const person = setupOwnThumbnail(mocks, auth, newUuid());
-
-      mocks.person.getFaceAssetId.mockResolvedValue({ assetId: asset.id });
-      mocks.asset.getById.mockResolvedValue(getForAsset(asset));
-      mocks.access.asset.excludeHiddenForLocker.mockResolvedValue(new Set([asset.id]));
-
-      await expect(sut.getThumbnail(auth, person.personGroupId)).resolves.toBeDefined();
-    });
-
-    it('should serve the face crop in an elevated session without a visibility check', async () => {
-      const auth = AuthFactory.from().session({ hasElevatedPermission: true }).build();
-      const person = setupOwnThumbnail(mocks, auth, newUuid());
-
-      await expect(sut.getThumbnail(auth, person.personGroupId)).resolves.toBeDefined();
-      expect(mocks.access.asset.excludeHiddenForLocker).not.toHaveBeenCalled();
-    });
-
     it('should require person.read permission', async () => {
       const auth = AuthFactory.create();
       const person = PersonFactory.create();
 
-      mocks.person.getForThumbnail.mockResolvedValue({
-        thumbnailPath: person.thumbnailPath,
-        sharedThumbnailPath: null,
-      });
       await expect(sut.getThumbnail(auth, person.personGroupId)).rejects.toBeInstanceOf(BadRequestException);
-      expect(mocks.storage.createReadStream).not.toHaveBeenCalled();
+      expect(mocks.person.getForThumbnail).not.toHaveBeenCalled();
       expect(mocks.access.person.checkAccess).toHaveBeenCalledWith(
         auth.user.id,
         new Set([{ personGroupId: person.personGroupId, ownerId: auth.user.id }]),
@@ -242,67 +219,91 @@ describe(PersonService.name, () => {
       );
     });
 
-    it('should throw an error when personId is invalid', async () => {
+    it('should throw an error when there is no candidate', async () => {
       const auth = AuthFactory.create();
-      const ids = [{ personGroupId: 'unknown', ownerId: auth.user.id }];
+      setupThumbnailAccess(mocks, auth, 'unknown');
+      mocks.person.getForThumbnail.mockResolvedValue([]);
 
-      mocks.access.person.checkAccess.mockResolvedValue(new Set(ids));
-      mocks.person.getForThumbnail.mockResolvedValue(undefined);
       await expect(sut.getThumbnail(auth, 'unknown')).rejects.toBeInstanceOf(NotFoundException);
-      expect(mocks.storage.createReadStream).not.toHaveBeenCalled();
-      expect(mocks.access.person.checkAccess).toHaveBeenCalledWith(auth.user.id, new Set(ids), PERSON_READ_ROLES);
+      expect(mocks.person.getForThumbnail).toHaveBeenCalledWith({ ownerId: auth.user.id, personGroupId: 'unknown' });
     });
 
-    it('should throw an error when person has no thumbnail', async () => {
+    it('should serve the first candidate whose source passes its owner locks', async () => {
       const auth = AuthFactory.create();
-      const person = PersonFactory.create({ thumbnailPath: '' });
-      const ids = [{ personGroupId: person.personGroupId, ownerId: auth.user.id }];
+      const personGroupId = newUuid();
+      setupThumbnailAccess(mocks, auth, personGroupId);
+      mocks.person.getForThumbnail.mockResolvedValue([
+        { path: '/own.jpeg', provenance: visibleProvenance(auth.user.id) },
+      ]);
+      mocks.lock.getOwnerLockVisibility.mockResolvedValue([]);
 
-      mocks.person.getForThumbnail.mockResolvedValue({ thumbnailPath: '', sharedThumbnailPath: null });
-      mocks.access.person.checkAccess.mockResolvedValue(new Set(ids));
-      await expect(sut.getThumbnail(auth, person.personGroupId)).rejects.toBeInstanceOf(NotFoundException);
-      expect(mocks.storage.createReadStream).not.toHaveBeenCalled();
-      expect(mocks.access.person.checkAccess).toHaveBeenCalledWith(auth.user.id, new Set(ids), PERSON_READ_ROLES);
-    });
-
-    it('should serve the thumbnail', async () => {
-      const auth = AuthFactory.create();
-      const person = PersonFactory.create();
-      const ids = [{ personGroupId: person.personGroupId, ownerId: auth.user.id }];
-
-      mocks.person.getForThumbnail.mockResolvedValue({
-        thumbnailPath: person.thumbnailPath,
-        sharedThumbnailPath: null,
-      });
-      mocks.person.getByGroupId.mockResolvedValue(person);
-      mocks.access.person.checkAccess.mockResolvedValue(new Set(ids));
-      await expect(sut.getThumbnail(auth, person.personGroupId)).resolves.toEqual(
+      await expect(sut.getThumbnail(auth, personGroupId)).resolves.toEqual(
         new ImmichFileResponse({
-          path: person.thumbnailPath,
+          path: '/own.jpeg',
           contentType: 'image/jpeg',
           cacheControl: CacheControl.PrivateWithoutCache,
         }),
       );
-      expect(mocks.access.person.checkAccess).toHaveBeenCalledWith(auth.user.id, new Set(ids), PERSON_READ_ROLES);
+      expect(mocks.lock.isAssetVisible).not.toHaveBeenCalled();
     });
 
-    it('should fall back to a shared thumbnail', async () => {
+    it('should never serve an unverifiable candidate, not even to the person-row owner', async () => {
       const auth = AuthFactory.create();
-      const person = PersonFactory.create();
-      const ids = [{ personGroupId: person.personGroupId, ownerId: auth.user.id }];
+      const personGroupId = newUuid();
+      setupThumbnailAccess(mocks, auth, personGroupId);
+      mocks.person.getForThumbnail.mockResolvedValue([
+        { path: '/own.jpeg', provenance: { faceId: null, assetId: null, assetOwnerId: null } },
+      ]);
 
-      mocks.person.getForThumbnail.mockResolvedValue({
-        thumbnailPath: '',
-        sharedThumbnailPath: person.thumbnailPath,
-      });
-      mocks.access.person.checkAccess.mockResolvedValue(new Set(ids));
-      await expect(sut.getThumbnail(auth, person.personGroupId)).resolves.toEqual(
-        new ImmichFileResponse({
-          path: person.thumbnailPath,
-          contentType: 'image/jpeg',
-          cacheControl: CacheControl.PrivateWithoutCache,
-        }),
+      await expect(sut.getThumbnail(auth, personGroupId)).rejects.toBeInstanceOf(NotFoundException);
+      expect(mocks.lock.getOwnerLockVisibility).not.toHaveBeenCalled();
+    });
+
+    it('should fall back to a shared candidate when the own one is hidden', async () => {
+      const auth = AuthFactory.create();
+      const personGroupId = newUuid();
+      const sharerId = newUuid();
+      const hidden = visibleProvenance(auth.user.id);
+      setupThumbnailAccess(mocks, auth, personGroupId);
+      mocks.person.getForThumbnail.mockResolvedValue([
+        { path: '/own.jpeg', provenance: hidden },
+        { path: '/shared.jpeg', provenance: visibleProvenance(sharerId) },
+      ]);
+      const ownerEntry = {
+        ownerId: auth.user.id,
+        hiddenAlbumIds: [newUuid()],
+        hiddenSmartFilters: [],
+        visibleSmartFilters: [],
+      };
+      mocks.lock.getOwnerLockVisibility.mockResolvedValueOnce([ownerEntry]).mockResolvedValueOnce([]);
+      mocks.lock.isAssetVisible.mockResolvedValue(false);
+
+      await expect(sut.getThumbnail(auth, personGroupId)).resolves.toEqual(
+        expect.objectContaining({ path: '/shared.jpeg' }),
       );
+      expect(mocks.lock.isAssetVisible).toHaveBeenCalledWith(hidden.assetId, [ownerEntry]);
+    });
+
+    it("should evaluate the source asset owner's locks, applying the viewer's reveal only to the viewer's own", async () => {
+      const auth = {
+        ...AuthFactory.from().session({ hasElevatedPermission: true }).build(),
+        revealedLocks: { albumIds: [newUuid()], containerIds: [] },
+      };
+      const personGroupId = newUuid();
+      const sharerId = newUuid();
+      setupThumbnailAccess(mocks, auth, personGroupId);
+      mocks.person.getForThumbnail.mockResolvedValue([
+        { path: '/shared.jpeg', provenance: visibleProvenance(sharerId) },
+      ]);
+      mocks.lock.getOwnerLockVisibility.mockResolvedValue([]);
+
+      await sut.getThumbnail(auth, personGroupId);
+      expect(mocks.lock.getOwnerLockVisibility).toHaveBeenCalledWith({
+        viewerId: auth.user.id,
+        ownerIds: [sharerId],
+        revealed: auth.revealedLocks,
+        isElevated: true,
+      });
     });
   });
 
@@ -681,6 +682,8 @@ describe(PersonService.name, () => {
       mocks.asset.getById.mockResolvedValue(getForAsset(asset));
       mocks.person.getByGroupId.mockResolvedValue(person);
       mocks.person.getRandomFace.mockResolvedValue(featureFace);
+      mocks.person.getClusterMemberIds.mockResolvedValue([person.ownerId]);
+      mocks.lock.getAllOwnersLockVisibility.mockResolvedValue([]);
       mocks.person.update.mockResolvedValue({ ...person, faceAssetId: featureFace.id });
 
       await expect(
@@ -708,7 +711,16 @@ describe(PersonService.name, () => {
         boundingBoxY2: 130,
         sourceType: SourceType.Manual,
       });
-      expect(mocks.person.getRandomFace).toHaveBeenCalledWith(person.personGroupId);
+      expect(mocks.person.getRandomFace).toHaveBeenCalledWith(person.personGroupId, {
+        eligibleOwnerIds: [person.ownerId],
+        lockVisibility: [],
+      });
+      // job context: never elevated, no reveal
+      expect(mocks.lock.getAllOwnersLockVisibility).toHaveBeenCalledWith({
+        viewerId: person.ownerId,
+        revealed: { albumIds: [], containerIds: [] },
+        isElevated: false,
+      });
       expect(mocks.person.update).toHaveBeenCalledWith({
         ownerId: person.ownerId,
         personGroupId: person.personGroupId,
@@ -1639,6 +1651,10 @@ describe(PersonService.name, () => {
 
   describe('getStatistics', () => {
     it('should get correct number of person', async () => {
+      const lockVisibility = [
+        { ownerId: newUuid(), hiddenAlbumIds: [newUuid()], hiddenSmartFilters: [], visibleSmartFilters: [] },
+      ];
+      mocks.lock.getAllOwnersLockVisibility.mockResolvedValue(lockVisibility);
       const auth = AuthFactory.create();
       const person = PersonFactory.create();
       const ids = [{ personGroupId: person.personGroupId, ownerId: auth.user.id }];
@@ -1647,14 +1663,16 @@ describe(PersonService.name, () => {
       mocks.partner.getAll.mockResolvedValue([]);
       mocks.access.person.checkAccess.mockResolvedValue(new Set(ids));
       await expect(sut.getStatistics(auth, person.personGroupId)).resolves.toEqual({ assets: 3 });
-      expect(mocks.person.getStatistics).toHaveBeenCalledWith(person.personGroupId, {
-        ownerId: auth.user.id,
-        partnerIds: [],
-      });
+      expect(mocks.person.getStatistics).toHaveBeenCalledWith(
+        person.personGroupId,
+        { ownerId: auth.user.id, partnerIds: [] },
+        lockVisibility,
+      );
       expect(mocks.access.person.checkAccess).toHaveBeenCalledWith(auth.user.id, new Set(ids), PERSON_READ_ROLES);
     });
 
     it('should include all partners that are shown in the timeline', async () => {
+      mocks.lock.getAllOwnersLockVisibility.mockResolvedValue([]);
       const auth = AuthFactory.create();
       const person = PersonFactory.create();
       const ids = [{ personGroupId: person.personGroupId, ownerId: auth.user.id }];
@@ -1668,10 +1686,11 @@ describe(PersonService.name, () => {
       ]);
       mocks.access.person.checkAccess.mockResolvedValue(new Set(ids));
       await expect(sut.getStatistics(auth, person.personGroupId)).resolves.toEqual({ assets: 3 });
-      expect(mocks.person.getStatistics).toHaveBeenCalledWith(person.personGroupId, {
-        ownerId: auth.user.id,
-        partnerIds: [inTimeline.id, notInTimeline.id],
-      });
+      expect(mocks.person.getStatistics).toHaveBeenCalledWith(
+        person.personGroupId,
+        { ownerId: auth.user.id, partnerIds: [inTimeline.id, notInTimeline.id] },
+        [],
+      );
     });
 
     it('should require person.read permission', async () => {
@@ -1688,9 +1707,37 @@ describe(PersonService.name, () => {
     });
   });
 
-  // FORK-PORT: upstream deleted the mergePerson describe; the fork's test "should invalidate smart-album caches that
-  // reference either merged person" (mergePerson -> album.getSmartAlbumsForOwnerByPersonIds(ownerId, [mergeId, id])
-  // -> album.markCacheInvalidated([albumId], Date)) is dropped here and must be re-added for the new merge path.
+  describe('mergePeople', () => {
+    it('should invalidate smart-album caches that reference either merged person', async () => {
+      const auth = AuthFactory.create();
+      const { target, source } = setupMerge(mocks, auth);
+      mocks.person.reassignFaces.mockResolvedValue(1);
+
+      await expect(sut.mergePeople(auth, { ids: [target.personGroupId, source.personGroupId] })).resolves.toEqual([
+        { id: target.personGroupId, success: true },
+        { id: source.personGroupId, success: true },
+      ]);
+      expect(mocks.album.getSmartAlbumsForOwnerByPersonIds).toHaveBeenCalledWith(
+        auth.user.id,
+        expect.arrayContaining([source.personGroupId, target.personGroupId]),
+      );
+      expect(mocks.album.markCacheInvalidated).toHaveBeenCalledWith(['smart-album'], expect.any(Date));
+    });
+
+    it('should not invalidate smart-album caches when the merge fails', async () => {
+      const auth = AuthFactory.create();
+      const { target, source } = setupMerge(mocks, auth);
+      mocks.person.reassignFaces.mockRejectedValue(new Error('merge failed'));
+
+      await expect(sut.mergePeople(auth, { ids: [target.personGroupId, source.personGroupId] })).resolves.toEqual([
+        { id: target.personGroupId, success: true },
+        { id: source.personGroupId, success: false, error: BulkIdErrorReason.UNKNOWN },
+      ]);
+      expect(mocks.album.getSmartAlbumsForOwnerByPersonIds).not.toHaveBeenCalled();
+      expect(mocks.album.markCacheInvalidated).not.toHaveBeenCalled();
+    });
+  });
+
   describe('upsertPeopleUsers', () => {
     it('should reject sharing a person with yourself', async () => {
       const auth = AuthFactory.create();

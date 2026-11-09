@@ -1,10 +1,13 @@
 import { NotFoundException } from '@nestjs/common';
 import { Kysely } from 'kysely';
 import { DateTime } from 'luxon';
+import { AuthDto } from 'src/dtos/auth.dto.js';
 import { AssetEditAction, MirrorAxis } from 'src/dtos/editing.dto.js';
 import { AssetFaceCreateDto, PersonSearchDto, PersonUserRole } from 'src/dtos/person.dto.js';
-import { AssetFileType, JobName } from 'src/enum.js';
+import { AlbumKind, AssetFileType, JobName } from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
+import { AlbumUserRepository } from 'src/repositories/album-user.repository.js';
+import { AlbumRepository } from 'src/repositories/album.repository.js';
 import { AssetEditRepository } from 'src/repositories/asset-edit.repository.js';
 import { AssetJobRepository } from 'src/repositories/asset-job.repository.js';
 import { AssetRepository } from 'src/repositories/asset.repository.js';
@@ -12,6 +15,7 @@ import { ClusterGroupRepository } from 'src/repositories/cluster-group.repositor
 import { ConfigRepository } from 'src/repositories/config.repository.js';
 import { DatabaseRepository } from 'src/repositories/database.repository.js';
 import { JobRepository } from 'src/repositories/job.repository.js';
+import { LockRepository } from 'src/repositories/lock.repository.js';
 import { LoggingRepository } from 'src/repositories/logging.repository.js';
 import { MachineLearningRepository } from 'src/repositories/machine-learning.repository.js';
 import { PartnerRepository } from 'src/repositories/partner.repository.js';
@@ -21,7 +25,10 @@ import { StorageRepository } from 'src/repositories/storage.repository.js';
 import { SystemMetadataRepository } from 'src/repositories/system-metadata.repository.js';
 import { UserRepository } from 'src/repositories/user.repository.js';
 import { DB } from 'src/schema/index.js';
+import { BaseService } from 'src/services/base.service.js';
+import { ClusterGroupService } from 'src/services/cluster-group.service.js';
 import { PersonService } from 'src/services/person.service.js';
+import { getMyPartnerIds } from 'src/utils/asset.util.js';
 import { newMediumService } from 'test/medium.factory.js';
 import { factory, newUuid } from 'test/small.factory.js';
 import { getKyselyDB } from 'test/utils.js';
@@ -44,9 +51,87 @@ const setup = (db?: Kysely<DB>) => {
       UserRepository,
       ClusterGroupRepository,
       PartnerRepository,
+      LockRepository,
+      AlbumRepository,
+      AlbumUserRepository,
     ],
     mock: [JobRepository, LoggingRepository, StorageRepository, MachineLearningRepository],
   });
+};
+
+type Ctx = ReturnType<typeof setup>['ctx'];
+
+/** A face in `personGroupId` on a new asset of `ownerId`; with `locked`, the asset sits only in an album the owner locked. */
+const newFaceOn = async (
+  ctx: Ctx,
+  { ownerId, personGroupId, locked = false }: { ownerId: string; personGroupId: string; locked?: boolean },
+) => {
+  const { asset } = await ctx.newAsset({ ownerId });
+  const { assetFace: face } = await ctx.newAssetFace({ assetId: asset.id, personGroupId });
+  const { album } = await ctx.newAlbum({ ownerId }, [asset.id]);
+  if (locked) {
+    await ctx.get(LockRepository).lockAlbum(ownerId, album.id);
+  }
+  return { asset, face, album };
+};
+
+/** Write a published (thumbnailPath, thumbnailSourceFaceId) pair directly. */
+const publishPair = (
+  ctx: Ctx,
+  {
+    ownerId,
+    personGroupId,
+    faceId,
+    path,
+  }: { ownerId: string; personGroupId: string; faceId: string | null; path: string },
+) =>
+  ctx.database
+    .updateTable('person')
+    .set({ thumbnailPath: path, thumbnailSourceFaceId: faceId })
+    .where('ownerId', '=', ownerId)
+    .where('personGroupId', '=', personGroupId)
+    .execute();
+
+/** The sharee runs every check as non-elevated, elevated, and elevated with a reveal set naming `revealAlbumIds`. */
+const shareeAuths = (user: { id: string }, revealAlbumIds: string[]): [string, AuthDto][] => [
+  ['non-elevated', factory.auth({ user })],
+  ['elevated', factory.auth({ user, session: { hasElevatedPermission: true } })],
+  [
+    'elevated with reveal',
+    {
+      ...factory.auth({ user, session: { hasElevatedPermission: true } }),
+      revealedLocks: { albumIds: revealAlbumIds, containerIds: [] },
+    },
+  ],
+];
+
+const expectServed = async (sut: PersonService, auth: AuthDto, personGroupId: string, path: string, label = '') => {
+  await expect(sut.getThumbnail(auth, personGroupId), label).resolves.toEqual(expect.objectContaining({ path }));
+};
+
+const expectWithheld = async (sut: PersonService, auth: AuthDto, personGroupId: string, label = '') => {
+  await expect(sut.getThumbnail(auth, personGroupId), label).rejects.toBeInstanceOf(NotFoundException);
+};
+
+const getCacheInvalidatedAt = async (ctx: Ctx, albumId: string) => {
+  const { cacheInvalidatedAt } = await ctx.database
+    .selectFrom('album')
+    .select('cacheInvalidatedAt')
+    .where('id', '=', albumId)
+    .executeTakeFirstOrThrow();
+  return cacheInvalidatedAt;
+};
+
+const resetCacheInvalidatedAt = (ctx: Ctx, albumId: string) =>
+  ctx.database.updateTable('album').set({ cacheInvalidatedAt: null }).where('id', '=', albumId).execute();
+
+/** A shares person group G with B; B's own person row (created by the share trigger) has no thumbnail. */
+const newSharedPerson = async (ctx: Ctx) => {
+  const { user: owner } = await ctx.newUser();
+  const { user: sharee } = await ctx.newUser({ clusterGroupId: owner.clusterGroupId });
+  const { person } = await ctx.newPerson({ ownerId: owner.id, thumbnailPath: '' });
+  await ctx.newPersonUser({ personGroupId: person.personGroupId, sharedById: owner.id, sharedWithId: sharee.id });
+  return { owner, sharee, personGroupId: person.personGroupId };
 };
 
 beforeAll(async () => {
@@ -271,25 +356,50 @@ describe(PersonService.name, () => {
       );
     });
 
-    it('should return own thumbnail path', async () => {
-      const { ctx, sut } = setup();
+    it('should return own thumbnail path when its source face is verifiable', async () => {
+      const { ctx, sut } = setup(await getKyselyDB());
       const { user } = await ctx.newUser();
       const { person } = await ctx.newPerson({ ownerId: user.id });
+      const { face } = await newFaceOn(ctx, { ownerId: user.id, personGroupId: person.personGroupId });
+      await publishPair(ctx, {
+        ownerId: user.id,
+        personGroupId: person.personGroupId,
+        faceId: face.id,
+        path: '/own.jpeg',
+      });
 
       await expect(sut.getThumbnail(factory.auth({ user }), person.personGroupId)).resolves.toEqual(
-        expect.objectContaining({ path: person.thumbnailPath }),
+        expect.objectContaining({ path: '/own.jpeg' }),
       );
     });
 
-    it('should fall back to shared thumbnail path', async () => {
-      const { ctx, sut } = setup();
+    it('should fall back to a shared thumbnail path only when its source passes the check', async () => {
+      const { ctx, sut } = setup(await getKyselyDB());
       const { user } = await ctx.newUser();
       const { user: user2 } = await ctx.newUser();
-      const { person } = await ctx.newPerson({ ownerId: user2.id });
+      const { person } = await ctx.newPerson({ ownerId: user2.id, thumbnailPath: '' });
+      const { face } = await newFaceOn(ctx, { ownerId: user2.id, personGroupId: person.personGroupId });
+      await publishPair(ctx, {
+        ownerId: user2.id,
+        personGroupId: person.personGroupId,
+        faceId: face.id,
+        path: '/shared.jpeg',
+      });
       await ctx.newPersonUser({ personGroupId: person.personGroupId, sharedById: user2.id, sharedWithId: user.id });
 
       await expect(sut.getThumbnail(factory.auth({ user }), person.personGroupId)).resolves.toEqual(
-        expect.objectContaining({ path: person.thumbnailPath }),
+        expect.objectContaining({ path: '/shared.jpeg' }),
+      );
+
+      // an unverifiable shared candidate (no recorded source) is never served
+      await publishPair(ctx, {
+        ownerId: user2.id,
+        personGroupId: person.personGroupId,
+        faceId: null,
+        path: '/shared.jpeg',
+      });
+      await expect(sut.getThumbnail(factory.auth({ user }), person.personGroupId)).rejects.toBeInstanceOf(
+        NotFoundException,
       );
     });
 
@@ -436,7 +546,7 @@ describe(PersonService.name, () => {
       const personRepo = ctx.get(PersonRepository);
       const storageMock = ctx.getMock(StorageRepository);
       const { user } = await ctx.newUser();
-      const { person } = await ctx.newPerson({ ownerId: user.id });
+      const { person } = await ctx.newPerson({ ownerId: user.id, thumbnailPath: `/thumbs/${factory.uuid()}.jpeg` });
       const auth = factory.auth({ user });
       storageMock.unlink.mockResolvedValue();
 
@@ -463,8 +573,14 @@ describe(PersonService.name, () => {
       const storageMock = ctx.getMock(StorageRepository);
       const personRepo = ctx.get(PersonRepository);
       const { user } = await ctx.newUser();
-      const { person: person1 } = await ctx.newPerson({ ownerId: user.id });
-      const { person: person2 } = await ctx.newPerson({ ownerId: user.id });
+      const { person: person1 } = await ctx.newPerson({
+        ownerId: user.id,
+        thumbnailPath: `/thumbs/${factory.uuid()}.jpeg`,
+      });
+      const { person: person2 } = await ctx.newPerson({
+        ownerId: user.id,
+        thumbnailPath: `/thumbs/${factory.uuid()}.jpeg`,
+      });
       const auth = factory.auth({ user });
       storageMock.unlink.mockResolvedValue();
 
@@ -477,6 +593,20 @@ describe(PersonService.name, () => {
       expect(storageMock.unlink).toHaveBeenCalledTimes(2);
       expect(storageMock.unlink).toHaveBeenCalledWith(person1.thumbnailPath);
       expect(storageMock.unlink).toHaveBeenCalledWith(person2.thumbnailPath);
+    });
+
+    it('should not unlink a thumbnail file that another person row still references', async () => {
+      const { sut, ctx } = setup();
+      const storageMock = ctx.getMock(StorageRepository);
+      const { user } = await ctx.newUser();
+      const { user: other } = await ctx.newUser();
+      const path = `/thumbs/${factory.uuid()}.jpeg`;
+      const { person } = await ctx.newPerson({ ownerId: user.id, thumbnailPath: path });
+      await ctx.newPerson({ ownerId: other.id, thumbnailPath: path });
+      storageMock.unlink.mockResolvedValue();
+
+      await sut.deleteAll(factory.auth({ user }), { ids: [person.personGroupId] });
+      expect(storageMock.unlink).not.toHaveBeenCalled();
     });
   });
 
@@ -1530,6 +1660,284 @@ describe(PersonService.name, () => {
       await expect(sut.getUsersForPeople(otherAuth, {})).resolves.toEqual([
         expect.objectContaining({ personId: person.personGroupId, sharedWithId: sharedWith.id }),
       ]);
+    });
+  });
+  describe('shared people and locks', () => {
+    it("sharee without own thumbnail does not get a shared thumbnail sourced from the sharer's locked album", async () => {
+      const { ctx, sut } = setup();
+      const { owner, sharee, personGroupId } = await newSharedPerson(ctx);
+      const hidden = await newFaceOn(ctx, { ownerId: owner.id, personGroupId, locked: true });
+      await publishPair(ctx, { ownerId: owner.id, personGroupId, faceId: hidden.face.id, path: '/owner-h.jpeg' });
+
+      for (const [label, auth] of shareeAuths(sharee, [hidden.album.id])) {
+        await expectWithheld(sut, auth, personGroupId, label);
+      }
+    });
+
+    it('sharee with own visible thumbnail is served their own', async () => {
+      const { ctx, sut } = setup();
+      const { owner, sharee, personGroupId } = await newSharedPerson(ctx);
+      const hidden = await newFaceOn(ctx, { ownerId: owner.id, personGroupId, locked: true });
+      await publishPair(ctx, { ownerId: owner.id, personGroupId, faceId: hidden.face.id, path: '/owner-h.jpeg' });
+      const own = await newFaceOn(ctx, { ownerId: sharee.id, personGroupId });
+      await publishPair(ctx, { ownerId: sharee.id, personGroupId, faceId: own.face.id, path: '/sharee-own.jpeg' });
+
+      for (const [label, auth] of shareeAuths(sharee, [hidden.album.id])) {
+        await expectServed(sut, auth, personGroupId, '/sharee-own.jpeg', label);
+      }
+    });
+
+    it('multiple sharers: falls back to a visible candidate when the first is hidden', async () => {
+      const { ctx, sut } = setup();
+      const { user: sharee } = await ctx.newUser();
+      const { user: ownerA } = await ctx.newUser({ clusterGroupId: sharee.clusterGroupId });
+      const { user: ownerB } = await ctx.newUser({ clusterGroupId: sharee.clusterGroupId });
+      // shared candidates are ordered by owner id; make the first one the hidden one
+      const [first, second] = [ownerA, ownerB].toSorted((a, b) => a.id.localeCompare(b.id));
+      const { person } = await ctx.newPerson({ ownerId: first.id, thumbnailPath: '' });
+      const personGroupId = person.personGroupId;
+      await ctx.newPerson({ ownerId: second.id, personGroupId, thumbnailPath: '' });
+      await ctx.newPersonUser({ personGroupId, sharedById: first.id, sharedWithId: sharee.id });
+      await ctx.newPersonUser({ personGroupId, sharedById: second.id, sharedWithId: sharee.id });
+
+      const hidden = await newFaceOn(ctx, { ownerId: first.id, personGroupId, locked: true });
+      const visible = await newFaceOn(ctx, { ownerId: second.id, personGroupId });
+      await publishPair(ctx, { ownerId: first.id, personGroupId, faceId: hidden.face.id, path: '/first.jpeg' });
+      await publishPair(ctx, { ownerId: second.id, personGroupId, faceId: visible.face.id, path: '/second.jpeg' });
+
+      for (const [label, auth] of shareeAuths(sharee, [hidden.album.id])) {
+        await expectServed(sut, auth, personGroupId, '/second.jpeg', label);
+      }
+    });
+
+    it("face sourced from a third cluster member honours that member's locks", async () => {
+      const { ctx, sut } = setup();
+      const { owner, sharee, personGroupId } = await newSharedPerson(ctx);
+      const { user: member } = await ctx.newUser({ clusterGroupId: owner.clusterGroupId });
+      const memberFace = await newFaceOn(ctx, { ownerId: member.id, personGroupId, locked: true });
+      await publishPair(ctx, { ownerId: owner.id, personGroupId, faceId: memberFace.face.id, path: '/member.jpeg' });
+
+      for (const [label, auth] of [
+        ...shareeAuths(sharee, [memberFace.album.id]),
+        ...shareeAuths(owner, [memberFace.album.id]),
+      ]) {
+        await expectWithheld(sut, auth, personGroupId, label);
+      }
+
+      await ctx.get(LockRepository).unlockAlbum(member.id, memberFace.album.id);
+      for (const [label, auth] of [...shareeAuths(sharee, []), ...shareeAuths(owner, [])]) {
+        await expectServed(sut, auth, personGroupId, '/member.jpeg', label);
+      }
+    });
+
+    it('locking after thumbnail generation hides an already-generated shared thumbnail', async () => {
+      const { ctx, sut } = setup();
+      const { owner, sharee, personGroupId } = await newSharedPerson(ctx);
+      const source = await newFaceOn(ctx, { ownerId: owner.id, personGroupId });
+      await publishPair(ctx, { ownerId: owner.id, personGroupId, faceId: source.face.id, path: '/owner.jpeg' });
+
+      for (const [label, auth] of shareeAuths(sharee, [source.album.id])) {
+        await expectServed(sut, auth, personGroupId, '/owner.jpeg', label);
+      }
+
+      await ctx.get(LockRepository).lockAlbum(owner.id, source.album.id);
+      for (const [label, auth] of shareeAuths(sharee, [source.album.id])) {
+        await expectWithheld(sut, auth, personGroupId, label);
+      }
+    });
+
+    it('source face deleted → unverifiable → 404 for the person-row owner too', async () => {
+      const { ctx, sut } = setup();
+      const { owner, sharee, personGroupId } = await newSharedPerson(ctx);
+      const source = await newFaceOn(ctx, { ownerId: owner.id, personGroupId });
+      await publishPair(ctx, { ownerId: owner.id, personGroupId, faceId: source.face.id, path: '/owner.jpeg' });
+      await expectServed(sut, factory.auth({ user: owner }), personGroupId, '/owner.jpeg');
+
+      await ctx.get(PersonRepository).deleteAssetFace(source.face.id);
+
+      const row = await ctx.database
+        .selectFrom('person')
+        .select(['thumbnailPath', 'thumbnailSourceFaceId'])
+        .where('ownerId', '=', owner.id)
+        .where('personGroupId', '=', personGroupId)
+        .executeTakeFirstOrThrow();
+      expect(row).toEqual({ thumbnailPath: '/owner.jpeg', thumbnailSourceFaceId: null });
+
+      for (const [label, auth] of [...shareeAuths(sharee, []), ...shareeAuths(owner, [])]) {
+        await expectWithheld(sut, auth, personGroupId, label);
+      }
+    });
+
+    it("sharer's reveal never reveals to the sharee", async () => {
+      const { ctx, sut } = setup();
+      const { owner, sharee, personGroupId } = await newSharedPerson(ctx);
+      const hidden = await newFaceOn(ctx, { ownerId: owner.id, personGroupId, locked: true });
+      await publishPair(ctx, { ownerId: owner.id, personGroupId, faceId: hidden.face.id, path: '/owner-h.jpeg' });
+
+      const ownerRevealing = {
+        ...factory.auth({ user: owner, session: { hasElevatedPermission: true } }),
+        revealedLocks: { albumIds: [hidden.album.id], containerIds: [] },
+      };
+      // the sharer's own reveal applies to the sharer, in an elevated session only
+      await expectServed(sut, ownerRevealing, personGroupId, '/owner-h.jpeg', 'owner revealing');
+      await expectWithheld(sut, factory.auth({ user: owner }), personGroupId, 'owner non-elevated');
+      await expectWithheld(
+        sut,
+        { ...factory.auth({ user: owner }), revealedLocks: { albumIds: [hidden.album.id], containerIds: [] } },
+        personGroupId,
+        'owner reveal without elevation',
+      );
+
+      for (const [label, auth] of shareeAuths(sharee, [hidden.album.id])) {
+        await expectWithheld(sut, auth, personGroupId, label);
+      }
+    });
+
+    it("sharee's own locks never hide the sharer's view", async () => {
+      const { ctx, sut } = setup();
+      const { owner, sharee, personGroupId } = await newSharedPerson(ctx);
+      const source = await newFaceOn(ctx, { ownerId: owner.id, personGroupId });
+      await publishPair(ctx, { ownerId: owner.id, personGroupId, faceId: source.face.id, path: '/owner.jpeg' });
+      // the sharer's album is shared with the sharee, who locks it for themselves
+      await ctx.newAlbumUser({ albumId: source.album.id, userId: sharee.id });
+      await ctx.get(LockRepository).lockAlbum(sharee.id, source.album.id);
+
+      for (const [label, auth] of shareeAuths(owner, [])) {
+        await expectServed(sut, auth, personGroupId, '/owner.jpeg', label);
+      }
+      await expect(sut.getStatistics(factory.auth({ user: owner }), personGroupId)).resolves.toEqual({ assets: 1 });
+    });
+
+    it("person sharing does not grant browsing the sharer's library", async () => {
+      const { ctx, sut } = setup(await getKyselyDB());
+      const { owner, sharee, personGroupId } = await newSharedPerson(ctx);
+      const { user: partner } = await ctx.newUser({ clusterGroupId: owner.clusterGroupId });
+      const { user: stranger } = await ctx.newUser({ clusterGroupId: owner.clusterGroupId });
+      await ctx.newPartner({ sharedById: partner.id, sharedWithId: sharee.id });
+
+      // out of scope for the sharee: the sharer's private assets and a stranger's asset
+      await newFaceOn(ctx, { ownerId: owner.id, personGroupId });
+      await newFaceOn(ctx, { ownerId: owner.id, personGroupId });
+      await newFaceOn(ctx, { ownerId: stranger.id, personGroupId });
+      // in scope: own, partner, and an asset in an album the sharer shared with the sharee
+      const own = await newFaceOn(ctx, { ownerId: sharee.id, personGroupId });
+      const partnerFace = await newFaceOn(ctx, { ownerId: partner.id, personGroupId });
+      const sharedAlbumFace = await newFaceOn(ctx, { ownerId: owner.id, personGroupId });
+      await ctx.newAlbumUser({ albumId: sharedAlbumFace.album.id, userId: sharee.id });
+
+      const faceCount = async (auth: AuthDto) => {
+        const { people } = await sut.getAll(auth, { page: 1, size: 10, withHidden: true });
+        expect(people.map(({ id }) => id)).toEqual([personGroupId]);
+        const partnerIds = await getMyPartnerIds({ userId: auth.user.id, repository: ctx.get(PartnerRepository) });
+        const lockVisibility = await ctx.get(LockRepository).getAllOwnersLockVisibility({
+          viewerId: auth.user.id,
+          revealed: auth.revealedLocks ?? { albumIds: [], containerIds: [] },
+          isElevated: !!auth.session?.hasElevatedPermission,
+        });
+        const { items } = await ctx
+          .get(PersonRepository)
+          .getAllForUser({ take: 10, skip: 0 }, auth.user.id, { withHidden: true, partnerIds }, lockVisibility);
+        return items[0]?.faceCount;
+      };
+
+      for (const [label, auth] of shareeAuths(sharee, [])) {
+        await expect(sut.getStatistics(auth, personGroupId), label).resolves.toEqual({ assets: 3 });
+        await expect(faceCount(auth), label).resolves.toBe(3);
+      }
+
+      // within that scope each source owner's locks apply: the sharer's, the partner's, and the sharee's own
+      await ctx.get(LockRepository).lockAlbum(owner.id, sharedAlbumFace.album.id);
+      await ctx.get(LockRepository).lockAlbum(partner.id, partnerFace.album.id);
+      await ctx.get(LockRepository).lockAlbum(sharee.id, own.album.id);
+      const revealAll = [sharedAlbumFace.album.id, partnerFace.album.id, own.album.id];
+      const [[, plain], [, elevated], [, revealing]] = shareeAuths(sharee, revealAll);
+      await expect(sut.getStatistics(plain, personGroupId)).resolves.toEqual({ assets: 0 });
+      await expect(sut.getStatistics(elevated, personGroupId)).resolves.toEqual({ assets: 0 });
+      // the sharee's reveal un-hides only the sharee's own lock
+      await expect(sut.getStatistics(revealing, personGroupId)).resolves.toEqual({ assets: 1 });
+    });
+
+    it("the sharee's own locked share does not surface through the shared-album arm", async () => {
+      const { ctx, sut } = setup(await getKyselyDB());
+      const { owner, sharee, personGroupId } = await newSharedPerson(ctx);
+      const sharedAlbumFace = await newFaceOn(ctx, { ownerId: owner.id, personGroupId });
+      await ctx.newAlbumUser({ albumId: sharedAlbumFace.album.id, userId: sharee.id });
+
+      await expect(sut.getStatistics(factory.auth({ user: sharee }), personGroupId)).resolves.toEqual({ assets: 1 });
+      await ctx.get(LockRepository).lockAlbum(sharee.id, sharedAlbumFace.album.id);
+      const [[, plain], [, elevated], [, revealing]] = shareeAuths(sharee, [sharedAlbumFace.album.id]);
+      await expect(sut.getStatistics(plain, personGroupId)).resolves.toEqual({ assets: 0 });
+      await expect(sut.getStatistics(elevated, personGroupId)).resolves.toEqual({ assets: 0 });
+      await expect(sut.getStatistics(revealing, personGroupId)).resolves.toEqual({ assets: 1 });
+    });
+
+    it('createNewFeaturePhoto never picks a hidden face', async () => {
+      const { ctx, sut } = setup();
+      const { user: owner } = await ctx.newUser();
+      const { user: member } = await ctx.newUser({ clusterGroupId: owner.clusterGroupId });
+      const { person } = await ctx.newPerson({ ownerId: owner.id, thumbnailPath: '' });
+      const personGroupId = person.personGroupId;
+      await newFaceOn(ctx, { ownerId: owner.id, personGroupId, locked: true });
+      await newFaceOn(ctx, { ownerId: member.id, personGroupId, locked: true });
+      await newFaceOn(ctx, { ownerId: owner.id, personGroupId, locked: true });
+      ctx.getMock(JobRepository).queueAll.mockResolvedValue();
+
+      await sut.createNewFeaturePhoto([{ ownerId: owner.id, personGroupId }]);
+      const before = await ctx.get(PersonRepository).getByGroupId({ ownerId: owner.id, personGroupId });
+      expect(before?.faceAssetId).toBeNull();
+
+      const visible = await newFaceOn(ctx, { ownerId: member.id, personGroupId });
+      await newFaceOn(ctx, { ownerId: member.id, personGroupId, locked: true });
+      await sut.createNewFeaturePhoto([{ ownerId: owner.id, personGroupId }]);
+      const after = await ctx.get(PersonRepository).getByGroupId({ ownerId: owner.id, personGroupId });
+      expect(after?.faceAssetId).toBe(visible.face.id);
+      expect(ctx.getMock(JobRepository).queueAll).toHaveBeenLastCalledWith([
+        { name: JobName.PersonGenerateThumbnail, data: { ownerId: owner.id, personGroupId } },
+      ]);
+    });
+
+    it('smart albums filtering a personGroupId are invalidated on reassign, merge, delete and cluster reassignment', async () => {
+      const { ctx, sut } = setup();
+      const { user } = await ctx.newUser();
+      const { user: other } = await ctx.newUser({ clusterGroupId: user.clusterGroupId });
+      const auth = factory.auth({ user });
+      ctx.getMock(JobRepository).queueAll.mockResolvedValue();
+      ctx.getMock(JobRepository).queue.mockResolvedValue();
+      ctx.getMock(StorageRepository).unlink.mockResolvedValue();
+
+      const { person: target } = await ctx.newPerson({ ownerId: user.id });
+      const { person: source } = await ctx.newPerson({ ownerId: user.id });
+      const { person: toDelete } = await ctx.newPerson({ ownerId: user.id });
+      const { person: shared } = await ctx.newPerson({ ownerId: user.id });
+      await ctx.newPerson({ ownerId: other.id, personGroupId: shared.personGroupId });
+      const { album } = await ctx.newAlbum({
+        ownerId: user.id,
+        kind: AlbumKind.Smart,
+        filter: {
+          personIds: [target.personGroupId, source.personGroupId, toDelete.personGroupId, shared.personGroupId],
+        } as any,
+      });
+      const { face } = await newFaceOn(ctx, { ownerId: user.id, personGroupId: source.personGroupId });
+
+      // reassign
+      await resetCacheInvalidatedAt(ctx, album.id);
+      await sut.reassignFacesById(auth, target.personGroupId, { id: face.id });
+      expect(await getCacheInvalidatedAt(ctx, album.id), 'reassign').not.toBeNull();
+
+      // merge
+      await resetCacheInvalidatedAt(ctx, album.id);
+      await sut.mergePeople(auth, { ids: [target.personGroupId, source.personGroupId] });
+      expect(await getCacheInvalidatedAt(ctx, album.id), 'merge').not.toBeNull();
+
+      // delete
+      await resetCacheInvalidatedAt(ctx, album.id);
+      await sut.deleteAll(auth, { ids: [toDelete.personGroupId] });
+      expect(await getCacheInvalidatedAt(ctx, album.id), 'delete').not.toBeNull();
+
+      // cluster reassignment (leaving remaps the leaver's shared person groups to new ids)
+      await resetCacheInvalidatedAt(ctx, album.id);
+      await BaseService.create(ClusterGroupService, sut).leave(auth, user.clusterGroupId);
+      expect(await getCacheInvalidatedAt(ctx, album.id), 'cluster reassignment').not.toBeNull();
     });
   });
 });

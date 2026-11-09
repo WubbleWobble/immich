@@ -49,6 +49,7 @@ import { MapRepository } from 'src/repositories/map.repository.js';
 import { MediaRepository } from 'src/repositories/media.repository.js';
 import { MemoryRepository } from 'src/repositories/memory.repository.js';
 import { MetadataRepository } from 'src/repositories/metadata.repository.js';
+import { MoveRepository } from 'src/repositories/move.repository.js';
 import { NotificationRepository } from 'src/repositories/notification.repository.js';
 import { OcrRepository } from 'src/repositories/ocr.repository.js';
 import { PartnerRepository } from 'src/repositories/partner.repository.js';
@@ -497,6 +498,7 @@ const newRealRepository = <T extends BaseServiceDeps[number]>(key: T, db: Kysely
     case IntegrityRepository:
     case MemoryRepository:
     case LibraryRepository:
+    case MoveRepository:
     case NotificationRepository:
     case OcrRepository:
     case PartnerRepository:
@@ -628,6 +630,10 @@ const newMockRepository = <T>(key: ClassConstructor<T>) => {
 
     case MachineLearningRepository: {
       return automock(MachineLearningRepository, { args: [{ setContext: () => {} }] });
+    }
+
+    case MediaRepository: {
+      return automock(MediaRepository, { args: [{ setContext: () => {} }] });
     }
 
     case StorageRepository: {
