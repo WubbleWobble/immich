@@ -131,7 +131,10 @@ State these plainly to users.
   moment; other tabs pick the change up on navigation. Events about visible
   stills withhold a hidden motion part's id the same way. Trash, restore and
   delete events are split: ids of hidden assets go to elevated sessions only
-  (a deletion is judged before the asset is removed). A stack event goes to
+  (a deletion is judged before the asset is removed; a Live Photo's motion
+  part follows its still's verdict, and a motion part no still references
+  any more is withheld from ordinary tabs whenever you hold any lock, R61).
+  A stack event goes to
   elevated sessions only when an ordinary session would not show that stack
   (a hidden member and fewer than two visible members). Album updates and
   in-app notifications about an album you locked (or an asset hidden from

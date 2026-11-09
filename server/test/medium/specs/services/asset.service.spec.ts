@@ -243,6 +243,29 @@ const failure = async (action: (id: string) => Promise<unknown>, id: string) => 
   return 'resolved';
 };
 
+/** Fork (R61, round 5): a Live Photo whose owner locked an unrelated album; the motion part has no container of its own. */
+const newStrandedLivePhoto = async (ctx: ReturnType<typeof setup>['ctx'], { lock = true } = {}) => {
+  const { user } = await ctx.newUser();
+  const { asset: motion } = await ctx.newAsset({
+    ownerId: user.id,
+    type: AssetType.Video,
+    visibility: AssetVisibility.Hidden,
+  });
+  const { asset: still } = await ctx.newAsset({ ownerId: user.id, livePhotoVideoId: motion.id });
+  if (lock) {
+    const { album } = await ctx.newAlbum({ ownerId: user.id });
+    await ctx.get(LockRepository).lockAlbum(user.id, album.id);
+  }
+  const elevatedRoom = await withSessions(ctx, user.id);
+  return { user, still, motion, elevatedRoom };
+};
+/** The `AssetDelete` payloads the service emitted. */
+const deleteEvents = (ctx: ReturnType<typeof setup>['ctx']) =>
+  ctx
+    .getMock(EventRepository)
+    .emit.mock.calls.filter(([name]) => name === 'AssetDelete')
+    .map(([, payload]) => payload as ArgOf<'AssetDelete'>);
+
 beforeAll(async () => {
   defaultDatabase = await getKyselyDB();
 });
@@ -1776,6 +1799,68 @@ describe(AssetService.name, () => {
           await notify.onAssetDelete(payload);
         }
         expect(sent(notifyCtx).map(({ room }) => room)).toEqual([elevatedRoom, elevatedRoom]);
+      });
+
+      // Fork (R61, round 5): a motion part no still references any more, deleted by an UNFLAGGED job (library deletion,
+      // metadata replacement of an old motion part), is withheld from ordinary sessions whenever its owner holds a lock.
+      describe('a stranded motion part deleted without the still verdict (R61)', () => {
+        it("library deletion: the still's job ran first, the unflagged motion job reaches elevated sessions only", async () => {
+          const { sut, ctx } = setup();
+          ctx.getMock(EventRepository).emit.mockResolvedValue();
+          ctx.getMock(JobRepository).queue.mockResolvedValue();
+          const { sut: notify, ctx: notifyCtx } = notifier();
+          notifyCtx.getMock(WebsocketRepository).clientSend.mockReturnValue();
+          const { user, still, motion, elevatedRoom } = await newStrandedLivePhoto(ctx);
+
+          // library deletion queues one unflagged job per asset, motion parts included; the still's runs first
+          await sut.handleAssetDeletion({ id: still.id, deleteOnDisk: false });
+          await sut.handleAssetDeletion({ id: motion.id, deleteOnDisk: false });
+
+          const [, motionEvent] = deleteEvents(ctx);
+          expect(motionEvent).toEqual({ assetId: motion.id, userId: user.id, hiddenFromOrdinary: true });
+          await notify.onAssetDelete(motionEvent);
+          expect(sent(notifyCtx)).toEqual([{ event: 'on_asset_delete', room: elevatedRoom, ids: motion.id }]);
+        });
+
+        it('metadata replacement: the unlinked old motion part reaches elevated sessions only', async () => {
+          const { sut, ctx } = setup();
+          ctx.getMock(EventRepository).emit.mockResolvedValue();
+          ctx.getMock(JobRepository).queue.mockResolvedValue();
+          const { sut: notify, ctx: notifyCtx } = notifier();
+          notifyCtx.getMock(WebsocketRepository).clientSend.mockReturnValue();
+          const { user, still, motion: oldMotion, elevatedRoom } = await newStrandedLivePhoto(ctx);
+          // metadata extraction relinks the still to a freshly extracted motion part and queues the old one's delete
+          const { asset: newMotion } = await ctx.newAsset({
+            ownerId: user.id,
+            type: AssetType.Video,
+            visibility: AssetVisibility.Hidden,
+          });
+          await ctx.get(AssetRepository).update({ id: still.id, livePhotoVideoId: newMotion.id });
+
+          await sut.handleAssetDeletion({ id: oldMotion.id, deleteOnDisk: true });
+
+          const [event] = deleteEvents(ctx);
+          expect(event).toEqual({ assetId: oldMotion.id, userId: user.id, hiddenFromOrdinary: true });
+          await notify.onAssetDelete(event);
+          expect(sent(notifyCtx)).toEqual([{ event: 'on_asset_delete', room: elevatedRoom, ids: oldMotion.id }]);
+        });
+
+        it('an owner without locks is unchanged: the stranded motion part goes to the user room', async () => {
+          const { sut, ctx } = setup();
+          ctx.getMock(EventRepository).emit.mockResolvedValue();
+          ctx.getMock(JobRepository).queue.mockResolvedValue();
+          const { sut: notify, ctx: notifyCtx } = notifier();
+          notifyCtx.getMock(WebsocketRepository).clientSend.mockReturnValue();
+          const { user, still, motion } = await newStrandedLivePhoto(ctx, { lock: false });
+
+          await sut.handleAssetDeletion({ id: still.id, deleteOnDisk: false });
+          await sut.handleAssetDeletion({ id: motion.id, deleteOnDisk: false });
+
+          const [, motionEvent] = deleteEvents(ctx);
+          expect(motionEvent).toEqual({ assetId: motion.id, userId: user.id, hiddenFromOrdinary: false });
+          await notify.onAssetDelete(motionEvent);
+          expect(sent(notifyCtx)).toEqual([{ event: 'on_asset_delete', room: user.id, ids: motion.id }]);
+        });
       });
 
       it("a hidden asset's deletion is judged before removal and reaches only elevated sessions", async () => {

@@ -432,7 +432,14 @@ export class AssetService extends BaseService {
       asset.ownerId,
       motionId ? [id, motionId] : [id],
     );
-    const hiddenFromOrdinary = !!job.hiddenFromOrdinary || hiddenForOwner.has(id);
+    // Fork (R61): a motion part no still references any more (library deletion or metadata replacement queue its
+    // delete unflagged, after the still was removed or unlinked) has no container to judge and would read as visible.
+    // With any lock on its owner it is withheld from ordinary sessions, which never present a standalone motion part.
+    const strandedMotionPart =
+      asset.visibility === AssetVisibility.Hidden &&
+      (await this.lockRepository.anyHasLocks([asset.ownerId])) &&
+      (await this.assetRepository.getLivePhotoCount(id)) === 0;
+    const hiddenFromOrdinary = !!job.hiddenFromOrdinary || hiddenForOwner.has(id) || strandedMotionPart;
 
     await this.assetRepository.remove(asset);
     if (!asset.libraryId) {
