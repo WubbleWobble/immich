@@ -62,6 +62,12 @@ class ActivityAccess {
       .then((activities) => new Set(activities.map((activity) => activity.id)));
   }
 
+  /**
+   * Fork (review T5): effective album access - a direct album_user row OR an ancestor-folder share
+   * (album_container_user through the closure, the same cascade rule as AlbumAccess.checkSharedAlbumAccess) - so a
+   * folder-only recipient can react like a direct member. The album must have activity enabled and not be deleted;
+   * the viewer's own lock guard stays in ActivityService.
+   */
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID_SET] })
   @ChunkedSet({ paramIndex: 1 })
   async checkCreateAccess(userId: string, albumIds: Set<string>) {
@@ -72,12 +78,29 @@ class ActivityAccess {
     return this.db
       .selectFrom('album')
       .select('album.id')
-      .innerJoin('album_user as albumUsers', 'albumUsers.albumId', 'album.id')
-      .innerJoin('user', (join) => join.onRef('user.id', '=', 'albumUsers.userId').on('user.deletedAt', 'is', null))
+      .innerJoin('user', (join) => join.on('user.id', '=', userId).on('user.deletedAt', 'is', null))
       .where('album.id', 'in', [...albumIds])
       .where('album.isActivityEnabled', '=', true)
-      .where((eb) => eb('user.id', '=', userId))
       .where('album.deletedAt', 'is', null)
+      .where((eb) =>
+        eb.or([
+          eb.exists(
+            eb
+              .selectFrom('album_user')
+              .select('album_user.albumId')
+              .whereRef('album_user.albumId', '=', 'album.id')
+              .where('album_user.userId', '=', userId),
+          ),
+          eb.exists(
+            eb
+              .selectFrom('album_container_closure as c')
+              .innerJoin('album_container_user as acu', 'acu.albumContainerId', 'c.id_ancestor')
+              .select('c.id_descendant')
+              .whereRef('c.id_descendant', '=', 'album.containerId')
+              .where('acu.userId', '=', userId),
+          ),
+        ]),
+      )
       .execute()
       .then((albums) => new Set(albums.map((album) => album.id)));
   }

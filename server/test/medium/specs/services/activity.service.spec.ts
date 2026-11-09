@@ -1,7 +1,9 @@
 import { Kysely } from 'kysely';
 import { ReactionType } from 'src/dtos/activity.dto.js';
+import { AlbumUserRole } from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { ActivityRepository } from 'src/repositories/activity.repository.js';
+import { AlbumContainerRepository } from 'src/repositories/album-container.repository.js';
 import { AlbumUserRepository } from 'src/repositories/album-user.repository.js';
 import { AlbumRepository } from 'src/repositories/album.repository.js';
 import { AssetRepository } from 'src/repositories/asset.repository.js';
@@ -396,6 +398,79 @@ describe(ActivityService.name, () => {
       await expect(sut.delete(elevated, ownLike.id)).resolves.toBeUndefined();
       await expect(sut.delete(elevated, shareeComment.id)).resolves.toBeUndefined();
       await expect(activityIds()).resolves.toEqual(new Set());
+    });
+  });
+
+  /**
+   * Fork (review T5): activity creation follows effective album access - a direct album_user row OR an ancestor-folder
+   * share (album_container_user through the closure), the rule checkAlbumAccess applies - while isActivityEnabled,
+   * the deleted-album check and the viewer's own lock guard are preserved.
+   */
+  describe('folder grants (T5)', () => {
+    const newFolderSharedAlbum = async (
+      ctx: ReturnType<typeof setup>['ctx'],
+      role: AlbumUserRole,
+      { isActivityEnabled = true } = {},
+    ) => {
+      const { user: owner } = await ctx.newUser();
+      const { user: sharee } = await ctx.newUser();
+      const folders = ctx.get(AlbumContainerRepository);
+      const parent = await folders.create({ ownerId: owner.id, name: 'Shared', parentId: null });
+      const child = await folders.create({ ownerId: owner.id, name: 'Inner', parentId: parent.id });
+      // the album sits two levels below the shared folder; the sharee has no album_user row at all
+      const { album } = await ctx.newAlbum({ ownerId: owner.id, containerId: child.id, isActivityEnabled });
+      await folders.addUser(parent.id, sharee.id, role);
+      return { owner, sharee, album };
+    };
+
+    it.each([AlbumUserRole.Viewer, AlbumUserRole.Editor])(
+      'a folder-only %s can like and comment when activity is enabled',
+      async (role) => {
+        const { sut, ctx } = setup();
+        const { sharee, album } = await newFolderSharedAlbum(ctx, role);
+        const auth = factory.auth({ user: sharee });
+
+        await expect(sut.create(auth, { albumId: album.id, type: ReactionType.LIKE })).resolves.toEqual(
+          expect.objectContaining({ duplicate: false }),
+        );
+        await expect(
+          sut.create(auth, { albumId: album.id, type: ReactionType.COMMENT, comment: 'from the folder' }),
+        ).resolves.toEqual(expect.objectContaining({ duplicate: false }));
+        await expect(sut.getAll(auth, { albumId: album.id })).resolves.toHaveLength(2);
+      },
+    );
+
+    it('a folder-only Viewer cannot react when activity is disabled', async () => {
+      const { sut, ctx } = setup();
+      const { sharee, album } = await newFolderSharedAlbum(ctx, AlbumUserRole.Viewer, { isActivityEnabled: false });
+
+      await expect(
+        sut.create(factory.auth({ user: sharee }), { albumId: album.id, type: ReactionType.LIKE }),
+      ).rejects.toThrow('Not found or no activity.create access');
+    });
+
+    it('a user without effective access cannot react', async () => {
+      const { sut, ctx } = setup();
+      const { album } = await newFolderSharedAlbum(ctx, AlbumUserRole.Viewer);
+      const { user: stranger } = await ctx.newUser();
+
+      await expect(
+        sut.create(factory.auth({ user: stranger }), { albumId: album.id, type: ReactionType.LIKE }),
+      ).rejects.toThrow('Not found or no activity.create access');
+    });
+
+    it("the sharee's own lock on the album still blocks outside elevation", async () => {
+      const { sut, ctx } = setup();
+      const { sharee, album } = await newFolderSharedAlbum(ctx, AlbumUserRole.Editor);
+      await ctx.get(LockRepository).lockAlbum(sharee.id, album.id);
+
+      await expect(
+        sut.create(factory.auth({ user: sharee }), { albumId: album.id, type: ReactionType.LIKE }),
+      ).rejects.toThrow('Not found or no album.read access');
+      const elevated = factory.auth({ user: sharee, session: { hasElevatedPermission: true } });
+      await expect(sut.create(elevated, { albumId: album.id, type: ReactionType.LIKE })).resolves.toEqual(
+        expect.objectContaining({ duplicate: false }),
+      );
     });
   });
 });

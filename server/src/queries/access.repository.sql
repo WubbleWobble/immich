@@ -27,14 +27,33 @@ select
   "album"."id"
 from
   "album"
-  inner join "album_user" as "albumUsers" on "albumUsers"."albumId" = "album"."id"
-  inner join "user" on "user"."id" = "albumUsers"."userId"
+  inner join "user" on "user"."id" = $1
   and "user"."deletedAt" is null
 where
-  "album"."id" in ($1)
-  and "album"."isActivityEnabled" = $2
-  and "user"."id" = $3
+  "album"."id" in ($2)
+  and "album"."isActivityEnabled" = $3
   and "album"."deletedAt" is null
+  and (
+    exists (
+      select
+        "album_user"."albumId"
+      from
+        "album_user"
+      where
+        "album_user"."albumId" = "album"."id"
+        and "album_user"."userId" = $4
+    )
+    or exists (
+      select
+        "c"."id_descendant"
+      from
+        "album_container_closure" as "c"
+        inner join "album_container_user" as "acu" on "acu"."albumContainerId" = "c"."id_ancestor"
+      where
+        "c"."id_descendant" = "album"."containerId"
+        and "acu"."userId" = $5
+    )
+  )
 
 -- AccessRepository.album.checkOwnerAccess
 select
