@@ -142,6 +142,22 @@ export class SharedLinkRepository {
       .execute();
   }
 
+  /**
+   * Every asset row of the given individual links, trashed or not (a trashed asset is restorable, so it still counts
+   * when judging whether a link exposes hidden content).
+   */
+  @ChunkedArray()
+  async getAssetIds(sharedLinkIds: string[]): Promise<{ sharedLinkId: string; assetId: string }[]> {
+    if (sharedLinkIds.length === 0) {
+      return [];
+    }
+    return this.db
+      .selectFrom('shared_link_asset')
+      .select(['shared_link_asset.sharedLinkId', 'shared_link_asset.assetId'])
+      .where('shared_link_asset.sharedLinkId', 'in', sharedLinkIds)
+      .execute();
+  }
+
   @GenerateSql({ params: [DummyValue.BUFFER] })
   getByKey(key: Buffer) {
     return this.authBuilder().where('shared_link.key', '=', key).executeTakeFirst();

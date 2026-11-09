@@ -398,6 +398,9 @@ export const getMocks = () => {
   mocks.lock.getHiddenAlbumIds.mockResolvedValue([]);
   mocks.lock.getHiddenContainerIds.mockResolvedValue([]);
   mocks.lock.getLocks.mockResolvedValue({ lockedAlbumIds: [], lockedContainerIds: [] });
+  mocks.lock.getAssetOwners.mockResolvedValue([]);
+  mocks.lock.getVisibleAssetIds.mockResolvedValue(new Set());
+  mocks.sharedLink.getAssetIds.mockResolvedValue([]);
 
   // every new user gets a cluster group, which is incidental to most tests
   mocks.clusterGroup.create.mockResolvedValue(ClusterGroupFactory.create());

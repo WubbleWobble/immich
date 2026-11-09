@@ -2,11 +2,22 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { BulkIdErrorReason } from 'src/dtos/asset-ids.response.dto.js';
 import { AuthDto } from 'src/dtos/auth.dto.js';
 import { LocksResponseDto, MoveToLockedAlbumDto, MoveToLockedAlbumResponseDto } from 'src/dtos/lock.dto.js';
-import { Permission } from 'src/enum.js';
+import { Permission, SharedLinkType } from 'src/enum.js';
 import { AlbumService } from 'src/services/album.service.js';
 import { BaseService } from 'src/services/base.service.js';
 import { requireElevatedPermission } from 'src/utils/access.js';
-import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
+import { NO_REVEALED_LOCKS, RevealedLocks } from 'src/utils/lock-visibility.js';
+import { setDifference } from 'src/utils/set.js';
+
+/** The parts of a shared link that decide whether it exposes content hidden for its manager. */
+export type SharedLinkLockTarget = { id: string; type: SharedLinkType; albumId: string | null };
+
+/**
+ * How an authenticated surface consults the viewer's OWN locks (other owners' locks always apply, never revealed):
+ * - `direct`: direct-by-id access - an elevated session bypasses the viewer's own locks, with no reveal (spec §15.3);
+ * - `list`: list-like surfaces - the viewer's own locks apply even when elevated, minus the reveal set (elevated only).
+ */
+type LockMode = 'direct' | 'list';
 
 /**
  * Per-user lock toggles for albums and folders. Every operation - including reads - requires
@@ -129,6 +140,169 @@ export class LockService extends BaseService {
       stillVisible: addedIds.filter((id) => stillVisible.has(id)),
       failed,
     };
+  }
+
+  /**
+   * Shared-link management (spec §4, §15.3; audit finding 1): whether an authenticated manager's link exposes content
+   * hidden for them, judged for direct-by-id management (get/update/remove/addAssets/removeAssets).
+   *
+   * - an album link is hidden when its album is effectively hidden by the manager's OWN locks (an album owner's locks
+   *   never bind a sharee);
+   * - an individual link is hidden when ANY of its assets is hidden for the manager: the key - and so the whole
+   *   link - is the secret, so a mixed visible/hidden link counts as hidden.
+   *
+   * Hiddenness is per item, by its source owner: elevation bypasses only the manager's own locks; an asset hidden by
+   * another owner's locks (e.g. a partner's later-locked photo) stays hidden in every session unless the manager
+   * holds another legitimate grant to it (an album shared with them that is not hidden for them).
+   *
+   * Public visitors holding a key (auth.sharedLink) are a separate, deliberate grant and are never judged here.
+   */
+  async isSharedLinkHiddenForViewer(auth: AuthDto, link: SharedLinkLockTarget): Promise<boolean> {
+    const hidden = await this.findHiddenSharedLinks(auth, [link], 'direct');
+    return hidden.has(link.id);
+  }
+
+  /** Batched list-surface counterpart of isSharedLinkHiddenForViewer (getAll): the reveal set applies when elevated. */
+  getHiddenSharedLinkIds(auth: AuthDto, links: SharedLinkLockTarget[]): Promise<Set<string>> {
+    return this.findHiddenSharedLinks(auth, links, 'list');
+  }
+
+  /** Management guard on an existing link; indistinguishable from the album-guard no-access error. */
+  async assertSharedLinkVisibleForViewer(auth: AuthDto, link: SharedLinkLockTarget): Promise<void> {
+    if (await this.isSharedLinkHiddenForViewer(auth, link)) {
+      throw new BadRequestException('Not found or no album.read access');
+    }
+  }
+
+  /**
+   * Minting guard (create an individual link, addAssets): none of `assetIds` may be hidden for the manager under the
+   * direct-by-id rule. Only assets the manager owns or reaches as a partner are judged, so the answer never depends on
+   * a stranger's lock state (those fail the regular asset.share check instead).
+   */
+  async assertAssetsShareableForViewer(auth: AuthDto, assetIds: string[]): Promise<void> {
+    const hidden = await this.getHiddenAssetIds(auth, assetIds, 'direct', true);
+    if (hidden.size > 0) {
+      throw new BadRequestException('Not found or no asset access');
+    }
+  }
+
+  private async findHiddenSharedLinks(
+    auth: AuthDto,
+    links: SharedLinkLockTarget[],
+    mode: LockMode,
+  ): Promise<Set<string>> {
+    const hidden = new Set<string>();
+    if (auth.sharedLink || links.length === 0) {
+      return hidden;
+    }
+
+    const isElevated = !!auth.session?.hasElevatedPermission;
+    const albumLinks = links.filter(
+      (link): link is SharedLinkLockTarget & { albumId: string } =>
+        link.type === SharedLinkType.Album && !!link.albumId,
+    );
+    // Album links: only the manager's own effective album hiding applies, which elevation bypasses for direct-by-id.
+    if (albumLinks.length > 0 && !(isElevated && mode === 'direct')) {
+      const hiddenAlbumIds = new Set(
+        await this.lockRepository.getHiddenAlbumIds(auth.user.id, this.getOwnReveal(auth, mode)),
+      );
+      for (const link of albumLinks) {
+        if (hiddenAlbumIds.has(link.albumId)) {
+          hidden.add(link.id);
+        }
+      }
+    }
+
+    const individualLinkIds = links.filter(({ type }) => type === SharedLinkType.Individual).map(({ id }) => id);
+    if (individualLinkIds.length > 0) {
+      const rows = await this.sharedLinkRepository.getAssetIds(individualLinkIds);
+      const hiddenAssetIds = await this.getHiddenAssetIds(auth, [...new Set(rows.map(({ assetId }) => assetId))], mode);
+      for (const { sharedLinkId, assetId } of rows) {
+        if (hiddenAssetIds.has(assetId)) {
+          hidden.add(sharedLinkId);
+        }
+      }
+    }
+
+    return hidden;
+  }
+
+  /**
+   * The subset of `assetIds` hidden for the viewer, each judged by its OWNER's locks: the viewer's own (bypassed in an
+   * elevated direct-by-id session; minus the reveal set on an elevated list) or another owner's (always, never
+   * revealed). An asset hidden by another owner is rescued by the viewer's own album or smart-album grant to it, the
+   * grant itself subject to the viewer's locks (spec §15.1) in the same mode. With `relatedOnly`, only assets the
+   * viewer owns or reaches as a partner are judged.
+   */
+  private async getHiddenAssetIds(
+    auth: AuthDto,
+    assetIds: string[],
+    mode: LockMode,
+    relatedOnly = false,
+  ): Promise<Set<string>> {
+    if (assetIds.length === 0) {
+      return new Set();
+    }
+
+    const viewerId = auth.user.id;
+    const isElevated = !!auth.session?.hasElevatedPermission;
+    const bypassOwnLocks = isElevated && mode === 'direct';
+    const owners = await this.lockRepository.getAssetOwners(viewerId, assetIds);
+    const candidates = relatedOnly
+      ? owners.filter(({ ownerId, isPartner }) => ownerId === viewerId || isPartner)
+      : owners;
+    const ownerIds = [...new Set(candidates.map(({ ownerId }) => ownerId))].filter(
+      (ownerId) => !(bypassOwnLocks && ownerId === viewerId),
+    );
+    if (ownerIds.length === 0) {
+      return new Set();
+    }
+
+    // Reveal only ever applies to the viewer's own locks, and only on an elevated list (getOwnerLockVisibility
+    // ignores it for every other owner and whenever isElevated is false).
+    const entries = await this.lockRepository.getOwnerLockVisibility({
+      viewerId,
+      ownerIds,
+      revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
+      isElevated: isElevated && mode === 'list',
+    });
+    if (entries.length === 0) {
+      return new Set();
+    }
+
+    const lockingOwners = new Set(entries.map(({ ownerId }) => ownerId));
+    const checked = candidates.filter(({ ownerId }) => lockingOwners.has(ownerId));
+    const visible = await this.lockRepository.getVisibleAssetIds(
+      checked.map(({ id }) => id),
+      entries,
+    );
+    const hidden = new Set(checked.filter(({ id }) => !visible.has(id)).map(({ id }) => id));
+
+    const foreign = new Set(
+      checked.filter(({ id, ownerId }) => hidden.has(id) && ownerId !== viewerId).map(({ id }) => id),
+    );
+    if (foreign.size > 0) {
+      const revealed = this.getOwnReveal(auth, mode);
+      const isAlbum = await this.accessRepository.asset.checkAlbumAccess(viewerId, foreign, bypassOwnLocks, revealed);
+      const isSmartAlbum = await this.accessRepository.asset.checkSmartAlbumAccess(
+        viewerId,
+        setDifference(foreign, isAlbum),
+        bypassOwnLocks,
+        revealed,
+      );
+      for (const id of [...isAlbum, ...isSmartAlbum]) {
+        hidden.delete(id);
+      }
+    }
+
+    return hidden;
+  }
+
+  /** The viewer's reveal set as it applies to their own locks in `mode`: elevated list surfaces only (spec §15.3). */
+  private getOwnReveal(auth: AuthDto, mode: LockMode): RevealedLocks {
+    return auth.session?.hasElevatedPermission && mode === 'list'
+      ? (auth.revealedLocks ?? NO_REVEALED_LOCKS)
+      : NO_REVEALED_LOCKS;
   }
 
   /**

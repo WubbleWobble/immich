@@ -14,7 +14,12 @@ import {
   searchAssetBuilderLegacy,
   withLockVisibility,
 } from 'src/utils/database.js';
-import { NO_REVEALED_LOCKS, getHiddenAlbumIdsQuery, getOwnerLockVisibility } from 'src/utils/lock-visibility.js';
+import {
+  NO_REVEALED_LOCKS,
+  type RevealedLocks,
+  getHiddenAlbumIdsQuery,
+  getOwnerLockVisibility,
+} from 'src/utils/lock-visibility.js';
 
 class ActivityAccess {
   constructor(private db: Kysely<DB>) {}
@@ -185,7 +190,12 @@ class AssetAccess {
 
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID_SET] })
   @ChunkedSet({ paramIndex: 1 })
-  async checkAlbumAccess(userId: string, assetIds: Set<string>, isElevated = false) {
+  async checkAlbumAccess(
+    userId: string,
+    assetIds: Set<string>,
+    isElevated = false,
+    revealed: RevealedLocks = NO_REVEALED_LOCKS,
+  ) {
     if (assetIds.size === 0) {
       return new Set<string>();
     }
@@ -195,7 +205,9 @@ class AssetAccess {
     // shared content too, even though the assets belong to the album owner. Excluding the
     // hidden albums here (rather than post-filtering) lets another, unlocked share - or the
     // partner path, which runs on whatever this check does not grant - still rescue access.
-    const hiddenAlbumIds = isElevated ? [] : await getHiddenAlbumIdsQuery(this.db, userId, NO_REVEALED_LOCKS);
+    // `revealed` is for list-like callers in an elevated session (spec §15.3): they pass
+    // isElevated=false with the viewer's reveal set, so only revealed locks stop withholding.
+    const hiddenAlbumIds = isElevated ? [] : await getHiddenAlbumIdsQuery(this.db, userId, revealed);
 
     // Direct share: the user is in album_user for an album that contains the asset.
     const direct = await this.db
@@ -269,14 +281,19 @@ class AssetAccess {
    * album owner's library) against the candidate asset ids. Motion parts of matched live photos
    * are granted the same way `checkAlbumAccess` grants them.
    */
-  async checkSmartAlbumAccess(userId: string, assetIds: Set<string>, isElevated = false) {
+  async checkSmartAlbumAccess(
+    userId: string,
+    assetIds: Set<string>,
+    isElevated = false,
+    revealed: RevealedLocks = NO_REVEALED_LOCKS,
+  ) {
     if (assetIds.size === 0) {
       return new Set<string>();
     }
 
     // Same rule as checkAlbumAccess: a shared smart album the viewer locked (directly or
     // via a locked folder) must not grant access outside an elevated session.
-    const hiddenAlbumIds = isElevated ? [] : await getHiddenAlbumIdsQuery(this.db, userId, NO_REVEALED_LOCKS);
+    const hiddenAlbumIds = isElevated ? [] : await getHiddenAlbumIdsQuery(this.db, userId, revealed);
 
     // Smart albums reach the viewer either through a direct album_user row or through a
     // folder share on an ancestor container (same cascade rule as checkAlbumAccess) -

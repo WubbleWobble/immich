@@ -1,11 +1,16 @@
 import {
   AlbumResponseDto,
+  AlbumUserRole,
   AssetMediaResponseDto,
   LoginResponseDto,
   SharedLinkResponseDto,
   SharedLinkType,
+  addUsersToAlbum,
   createAlbum,
   deleteUserAdmin,
+  login,
+  setupPinCode,
+  unlockAuthSession,
 } from '@immich/sdk';
 import { createUserDto, uuidDto } from 'src/fixtures.js';
 import { errorDto } from 'src/responses.js';
@@ -431,5 +436,297 @@ describe('/shared-links', () => {
 
       expect(status).toBe(204);
     });
+  });
+});
+
+// Fork (Task 7A.1, audit finding 1): authenticated link management respects the manager's locks, judged per item by
+// its source owner; public visitor access through a key is a separate, deliberate grant and stays unchanged.
+describe('/shared-links and locks', () => {
+  const PIN = '123456';
+  const ALBUM_READ_ERROR = 'Not found or no album.read access';
+  const ASSET_ERROR = 'Not found or no asset access';
+
+  let admin: LoginResponseDto;
+  // B, the manager: `plain` is a non-elevated session, `elevated` a PIN-unlocked one
+  let plain: LoginResponseDto;
+  let elevated: LoginResponseDto;
+  // A, a partner sharing their library with B
+  let partnerA: LoginResponseDto;
+  let visibleAsset: AssetMediaResponseDto;
+  let hiddenA: AssetMediaResponseDto;
+  let hiddenB: AssetMediaResponseDto;
+  let photoX: AssetMediaResponseDto;
+  let photoY: AssetMediaResponseDto;
+  let albums: Record<'visible' | 'regular' | 'smart' | 'inFolder' | 'underAncestor', AlbumResponseDto>;
+  let folderIds: { folder: string; ancestor: string };
+  let partnerAlbumX: AlbumResponseDto;
+  let links: Record<
+    | 'visibleAlbum'
+    | 'visibleIndividual'
+    | 'regular'
+    | 'smart'
+    | 'inFolder'
+    | 'underAncestor'
+    | 'allHidden'
+    | 'mixed'
+    | 'partnerX'
+    | 'partnerY',
+    SharedLinkResponseDto
+  >;
+  let hiddenLinks: SharedLinkResponseDto[];
+
+  const as = (session: LoginResponseDto, headers: Record<string, string> = {}) => ({
+    Authorization: `Bearer ${session.accessToken}`,
+    ...headers,
+  });
+  const elevate = (session: LoginResponseDto) =>
+    unlockAuthSession({ sessionUnlockDto: { pinCode: PIN } }, { headers: asBearerAuth(session.accessToken) });
+  const lock = async (session: LoginResponseDto, path: string) => {
+    const { status } = await request(app).post(`${path}/lock`).set(as(session));
+    expect(status).toBe(204);
+  };
+  // Fork endpoints/fields (folders, smart albums) are not in the generated SDK yet: raw requests keep this type-safe
+  const newFolder = async (session: LoginResponseDto, dto: { name: string; parentId?: string }) => {
+    const { status, body } = await request(app).post('/album-containers').set(as(session)).send(dto);
+    expect(status).toBe(201);
+    return body as { id: string };
+  };
+  const newAlbum = async (session: LoginResponseDto, dto: Record<string, unknown>) => {
+    const { status, body } = await request(app).post('/albums').set(as(session)).send(dto);
+    expect(status).toBe(201);
+    return body as AlbumResponseDto;
+  };
+  const listIds = async (session: LoginResponseDto, headers: Record<string, string> = {}) => {
+    const { status, body } = await request(app).get('/shared-links').set(as(session, headers));
+    expect(status).toBe(200);
+    return { ids: (body as SharedLinkResponseDto[]).map(({ id }) => id), raw: JSON.stringify(body) };
+  };
+
+  beforeAll(async () => {
+    await utils.resetDatabase();
+    admin = await utils.adminSetup();
+    const managerDto = createUserDto.create('lock-link-manager');
+    const partnerDto = createUserDto.create('lock-link-partner');
+    plain = await utils.userSetup(admin.accessToken, managerDto);
+    partnerA = await utils.userSetup(admin.accessToken, partnerDto);
+    elevated = await login({ loginCredentialDto: { email: managerDto.email, password: managerDto.password } });
+    for (const session of [elevated, partnerA]) {
+      await setupPinCode({ pinCodeSetupDto: { pinCode: PIN } }, { headers: asBearerAuth(session.accessToken) });
+      await elevate(session);
+    }
+    await utils.createPartner(partnerA.accessToken, plain.userId);
+
+    [visibleAsset, hiddenA, hiddenB, photoX, photoY] = await Promise.all([
+      utils.createAsset(plain.accessToken),
+      utils.createAsset(plain.accessToken),
+      utils.createAsset(plain.accessToken, { isFavorite: true }),
+      utils.createAsset(partnerA.accessToken),
+      utils.createAsset(partnerA.accessToken),
+    ]);
+
+    const folder = await newFolder(plain, { name: 'Locked folder' });
+    const ancestor = await newFolder(plain, { name: 'Locked ancestor' });
+    const child = await newFolder(plain, { name: 'Child', parentId: ancestor.id });
+    folderIds = { folder: folder.id, ancestor: ancestor.id };
+    albums = {
+      visible: await utils.createAlbum(plain.accessToken, { albumName: 'Visible', assetIds: [visibleAsset.id] }),
+      regular: await utils.createAlbum(plain.accessToken, { albumName: 'Regular', assetIds: [hiddenA.id] }),
+      smart: await newAlbum(plain, { albumName: 'Smart', kind: 'smart', filter: { isFavorite: true } }),
+      inFolder: await newAlbum(plain, { albumName: 'In folder', containerId: folder.id }),
+      underAncestor: await newAlbum(plain, { albumName: 'Under ancestor', containerId: child.id }),
+    };
+    partnerAlbumX = await utils.createAlbum(partnerA.accessToken, { albumName: 'A private', assetIds: [photoX.id] });
+    // Y is also in an album A shares with B: B's legitimate grant to Y survives A's lock on it (spec §4)
+    const partnerAlbumY = await utils.createAlbum(partnerA.accessToken, {
+      albumName: 'A shared',
+      assetIds: [photoY.id],
+    });
+    await addUsersToAlbum(
+      { id: partnerAlbumY.id, addUsersDto: { albumUsers: [{ userId: plain.userId, role: AlbumUserRole.Viewer }] } },
+      { headers: asBearerAuth(partnerA.accessToken) },
+    );
+
+    // every link is minted while its content is still visible
+    const individual = (assetIds: string[]) =>
+      utils.createSharedLink(plain.accessToken, { type: SharedLinkType.Individual, assetIds, allowDownload: false });
+    const album = (albumId: string) =>
+      utils.createSharedLink(plain.accessToken, { type: SharedLinkType.Album, albumId, allowDownload: false });
+    links = {
+      visibleAlbum: await album(albums.visible.id),
+      visibleIndividual: await individual([visibleAsset.id]),
+      regular: await album(albums.regular.id),
+      smart: await album(albums.smart.id),
+      inFolder: await album(albums.inFolder.id),
+      underAncestor: await album(albums.underAncestor.id),
+      allHidden: await individual([hiddenA.id, hiddenB.id]),
+      mixed: await individual([visibleAsset.id, hiddenA.id]),
+      partnerX: await individual([photoX.id]),
+      partnerY: await individual([photoY.id]),
+    };
+    hiddenLinks = [links.regular, links.smart, links.inFolder, links.underAncestor, links.allHidden, links.mixed];
+
+    await lock(elevated, `/albums/${albums.regular.id}`);
+    await lock(elevated, `/albums/${albums.smart.id}`);
+    await lock(elevated, `/album-containers/${folder.id}`);
+    await lock(elevated, `/album-containers/${ancestor.id}`);
+    await lock(partnerA, `/albums/${partnerAlbumX.id}`);
+    await lock(partnerA, `/albums/${partnerAlbumY.id}`);
+  });
+
+  it('non-elevated getAll omits hidden links and never returns their keys', async () => {
+    const { ids, raw } = await listIds(plain);
+    expect(new Set(ids)).toEqual(new Set([links.visibleAlbum.id, links.visibleIndividual.id, links.partnerY.id]));
+    for (const link of [...hiddenLinks, links.partnerX]) {
+      expect(raw).not.toContain(link.key);
+    }
+    const { body } = await request(app).get(`/shared-links?albumId=${albums.regular.id}`).set(as(plain));
+    expect(body).toEqual([]);
+  });
+
+  it('non-elevated cannot get, edit (password/expiry/allowDownload/showExif) or delete a hidden link', async () => {
+    for (const link of hiddenLinks) {
+      const get = await request(app).get(`/shared-links/${link.id}`).set(as(plain));
+      expect(get.status).toBe(400);
+      expect(get.body).toEqual(errorDto.badRequest(ALBUM_READ_ERROR));
+      for (const edit of [
+        { password: 'secret' },
+        { expiresAt: '2099-01-01T00:00:00.000Z' },
+        { allowDownload: true },
+        { showMetadata: false },
+      ]) {
+        const patch = await request(app).patch(`/shared-links/${link.id}`).set(as(plain)).send(edit);
+        expect(patch.status).toBe(400);
+        expect(patch.body).toEqual(errorDto.badRequest(ALBUM_READ_ERROR));
+      }
+      const del = await request(app).delete(`/shared-links/${link.id}`).set(as(plain));
+      expect(del.status).toBe(400);
+      expect(del.body).toEqual(errorDto.badRequest(ALBUM_READ_ERROR));
+    }
+  });
+
+  it('non-elevated cannot mint an album or individual link to hidden content, or addAssets hidden assets', async () => {
+    for (const album of [albums.regular, albums.smart, albums.inFolder, albums.underAncestor]) {
+      const { status, body } = await request(app)
+        .post('/shared-links')
+        .set(as(plain))
+        .send({ type: SharedLinkType.Album, albumId: album.id });
+      expect(status).toBe(400);
+      expect(body).toEqual(errorDto.badRequest(ALBUM_READ_ERROR));
+    }
+    for (const assetIds of [[hiddenA.id, hiddenB.id], [visibleAsset.id, hiddenA.id], [photoX.id]]) {
+      const { status, body } = await request(app)
+        .post('/shared-links')
+        .set(as(plain))
+        .send({ type: SharedLinkType.Individual, assetIds });
+      expect(status).toBe(400);
+      expect(body).toEqual(errorDto.badRequest(ASSET_ERROR));
+    }
+    const { status, body } = await request(app)
+      .put(`/shared-links/${links.visibleIndividual.id}/assets`)
+      .set(as(plain))
+      .send({ assetIds: [hiddenA.id] });
+    expect(status).toBe(400);
+    expect(body).toEqual(errorDto.badRequest(ASSET_ERROR));
+  });
+
+  it("elevated direct-by-id management is allowed when only the manager's own locks hide the content", async () => {
+    for (const link of hiddenLinks) {
+      const get = await request(app).get(`/shared-links/${link.id}`).set(as(elevated));
+      expect(get.status).toBe(200);
+      expect(get.body).toEqual(expect.objectContaining({ id: link.id, key: link.key }));
+      const patch = await request(app)
+        .patch(`/shared-links/${link.id}`)
+        .set(as(elevated))
+        .send({ expiresAt: '2099-01-01T00:00:00.000Z' });
+      expect(patch.status).toBe(200);
+    }
+    const add = await request(app)
+      .put(`/shared-links/${links.mixed.id}/assets`)
+      .set(as(elevated))
+      .send({ assetIds: [hiddenB.id] });
+    expect(add.status).toBe(200);
+    expect(add.body).toEqual([{ assetId: hiddenB.id, success: true }]);
+    const mint = await request(app)
+      .post('/shared-links')
+      .set(as(elevated))
+      .send({ type: SharedLinkType.Album, albumId: albums.regular.id });
+    expect(mint.status).toBe(201);
+    const remove = await request(app).delete(`/shared-links/${mint.body.id}`).set(as(elevated));
+    expect(remove.status).toBe(204);
+  });
+
+  it("elevated manager cannot retrieve or reactivate a link exposing a partner's later-locked photo", async () => {
+    const revealing = { 'x-immich-revealed-albums': partnerAlbumX.id };
+    const { ids, raw } = await listIds(elevated, revealing);
+    expect(ids).not.toContain(links.partnerX.id);
+    expect(raw).not.toContain(links.partnerX.key);
+
+    const get = await request(app).get(`/shared-links/${links.partnerX.id}`).set(as(elevated));
+    expect(get.status).toBe(400);
+    expect(get.body).toEqual(errorDto.badRequest(ALBUM_READ_ERROR));
+    for (const edit of [{ expiresAt: '2099-01-01T00:00:00.000Z' }, { password: 'secret' }, { allowDownload: true }]) {
+      const patch = await request(app).patch(`/shared-links/${links.partnerX.id}`).set(as(elevated)).send(edit);
+      expect(patch.status).toBe(400);
+      expect(patch.body).toEqual(errorDto.badRequest(ALBUM_READ_ERROR));
+    }
+    for (const assetIds of [[visibleAsset.id], [photoX.id]]) {
+      const add = await request(app)
+        .put(`/shared-links/${links.partnerX.id}/assets`)
+        .set(as(elevated))
+        .send({ assetIds });
+      expect(add.status).toBe(400);
+      expect(add.body).toEqual(errorDto.badRequest(ALBUM_READ_ERROR));
+    }
+  });
+
+  it('the same link is manageable when B has another legitimate grant to X', async () => {
+    for (const session of [plain, elevated]) {
+      const { ids } = await listIds(session);
+      expect(ids).toContain(links.partnerY.id);
+      const get = await request(app).get(`/shared-links/${links.partnerY.id}`).set(as(session));
+      expect(get.status).toBe(200);
+      expect(get.body).toEqual(expect.objectContaining({ id: links.partnerY.id, key: links.partnerY.key }));
+      const patch = await request(app)
+        .patch(`/shared-links/${links.partnerY.id}`)
+        .set(as(session))
+        .send({ allowDownload: true });
+      expect(patch.status).toBe(200);
+    }
+  });
+
+  it('elevated getAll lists a hidden link only when revealed', async () => {
+    const unrevealed = await listIds(elevated);
+    for (const link of hiddenLinks) {
+      expect(unrevealed.ids).not.toContain(link.id);
+    }
+
+    const revealAll = {
+      'x-immich-revealed-albums': `${albums.regular.id},${albums.smart.id}`,
+      'x-immich-revealed-containers': `${folderIds.folder},${folderIds.ancestor}`,
+    };
+    const revealed = await listIds(elevated, revealAll);
+    for (const link of hiddenLinks) {
+      expect(revealed.ids).toContain(link.id);
+    }
+    expect(revealed.ids).not.toContain(links.partnerX.id);
+
+    // the same headers on a non-elevated session reveal nothing
+    const ignored = await listIds(plain, revealAll);
+    for (const link of hiddenLinks) {
+      expect(ignored.ids).not.toContain(link.id);
+    }
+  });
+
+  it('public visitor access through an existing key is unchanged', async () => {
+    for (const link of [links.allHidden, links.partnerX]) {
+      const { status, body } = await request(app).get('/shared-links/me').query({ key: link.key });
+      expect(status).toBe(200);
+      expect(body).toEqual(expect.objectContaining({ id: link.id }));
+      expect(body.assets.length).toBeGreaterThan(0);
+    }
+    const { status } = await request(app).get('/shared-links/me').query({ key: links.regular.key });
+    expect(status).toBe(200);
+    const asset = await request(app).get(`/assets/${hiddenA.id}`).query({ key: links.allHidden.key });
+    expect(asset.status).toBe(200);
   });
 });

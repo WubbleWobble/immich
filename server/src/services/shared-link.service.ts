@@ -13,15 +13,19 @@ import {
 } from 'src/dtos/shared-link.dto.js';
 import { Permission, SharedLinkType } from 'src/enum.js';
 import { BaseService } from 'src/services/base.service.js';
+import { LockService } from 'src/services/lock.service.js';
 import { OpenGraphTags, findOrFail, getExternalDomain } from 'src/utils/misc.js';
 
 @Injectable()
 export class SharedLinkService extends BaseService {
   async getAll(auth: AuthDto, { id, albumId }: SharedLinkSearchDto): Promise<SharedLinkResponseDto[]> {
-    return this.sharedLinkRepository
-      .getAll({ userId: auth.user.id, id, albumId })
-
-      .then((links) => links.map((link) => mapSharedLink(link, { stripAssetMetadata: false })));
+    const links = await this.sharedLinkRepository.getAll({ userId: auth.user.id, id, albumId });
+    // Fork (spec §15.3, audit 1): a list surface omits links exposing content hidden for the manager - no key, no
+    // metadata - unless the manager's own lock is revealed in an elevated session.
+    const hidden = await this.lockService().getHiddenSharedLinkIds(auth, links);
+    return links
+      .filter((link) => !hidden.has(link.id))
+      .map((link) => mapSharedLink(link, { stripAssetMetadata: false }));
   }
 
   async login(auth: AuthDto, dto: SharedLinkLoginDto) {
@@ -62,7 +66,7 @@ export class SharedLinkService extends BaseService {
   }
 
   async get(auth: AuthDto, id: string): Promise<SharedLinkResponseDto> {
-    const sharedLink = await this.findOrFail(auth.user.id, id);
+    const sharedLink = await this.findManageableOrFail(auth, id);
     return mapSharedLink(sharedLink, { stripAssetMetadata: false });
   }
 
@@ -73,6 +77,8 @@ export class SharedLinkService extends BaseService {
           throw new BadRequestException('Invalid albumId');
         }
         await this.requireAccess({ auth, permission: Permission.AlbumShare, ids: [dto.albumId] });
+        // Fork (audit 1): a public link to an album hidden for the manager would hand out the hidden content
+        await this.lockService().assertAlbumVisibleForViewer(auth, dto.albumId);
         break;
       }
 
@@ -81,6 +87,8 @@ export class SharedLinkService extends BaseService {
           throw new BadRequestException('Invalid assetIds');
         }
 
+        // Fork (audit 1): judged before the share check so a hidden asset reports the lock-guard error
+        await this.lockService().assertAssetsShareableForViewer(auth, dto.assetIds);
         await this.requireAccess({ auth, permission: Permission.AssetShare, ids: dto.assetIds });
 
         break;
@@ -118,7 +126,7 @@ export class SharedLinkService extends BaseService {
   }
 
   async update(auth: AuthDto, id: string, dto: SharedLinkEditDto) {
-    await this.findOrFail(auth.user.id, id);
+    await this.findManageableOrFail(auth, id);
     try {
       const sharedLink = await this.sharedLinkRepository.update({
         id,
@@ -138,7 +146,7 @@ export class SharedLinkService extends BaseService {
   }
 
   async remove(auth: AuthDto, id: string): Promise<void> {
-    const sharedLink = await this.findOrFail(auth.user.id, id);
+    const sharedLink = await this.findManageableOrFail(auth, id);
     await this.sharedLinkRepository.remove(sharedLink.id);
   }
 
@@ -147,14 +155,30 @@ export class SharedLinkService extends BaseService {
     return findOrFail(() => this.sharedLinkRepository.get(userId, id), 'Shared link');
   }
 
-  async addAssets(auth: AuthDto, id: string, dto: AssetIdsDto): Promise<AssetIdsResponseDto[]> {
+  /**
+   * Fork (audit 1): authenticated management of an existing link. A link exposing content hidden for the manager is
+   * unreachable by id (spec §15.3: elevation bypasses only the manager's own locks, never another owner's).
+   */
+  private async findManageableOrFail(auth: AuthDto, id: string) {
     const sharedLink = await this.findOrFail(auth.user.id, id);
+    await this.lockService().assertSharedLinkVisibleForViewer(auth, sharedLink);
+    return sharedLink;
+  }
+
+  private lockService() {
+    return BaseService.create(LockService, this);
+  }
+
+  async addAssets(auth: AuthDto, id: string, dto: AssetIdsDto): Promise<AssetIdsResponseDto[]> {
+    const sharedLink = await this.findManageableOrFail(auth, id);
     if (sharedLink.type !== SharedLinkType.Individual) {
       throw new BadRequestException('Invalid shared link type');
     }
 
     const existingAssetIds = new Set(sharedLink.assets.map((asset) => asset.id));
     const notPresentAssetIds = dto.assetIds.filter((assetId) => !existingAssetIds.has(assetId));
+    // Fork (audit 1): adding a hidden asset would make the key a route to it
+    await this.lockService().assertAssetsShareableForViewer(auth, notPresentAssetIds);
     const allowedAssetIds = await this.checkAccess({
       auth,
       permission: Permission.AssetShare,
@@ -187,7 +211,7 @@ export class SharedLinkService extends BaseService {
   }
 
   async removeAssets(auth: AuthDto, id: string, dto: AssetIdsDto): Promise<AssetIdsResponseDto[]> {
-    const sharedLink = await this.findOrFail(auth.user.id, id);
+    const sharedLink = await this.findManageableOrFail(auth, id);
 
     if (sharedLink.type !== SharedLinkType.Individual) {
       throw new BadRequestException('Invalid shared link type');

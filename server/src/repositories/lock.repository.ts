@@ -3,7 +3,7 @@ import { Kysely, sql } from 'kysely';
 import { InjectKysely } from 'nestjs-kysely';
 import { DummyValue, GenerateSql } from 'src/decorators.js';
 import { DB } from 'src/schema/index.js';
-import { OwnerLockVisibility, joinDeduplicationPlugin, withLockVisibility } from 'src/utils/database.js';
+import { OwnerLockVisibility, anyUuid, joinDeduplicationPlugin, withLockVisibility } from 'src/utils/database.js';
 import {
   LockVisibilityRequest,
   RevealedLocks,
@@ -105,6 +105,55 @@ export class LockRepository {
       .withPlugin(joinDeduplicationPlugin)
       .executeTakeFirst();
     return row !== undefined;
+  }
+
+  /**
+   * The subset of `assetIds` that passes the given per-owner lock entries (an empty list passes everything that
+   * exists). Batched counterpart of isAssetVisible.
+   */
+  async getVisibleAssetIds(assetIds: string[], entries: OwnerLockVisibility[]): Promise<Set<string>> {
+    if (assetIds.length === 0) {
+      return new Set();
+    }
+    const rows = await withLockVisibility(
+      this.db.selectFrom('asset').select('asset.id').where('asset.id', '=', anyUuid(assetIds)),
+      this.db,
+      entries,
+    )
+      .withPlugin(joinDeduplicationPlugin)
+      .execute();
+    return new Set(rows.map(({ id }) => id));
+  }
+
+  /**
+   * Owners of the given assets (deleted or not), with whether the owner shares their library with `viewerId` as a
+   * partner - the asset relationships under which a viewer may legitimately learn that an asset is lock-hidden.
+   */
+  async getAssetOwners(
+    viewerId: string,
+    assetIds: string[],
+  ): Promise<{ id: string; ownerId: string; isPartner: boolean }[]> {
+    if (assetIds.length === 0) {
+      return [];
+    }
+    const rows = await this.db
+      .selectFrom('asset')
+      .select((eb) => [
+        'asset.id',
+        'asset.ownerId',
+        eb
+          .exists(
+            eb
+              .selectFrom('partner')
+              .select('partner.sharedById')
+              .whereRef('partner.sharedById', '=', 'asset.ownerId')
+              .where('partner.sharedWithId', '=', viewerId),
+          )
+          .as('isPartner'),
+      ])
+      .where('asset.id', '=', anyUuid(assetIds))
+      .execute();
+    return rows.map(({ id, ownerId, isPartner }) => ({ id, ownerId, isPartner: !!isPartner }));
   }
 
   isAlbumHiddenForViewer(viewerId: string, albumId: string): Promise<boolean> {
