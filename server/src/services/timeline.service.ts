@@ -48,12 +48,13 @@ export class TimelineService extends BaseService {
       return await this.assetRepository.getTimeBuckets(timeBucketOptions, auth);
     }
 
-    // Person timelines also include assets in albums shared with the viewer (upstream 28bd3a550), whose owners are
-    // not in userIds; getLockVisibility covers every lock-holding owner for them.
+    // Person timelines also include assets in albums shared with the viewer (upstream 28bd3a550). Those follow
+    // album-grant rules in the repository: only the viewer's own entry (its hidden shares) applies to them.
     return await this.assetRepository.getTimeBuckets(
       {
         ...timeBucketOptions,
-        lockVisibility: await this.getLockVisibility(auth, timeBucketOptions.userIds, timeBucketOptions.personId),
+        lockVisibility: await this.getLockVisibility(auth, timeBucketOptions.userIds),
+        hiddenSharedAlbumIds: await this.getHiddenSharedAlbumIds(auth, timeBucketOptions),
       },
       auth,
     );
@@ -87,7 +88,8 @@ export class TimelineService extends BaseService {
         ? timeBucketOptions
         : {
             ...timeBucketOptions,
-            lockVisibility: await this.getLockVisibility(auth, timeBucketOptions.userIds, timeBucketOptions.personId),
+            lockVisibility: await this.getLockVisibility(auth, timeBucketOptions.userIds),
+            hiddenSharedAlbumIds: await this.getHiddenSharedAlbumIds(auth, timeBucketOptions),
           },
       auth,
     );
@@ -101,24 +103,37 @@ export class TimelineService extends BaseService {
    * views are deliberately not filtered: an album the viewer can open IS the container being
    * inspected (spec §8.4).
    *
-   * Person timelines (personId) can also return assets of owners outside `ownerIds` (albums shared with the viewer),
-   * so they get entries for every lock-holding owner; the viewer's own entry also drops the viewer's locked shares.
+   * Person timelines (personId) also return assets in albums shared with the viewer, whose owners need no entry:
+   * album grants are unaffected by the album owner's locks (spec §4, ruling R19); the viewer's own entry drops the
+   * shares the viewer locked for themselves.
    */
   private async getLockVisibility(
     auth: AuthDto,
     ownerIds: string[] | undefined,
-    personId?: string,
   ): Promise<OwnerLockVisibility[] | undefined> {
-    const request = {
+    const owners = ownerIds && ownerIds.length > 0 ? ownerIds : [auth.user.id];
+    const entries = await this.lockRepository.getOwnerLockVisibility({
       viewerId: auth.user.id,
+      ownerIds: owners,
       revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
       isElevated: !!auth.session?.hasElevatedPermission,
-    };
-    const owners = ownerIds && ownerIds.length > 0 ? ownerIds : [auth.user.id];
-    const entries = personId
-      ? await this.lockRepository.getAllOwnersLockVisibility(request)
-      : await this.lockRepository.getOwnerLockVisibility({ ...request, ownerIds: owners });
+    });
     return entries.length > 0 ? entries : undefined;
+  }
+
+  /**
+   * Person timelines grant assets in albums shared with the viewer (album-grant rules): only the viewer's own
+   * effectively hidden albums withhold that grant (spec §15.1; reveal only when elevated), whoever else locked them.
+   */
+  private async getHiddenSharedAlbumIds(auth: AuthDto, options: TimeBucketOptions): Promise<string[] | undefined> {
+    if (!options.personId || !(await this.lockRepository.hasAnyLocks(auth.user.id))) {
+      return undefined;
+    }
+    const isElevated = !!auth.session?.hasElevatedPermission;
+    return this.lockRepository.getHiddenAlbumIds(
+      auth.user.id,
+      isElevated ? (auth.revealedLocks ?? NO_REVEALED_LOCKS) : NO_REVEALED_LOCKS,
+    );
   }
 
   private async loadSmartAlbumContext(albumId: string | undefined): Promise<SmartAlbumContext | null> {

@@ -38,10 +38,10 @@ import {
   OwnerLockVisibility,
   anyUuid,
   asUuid,
-  getViewerHiddenAlbumIds,
   hasPeople,
   inSharedAlbum,
   joinDeduplicationPlugin,
+  lockVisibilityExpression,
   removeUndefinedKeys,
   searchAssetIdSubquery,
   truncatedDate,
@@ -117,6 +117,12 @@ export interface TimeBucketOptions extends AssetBuilderOptions {
    * precomputed once per request. Applied inside the bucket CTEs like assetFilter.
    */
   lockVisibility?: OwnerLockVisibility[];
+  /**
+   * Fork: person timelines (personId with userIds) also include assets in albums shared with the viewer. Those follow
+   * album-grant rules (spec §4, ruling R19): the album owner's locks do not apply, but these - the viewer's own
+   * effectively hidden albums - grant nothing (spec §15.1).
+   */
+  hiddenSharedAlbumIds?: string[];
 }
 
 export interface TimeBucketItem {
@@ -190,6 +196,32 @@ const withBoundingBox = <T>(qb: SelectQueryBuilder<DB, 'asset' | 'asset_exif', T
   return withLatitude.where((eb) =>
     eb.or([eb('asset_exif.longitude', '>=', west), eb('asset_exif.longitude', '<=', east)]),
   );
+};
+
+/** Fork: a person timeline with an owner scope - its shared-album arm follows album-grant rules (personTimelineGrant). */
+const isPersonTimeline = (options: TimeBucketOptions) => !!options.personId && !!options.userIds;
+
+/**
+ * Fork (28bd3a550 lock audit, ruling R19): which assets a person timeline grants.
+ * - Assets of the userIds owners (viewer and/or partners) follow each owner's locks (lock entries; the viewer's reveal
+ *   set only for the viewer's own, when elevated).
+ * - Assets in albums shared with the viewer follow album-grant rules: the album owner's locks never affect the grant,
+ *   but a share the viewer locked for themselves grants nothing. So a partner's locked asset that is also in a visible
+ *   shared album stays visible through the album.
+ */
+const personTimelineGrant = (
+  eb: ExpressionBuilder<DB, 'asset'>,
+  db: Kysely<DB>,
+  viewerId: string,
+  options: TimeBucketOptions,
+) => {
+  const isOwner = eb('asset.ownerId', '=', anyUuid(options.userIds!));
+  return eb.or([
+    options.lockVisibility?.length
+      ? eb.and([isOwner, lockVisibilityExpression(eb, db, options.lockVisibility)])
+      : isOwner,
+    inSharedAlbum(viewerId, 'asset.id', options.hiddenSharedAlbumIds ?? []),
+  ]);
 };
 
 @Injectable()
@@ -831,7 +863,7 @@ export class AssetRepository {
             .$if(!!options.assetFilter, (qb) =>
               qb.where('asset.id', 'in', searchAssetIdSubquery(this.db, options.assetFilter!)),
             )
-            .$if(!!options.lockVisibility && options.lockVisibility.length > 0, (qb) =>
+            .$if(!!options.lockVisibility?.length && !isPersonTimeline(options), (qb) =>
               withLockVisibility(qb, this.db, options.lockVisibility!),
             )
             .$if(!!options.personId, (qb) => hasPeople(qb, [options.personId!]))
@@ -843,22 +875,12 @@ export class AssetRepository {
                 .where((eb) => eb.or([eb('asset.stackId', 'is', null), eb(eb.table('stack'), 'is not', null)])),
             )
             // Fork (28bd3a550 lock audit): with personId, assets in albums shared with the viewer are included.
-            // TimelineService passes lock entries for every lock-holding owner on person timelines, so each owner's
-            // locks hide that owner's content here too, and shares the viewer locked for themselves do not count.
+            // See personTimelineGrant: owners' locks for the userIds arm, album-grant rules for the shared arm.
             .$if(!!options.userIds, (qb) =>
               qb.where((eb) => {
                 // TODO this should become a shared `hasAccess` style helper once implement sharing in more places
                 const isOwner = eb('asset.ownerId', '=', anyUuid(options.userIds!));
-                return options.personId
-                  ? eb.or([
-                      isOwner,
-                      inSharedAlbum(
-                        auth.user.id,
-                        'asset.id',
-                        getViewerHiddenAlbumIds(auth.user.id, options.lockVisibility),
-                      ),
-                    ])
-                  : isOwner;
+                return options.personId ? personTimelineGrant(eb, this.db, auth.user.id, options) : isOwner;
               }),
             )
             .$if(options.isFavorite !== undefined, (qb) => qb.where('asset.isFavorite', '=', options.isFavorite!))
@@ -953,25 +975,15 @@ export class AssetRepository {
           .$if(!!options.assetFilter, (qb) =>
             qb.where('asset.id', 'in', searchAssetIdSubquery(this.db, options.assetFilter!)),
           )
-          .$if(!!options.lockVisibility && options.lockVisibility.length > 0, (qb) =>
+          .$if(!!options.lockVisibility?.length && !isPersonTimeline(options), (qb) =>
             withLockVisibility(qb, this.db, options.lockVisibility!),
           )
           .$if(!!options.personId, (qb) => hasPeople(qb, [options.personId!]))
-          // Fork (28bd3a550 lock audit): see getTimeBuckets - every owner's locks apply, and the viewer's own locked
-          // shares do not count.
+          // Fork (28bd3a550 lock audit): see getTimeBuckets / personTimelineGrant.
           .$if(!!options.userIds, (qb) =>
             qb.where((eb) => {
               const isOwner = eb('asset.ownerId', '=', anyUuid(options.userIds!));
-              return options.personId
-                ? eb.or([
-                    isOwner,
-                    inSharedAlbum(
-                      auth.user.id,
-                      'asset.id',
-                      getViewerHiddenAlbumIds(auth.user.id, options.lockVisibility),
-                    ),
-                  ])
-                : isOwner;
+              return options.personId ? personTimelineGrant(eb, this.db, auth.user.id, options) : isOwner;
             }),
           )
           .$if(options.isFavorite !== undefined, (qb) => qb.where('asset.isFavorite', '=', options.isFavorite!))

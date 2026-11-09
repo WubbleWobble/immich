@@ -98,6 +98,18 @@ where
   and "person"."thumbnailSourceFaceId" is null
 limit
   $1
+select
+  1 as "one"
+from
+  "person"
+  inner join "asset_face" on "asset_face"."id" = "person"."thumbnailSourceFaceId"
+where
+  (
+    "asset_face"."deletedAt" is not null
+    or "asset_face"."isVisible" is false
+  )
+limit
+  $1
 
 -- PersonRepository.forBirthdayMemories
 select
@@ -934,6 +946,8 @@ where
 select
   "person"."thumbnailPath" as "path",
   "person"."thumbnailSourceFaceId" as "faceId",
+  "asset_face"."deletedAt" as "faceDeletedAt",
+  "asset_face"."isVisible" as "faceIsVisible",
   "asset"."id" as "assetId",
   "asset"."ownerId" as "assetOwnerId"
 from

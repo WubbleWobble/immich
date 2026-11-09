@@ -93,8 +93,9 @@ export interface GetAllPeopleOptions {
   faceAssetId?: string | null;
   isHidden?: boolean;
   /**
-   * fork: rows without a verified thumbnail - none at all (`thumbnailPath = ''`) or one whose source is unknown
-   * (`thumbnailSourceFaceId IS NULL`: pre-upgrade crops, deleted source faces, failed or stale generations)
+   * fork: rows without a verified thumbnail - none at all (`thumbnailPath = ''`), one whose source is unknown
+   * (`thumbnailSourceFaceId IS NULL`: pre-upgrade crops, deleted source faces, failed or stale generations), or one
+   * whose source face was soft-deleted or edited out. Adds `hasUsableFeatureFace` to each row.
    */
   withoutVerifiedThumbnail?: boolean;
 }
@@ -213,6 +214,26 @@ const visibleFaces = selectFrom('asset_face')
   .where('asset_face.isVisible', 'is', true)
   .where('asset_face.assetVisibility', '=', sql.lit(AssetVisibility.Timeline))
   .where('asset_face.assetDeletedAt', 'is', null);
+
+/** Fork: the person's live faces on assets of ANY visibility, trashed included (face-level filters only). */
+const personFaces = (eb: ExpressionBuilder<DB, 'person'>) =>
+  eb
+    .selectFrom('asset_face')
+    .select('asset_face.id')
+    .whereRef('asset_face.personGroupId', '=', 'person.personGroupId')
+    .where('asset_face.deletedAt', 'is', null)
+    .where('asset_face.isVisible', 'is', true);
+
+/** Fork: the face behind `ref` exists but was removed (soft-deleted) or edited out (`isVisible = false`). */
+const unusableFace = (
+  eb: ExpressionBuilder<DB, 'person'>,
+  ref: 'person.thumbnailSourceFaceId' | 'person.faceAssetId',
+) =>
+  eb
+    .selectFrom('asset_face')
+    .select('asset_face.id')
+    .whereRef('asset_face.id', '=', ref)
+    .where((eb) => eb.or([eb('asset_face.deletedAt', 'is not', null), eb('asset_face.isVisible', 'is', false)]));
 
 const withPerson = ({ viewingUserId }: WithPersonOptions) => {
   return (eb: ExpressionBuilder<DB, 'asset_face'>) =>
@@ -379,7 +400,16 @@ export class PersonRepository {
       .$if(!!options.faceAssetId, (qb) => qb.where('person.faceAssetId', '=', options.faceAssetId!))
       .$if(options.isHidden !== undefined, (qb) => qb.where('person.isHidden', '=', options.isHidden!))
       .$if(!!options.withoutVerifiedThumbnail, (qb) =>
-        qb.where((eb) => eb.or([eb('person.thumbnailPath', '=', ''), eb('person.thumbnailSourceFaceId', 'is', null)])),
+        qb
+          .where((eb) =>
+            eb.or([
+              eb('person.thumbnailPath', '=', ''),
+              eb('person.thumbnailSourceFaceId', 'is', null),
+              eb.exists(unusableFace(eb, 'person.thumbnailSourceFaceId')),
+            ]),
+          )
+          // a feature face that was removed or edited out cannot seed a verifiable generation; it is re-picked
+          .select((eb) => eb.not(eb.exists(unusableFace(eb, 'person.faceAssetId'))).as('hasUsableFeatureFace')),
       )
       .stream();
   }
@@ -397,7 +427,19 @@ export class PersonRepository {
       .where('person.thumbnailSourceFaceId', 'is', null)
       .limit(1)
       .executeTakeFirst();
-    return row !== undefined;
+    if (row) {
+      return true;
+    }
+
+    // a source face that was soft-deleted or edited out also makes the published thumbnail unverifiable
+    const removed = await this.db
+      .selectFrom('person')
+      .innerJoin('asset_face', 'asset_face.id', 'person.thumbnailSourceFaceId')
+      .select(sql.lit(1).as('one'))
+      .where((eb) => eb.or([eb('asset_face.deletedAt', 'is not', null), eb('asset_face.isVisible', 'is', false)]))
+      .limit(1)
+      .executeTakeFirst();
+    return removed !== undefined;
   }
 
   // FORK-PORT: lock-audit — new upstream query (d6d094738 birthday memories): selects the owner's named people with
@@ -450,11 +492,15 @@ export class PersonRepository {
   }
 
   /**
-   * Fork (D10): `lockVisibility` holds entries for every source owner that has locks (see getAllOwnersLockVisibility).
-   * Upstream's scope is kept - own + partner faces, plus faces on assets in albums shared with the viewer - and inside
-   * it each face counts only when its asset passes ITS OWNER's locks; the shared-album arm also skips shares the
-   * viewer locked for themselves. People whose every in-scope face is hidden drop out of the list and of
-   * total/hidden. Without any lock entries the query is upstream's, on the timeline face index.
+   * Fork: upstream's scope is kept - own + partner faces, plus faces on assets in albums shared with the viewer.
+   * `lockVisibility` holds entries for the viewer and the partners (getOwnerLockVisibility); with any entry:
+   * - own/partner faces count only when their asset passes ITS OWNER's locks (D10; the viewer's reveal set applies to
+   *   the viewer's own locks only, when elevated);
+   * - faces reached through a shared album follow album-grant rules (spec §4, ruling R19): the album owner's locks
+   *   never affect the viewer's grant, but a share the viewer locked for themselves grants nothing (spec §15.1).
+   * A face on a partner's asset that is also in a visible shared album counts through the album grant.
+   * People whose every in-scope face is hidden drop out of the list and of total/hidden. Without any entry the query
+   * is upstream's, on the timeline face index.
    */
   @GenerateSql(
     { params: [{ take: 1, skip: 0 }, DummyValue.UUID, { withHidden: false, partnerIds: [DummyValue.UUID] }] },
@@ -479,22 +525,31 @@ export class PersonRepository {
       .select('asset_face.personGroupId')
       .where('asset_face.personGroupId', 'in', (eb) =>
         eb.selectFrom('person').select('person.personGroupId').where('person.ownerId', '=', userId),
-      )
-      .$if(hasLocks, (qb) => qb.where((eb) => faceLockVisible(eb, this.db, lockVisibility)));
+      );
     const hiddenSharedAlbumIds = getViewerHiddenAlbumIds(userId, lockVisibility);
 
     const { people, total, hidden } = await this.db
       .with('faces', (db) =>
         db
           .selectFrom(
-            groupFaces
-              .where('asset_face.ownerId', '=', ownerIds)
-              .unionAll(
+            hasLocks
+              ? // one pass, so a face granted by both arms is counted once
                 groupFaces
-                  .where((eb) => eb.not(eb('asset_face.ownerId', '=', ownerIds)))
-                  .where(inSharedAlbum(userId, 'asset_face.assetId', hiddenSharedAlbumIds)),
-              )
-              .as('visible'),
+                  .where((eb) =>
+                    eb.or([
+                      eb.and([eb('asset_face.ownerId', '=', ownerIds), faceLockVisible(eb, this.db, lockVisibility)]),
+                      inSharedAlbum(userId, 'asset_face.assetId', hiddenSharedAlbumIds),
+                    ]),
+                  )
+                  .as('visible')
+              : groupFaces
+                  .where('asset_face.ownerId', '=', ownerIds)
+                  .unionAll(
+                    groupFaces
+                      .where((eb) => eb.not(eb('asset_face.ownerId', '=', ownerIds)))
+                      .where(inSharedAlbum(userId, 'asset_face.assetId')),
+                  )
+                  .as('visible'),
           )
           .select('visible.personGroupId')
           .select((eb) => eb.fn.countAll<number>().as('faceCount'))
@@ -693,7 +748,8 @@ export class PersonRepository {
    * Fork: every thumbnail candidate for the viewer, own row first, then each sharer's row (by owner id). Each
    * candidate carries the provenance of ITS OWN row - the face recorded together with the file in
    * `thumbnailSourceFaceId`, never `faceAssetId` (which can run ahead of the file) - resolved to that face's asset and
-   * the asset's owner. A null `faceId` means unverifiable (pre-upgrade crop, or the source face was deleted).
+   * the asset's owner. A null `faceId` means unverifiable (pre-upgrade crop, or the source face was deleted,
+   * soft-deleted or edited out).
    */
   @GenerateSql({ params: [{ ownerId: DummyValue.UUID, personGroupId: DummyValue.UUID }] })
   async getForThumbnail({ ownerId, personGroupId }: PersonId): Promise<ThumbnailCandidate[]> {
@@ -704,6 +760,8 @@ export class PersonRepository {
       .select([
         'person.thumbnailPath as path',
         'person.thumbnailSourceFaceId as faceId',
+        'asset_face.deletedAt as faceDeletedAt',
+        'asset_face.isVisible as faceIsVisible',
         'asset.id as assetId',
         'asset.ownerId as assetOwnerId',
       ])
@@ -726,10 +784,16 @@ export class PersonRepository {
       .orderBy('person.ownerId', 'asc')
       .execute();
 
-    return rows.map(({ path, faceId, assetId, assetOwnerId }) => ({
-      path,
-      provenance: { faceId, assetId: faceId ? assetId : null, assetOwnerId: faceId ? assetOwnerId : null },
-    }));
+    return rows.map(({ path, faceId, faceDeletedAt, faceIsVisible, assetId, assetOwnerId }) => {
+      // a source face that was removed (soft-deleted) or edited out no longer vouches for the crop: unverifiable
+      const verifiable = !!faceId && !faceDeletedAt && faceIsVisible === true;
+      return {
+        path,
+        provenance: verifiable
+          ? { faceId, assetId, assetOwnerId }
+          : { faceId: null, assetId: null, assetOwnerId: null },
+      };
+    });
   }
 
   /**
@@ -822,9 +886,12 @@ export class PersonRepository {
   }
 
   /**
-   * Fork (D10): with lock entries (every source owner's, see getAllOwnersLockVisibility), a person whose every face in
-   * the viewer's scope (own + partner + shared-album, as in getAllForUser) is hidden by its asset owner's locks does not
-   * surface. People with no in-scope faces at all are left as upstream returns them - only locks remove a name.
+   * Fork (lock-aware name search, spec §15.4): with lock entries (viewer + partners, see getAllForUser), a person does
+   * not surface when it has in-scope faces and none of them is visible. "In scope" uses face-level filters only - any
+   * asset visibility, trashed assets included - so a person whose faces all sit on archived or trashed assets in a
+   * locked album stays hidden (fail-closed). A face is visible when it is an own/partner face passing its asset owner's
+   * locks, or sits in a shared album the viewer has not locked for themselves (album-grant rules, ruling R19). People
+   * with no in-scope faces at all are left as upstream returns them - only locks remove a name.
    */
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.STRING, { withHidden: true }] })
   getByName(
@@ -835,22 +902,6 @@ export class PersonRepository {
   ) {
     const ownerIds = anyUuid([userId, ...partnerIds]);
     const hiddenSharedAlbumIds = getViewerHiddenAlbumIds(userId, lockVisibility);
-    const inScopeFaces = (eb: ExpressionBuilder<DB, 'person'>) =>
-      eb
-        .selectFrom('asset_face')
-        .select('asset_face.id')
-        .whereRef('asset_face.personGroupId', '=', 'person.personGroupId')
-        .where('asset_face.deletedAt', 'is', null)
-        .where('asset_face.isVisible', 'is', true)
-        .where('asset_face.assetVisibility', '=', sql.lit(AssetVisibility.Timeline))
-        .where('asset_face.assetDeletedAt', 'is', null)
-        .where((eb) =>
-          eb.or([
-            eb('asset_face.ownerId', '=', ownerIds),
-            inSharedAlbum(userId, 'asset_face.assetId', hiddenSharedAlbumIds),
-          ]),
-        );
-
     return this.db
       .selectFrom('person')
       .selectAll('person')
@@ -864,8 +915,21 @@ export class PersonRepository {
         qb
           .where((eb) =>
             eb.or([
-              eb.not(eb.exists(inScopeFaces(eb))),
-              eb.exists(inScopeFaces(eb).where((eb) => faceLockVisible(eb, this.db, lockVisibility))),
+              eb.not(
+                eb.exists(
+                  personFaces(eb).where((eb) =>
+                    eb.or([eb('asset_face.ownerId', '=', ownerIds), inSharedAlbum(userId, 'asset_face.assetId')]),
+                  ),
+                ),
+              ),
+              eb.exists(
+                personFaces(eb).where((eb) =>
+                  eb.or([
+                    eb.and([eb('asset_face.ownerId', '=', ownerIds), faceLockVisible(eb, this.db, lockVisibility)]),
+                    inSharedAlbum(userId, 'asset_face.assetId', hiddenSharedAlbumIds),
+                  ]),
+                ),
+              ),
             ]),
           )
           // embedded lock-visibility subqueries rely on the root query for join deduplication
@@ -885,7 +949,7 @@ export class PersonRepository {
       .execute();
   }
 
-  /** Fork (D10): upstream's asset scope, with each source owner's locks applied inside it (see getAllForUser). */
+  /** Fork: upstream's asset scope; own/partner faces follow their owner's locks, shared-album faces album-grant rules (see getAllForUser). */
   @GenerateSql({ params: [DummyValue.UUID, { ownerId: DummyValue.UUID, partnerIds: [DummyValue.UUID] }] })
   getStatistics(
     personGroupId: string,
@@ -894,17 +958,16 @@ export class PersonRepository {
   ): Promise<PersonStatistics> {
     const ownerIds = anyUuid([ownerId, ...partnerIds]);
     const hasLocks = lockVisibility.length > 0;
-    const groupFaces = visibleFaces
-      .select('asset_face.assetId')
-      .where('asset_face.personGroupId', '=', personGroupId)
-      .$if(hasLocks, (qb) => qb.where((eb) => faceLockVisible(eb, this.db, lockVisibility)));
+    const groupFaces = visibleFaces.select('asset_face.assetId').where('asset_face.personGroupId', '=', personGroupId);
     return this.db
       .selectFrom(
         groupFaces
           .where('asset_face.ownerId', '=', ownerIds)
+          .$if(hasLocks, (qb) => qb.where((eb) => faceLockVisible(eb, this.db, lockVisibility)))
           .unionAll(
             groupFaces
-              .where((eb) => eb.not(eb('asset_face.ownerId', '=', ownerIds)))
+              // with locks, a partner's face hidden by the partner's locks can still be granted by a shared album
+              .$if(!hasLocks, (qb) => qb.where((eb) => eb.not(eb('asset_face.ownerId', '=', ownerIds))))
               .where(inSharedAlbum(ownerId, 'asset_face.assetId', getViewerHiddenAlbumIds(ownerId, lockVisibility))),
           )
           .as('visible'),

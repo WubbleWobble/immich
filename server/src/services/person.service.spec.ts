@@ -72,7 +72,7 @@ describe(PersonService.name, () => {
       const lockVisibility = [
         { ownerId: newUuid(), hiddenAlbumIds: [newUuid()], hiddenSmartFilters: [], visibleSmartFilters: [] },
       ];
-      mocks.lock.getAllOwnersLockVisibility.mockResolvedValue(lockVisibility);
+      mocks.lock.getOwnerLockVisibility.mockResolvedValue(lockVisibility);
       const auth = AuthFactory.create();
       const [person, hiddenPerson] = [PersonFactory.create(), PersonFactory.create({ isHidden: true })];
 
@@ -101,8 +101,9 @@ describe(PersonService.name, () => {
         { withHidden: true, partnerIds: [] },
         lockVisibility,
       );
-      expect(mocks.lock.getAllOwnersLockVisibility).toHaveBeenCalledWith({
+      expect(mocks.lock.getOwnerLockVisibility).toHaveBeenCalledWith({
         viewerId: auth.user.id,
+        ownerIds: [auth.user.id],
         revealed: { albumIds: [], containerIds: [] },
         isElevated: false,
       });
@@ -112,7 +113,7 @@ describe(PersonService.name, () => {
       const lockVisibility = [
         { ownerId: newUuid(), hiddenAlbumIds: [newUuid()], hiddenSmartFilters: [], visibleSmartFilters: [] },
       ];
-      mocks.lock.getAllOwnersLockVisibility.mockResolvedValue(lockVisibility);
+      mocks.lock.getOwnerLockVisibility.mockResolvedValue(lockVisibility);
       const auth = AuthFactory.create();
       const [isFavorite, person] = [PersonFactory.create({ isFavorite: true }), PersonFactory.create()];
 
@@ -144,7 +145,7 @@ describe(PersonService.name, () => {
     });
 
     it('should pass the closest person to the query', async () => {
-      mocks.lock.getAllOwnersLockVisibility.mockResolvedValue([]);
+      mocks.lock.getOwnerLockVisibility.mockResolvedValue([]);
       const auth = AuthFactory.create();
       const closestPersonId = newUuid();
 
@@ -683,7 +684,7 @@ describe(PersonService.name, () => {
       mocks.person.getByGroupId.mockResolvedValue(person);
       mocks.person.getRandomFace.mockResolvedValue(featureFace);
       mocks.person.getClusterMemberIds.mockResolvedValue([person.ownerId]);
-      mocks.lock.getAllOwnersLockVisibility.mockResolvedValue([]);
+      mocks.lock.getOwnerLockVisibility.mockResolvedValue([]);
       mocks.person.update.mockResolvedValue({ ...person, faceAssetId: featureFace.id });
 
       await expect(
@@ -716,8 +717,9 @@ describe(PersonService.name, () => {
         lockVisibility: [],
       });
       // job context: never elevated, no reveal
-      expect(mocks.lock.getAllOwnersLockVisibility).toHaveBeenCalledWith({
+      expect(mocks.lock.getOwnerLockVisibility).toHaveBeenCalledWith({
         viewerId: person.ownerId,
+        ownerIds: [person.ownerId],
         revealed: { albumIds: [], containerIds: [] },
         isElevated: false,
       });
@@ -1654,7 +1656,7 @@ describe(PersonService.name, () => {
       const lockVisibility = [
         { ownerId: newUuid(), hiddenAlbumIds: [newUuid()], hiddenSmartFilters: [], visibleSmartFilters: [] },
       ];
-      mocks.lock.getAllOwnersLockVisibility.mockResolvedValue(lockVisibility);
+      mocks.lock.getOwnerLockVisibility.mockResolvedValue(lockVisibility);
       const auth = AuthFactory.create();
       const person = PersonFactory.create();
       const ids = [{ personGroupId: person.personGroupId, ownerId: auth.user.id }];
@@ -1672,7 +1674,7 @@ describe(PersonService.name, () => {
     });
 
     it('should include all partners that are shown in the timeline', async () => {
-      mocks.lock.getAllOwnersLockVisibility.mockResolvedValue([]);
+      mocks.lock.getOwnerLockVisibility.mockResolvedValue([]);
       const auth = AuthFactory.create();
       const person = PersonFactory.create();
       const ids = [{ personGroupId: person.personGroupId, ownerId: auth.user.id }];
@@ -1690,6 +1692,10 @@ describe(PersonService.name, () => {
         person.personGroupId,
         { ownerId: auth.user.id, partnerIds: [inTimeline.id, notInTimeline.id] },
         [],
+      );
+      // own/partner faces follow their owner's locks; shared-album faces need no owner entry (album-grant rules)
+      expect(mocks.lock.getOwnerLockVisibility).toHaveBeenCalledWith(
+        expect.objectContaining({ ownerIds: [auth.user.id, inTimeline.id, notInTimeline.id] }),
       );
     });
 

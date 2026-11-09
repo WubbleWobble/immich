@@ -494,6 +494,19 @@ export function withLockVisibility<O>(
   if (entries.length === 0) {
     return qb;
   }
+  return qb.where((eb) => lockVisibilityExpression(eb, db, entries));
+}
+
+/**
+ * The predicate behind {@link withLockVisibility}, for callers that combine it with other grants (e.g. person
+ * timelines, where an album shared with the viewer grants an asset regardless of the album owner's locks). Requires a
+ * non-empty `entries`.
+ */
+export function lockVisibilityExpression(
+  eb: ExpressionBuilder<DB, 'asset'>,
+  db: Kysely<DB>,
+  entries: OwnerLockVisibility[],
+) {
   const ownersWithLocks = entries.map(({ ownerId }) => ownerId);
   const unionSmart = (filters: AssetSearchBuilderOptions[]) => {
     let union = searchAssetIdSubquery(db, filters[0]);
@@ -503,73 +516,71 @@ export function withLockVisibility<O>(
     return union;
   };
 
-  return qb.where((eb) => {
-    // Container memberships only count when the lock owner can see the album - via their
-    // own album_user row (owner or sharee) OR via a folder share on an ancestor container
-    // (album_container_user + closure), mirroring checkAlbumAccess. A membership in a
-    // stranger's album must neither rescue an asset from the owner's locks nor count
-    // against the zero-container clause: the owner's privacy cannot depend on albums they
-    // cannot see or control. The cascade branch matters for lockable folder shares: an
-    // asset whose only lock-owner-visible container is a cascade-shared album must count
-    // that album (and hide when the folder is locked), not read as zero-container.
-    const liveMembership = (assetRef: 'asset.id', lockOwnerId: string) =>
-      eb
-        .selectFrom('album_asset')
-        .innerJoin('album', (join) =>
-          join.onRef('album.id', '=', 'album_asset.albumId').on('album.deletedAt', 'is', null),
-        )
-        .select('album_asset.assetId')
-        .whereRef('album_asset.assetId', '=', assetRef)
-        .where((eb2) =>
-          eb2.or([
-            eb2.exists(
-              eb2
-                .selectFrom('album_user')
-                .select('album_user.userId')
-                .whereRef('album_user.albumId', '=', 'album.id')
-                .where('album_user.userId', '=', asUuid(lockOwnerId)),
-            ),
-            eb2.exists(
-              eb2
-                .selectFrom('album_container_closure as lock_closure')
-                .innerJoin(
-                  'album_container_user as lock_folder_user',
-                  'lock_folder_user.albumContainerId',
-                  'lock_closure.id_ancestor',
-                )
-                .select('lock_closure.id_descendant')
-                .whereRef('lock_closure.id_descendant', '=', 'album.containerId')
-                .where('lock_folder_user.userId', '=', asUuid(lockOwnerId)),
-            ),
-          ]),
-        );
-
-    return eb.or([
-      eb.not(eb('asset.ownerId', '=', anyUuid(ownersWithLocks))),
-      ...entries.map((entry) => {
-        const ownerClauses = [
-          // Visible via an unlocked (live) regular-album membership.
-          eb.exists(
-            liveMembership('asset.id', entry.ownerId).where((eb2) =>
-              eb2.not(eb2('album_asset.albumId', '=', anyUuid(entry.hiddenAlbumIds))),
-            ),
+  // Container memberships only count when the lock owner can see the album - via their
+  // own album_user row (owner or sharee) OR via a folder share on an ancestor container
+  // (album_container_user + closure), mirroring checkAlbumAccess. A membership in a
+  // stranger's album must neither rescue an asset from the owner's locks nor count
+  // against the zero-container clause: the owner's privacy cannot depend on albums they
+  // cannot see or control. The cascade branch matters for lockable folder shares: an
+  // asset whose only lock-owner-visible container is a cascade-shared album must count
+  // that album (and hide when the folder is locked), not read as zero-container.
+  const liveMembership = (assetRef: 'asset.id', lockOwnerId: string) =>
+    eb
+      .selectFrom('album_asset')
+      .innerJoin('album', (join) =>
+        join.onRef('album.id', '=', 'album_asset.albumId').on('album.deletedAt', 'is', null),
+      )
+      .select('album_asset.assetId')
+      .whereRef('album_asset.assetId', '=', assetRef)
+      .where((eb2) =>
+        eb2.or([
+          eb2.exists(
+            eb2
+              .selectFrom('album_user')
+              .select('album_user.userId')
+              .whereRef('album_user.albumId', '=', 'album.id')
+              .where('album_user.userId', '=', asUuid(lockOwnerId)),
           ),
-        ];
-        if (entry.visibleSmartFilters.length > 0) {
-          ownerClauses.push(eb('asset.id', 'in', unionSmart(entry.visibleSmartFilters)));
-        }
-        const zeroContainer = [eb.not(eb.exists(liveMembership('asset.id', entry.ownerId)))];
-        if (entry.hiddenSmartFilters.length > 0) {
-          zeroContainer.push(eb('asset.id', 'not in', unionSmart(entry.hiddenSmartFilters)));
-        }
-        if (entry.visibleSmartFilters.length > 0) {
-          zeroContainer.push(eb('asset.id', 'not in', unionSmart(entry.visibleSmartFilters)));
-        }
-        ownerClauses.push(eb.and(zeroContainer));
-        return eb.and([eb('asset.ownerId', '=', asUuid(entry.ownerId)), eb.or(ownerClauses)]);
-      }),
-    ]);
-  });
+          eb2.exists(
+            eb2
+              .selectFrom('album_container_closure as lock_closure')
+              .innerJoin(
+                'album_container_user as lock_folder_user',
+                'lock_folder_user.albumContainerId',
+                'lock_closure.id_ancestor',
+              )
+              .select('lock_closure.id_descendant')
+              .whereRef('lock_closure.id_descendant', '=', 'album.containerId')
+              .where('lock_folder_user.userId', '=', asUuid(lockOwnerId)),
+          ),
+        ]),
+      );
+
+  return eb.or([
+    eb.not(eb('asset.ownerId', '=', anyUuid(ownersWithLocks))),
+    ...entries.map((entry) => {
+      const ownerClauses = [
+        // Visible via an unlocked (live) regular-album membership.
+        eb.exists(
+          liveMembership('asset.id', entry.ownerId).where((eb2) =>
+            eb2.not(eb2('album_asset.albumId', '=', anyUuid(entry.hiddenAlbumIds))),
+          ),
+        ),
+      ];
+      if (entry.visibleSmartFilters.length > 0) {
+        ownerClauses.push(eb('asset.id', 'in', unionSmart(entry.visibleSmartFilters)));
+      }
+      const zeroContainer = [eb.not(eb.exists(liveMembership('asset.id', entry.ownerId)))];
+      if (entry.hiddenSmartFilters.length > 0) {
+        zeroContainer.push(eb('asset.id', 'not in', unionSmart(entry.hiddenSmartFilters)));
+      }
+      if (entry.visibleSmartFilters.length > 0) {
+        zeroContainer.push(eb('asset.id', 'not in', unionSmart(entry.visibleSmartFilters)));
+      }
+      ownerClauses.push(eb.and(zeroContainer));
+      return eb.and([eb('asset.ownerId', '=', asUuid(entry.ownerId)), eb.or(ownerClauses)]);
+    }),
+  ]);
 }
 
 /**

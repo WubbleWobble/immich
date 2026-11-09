@@ -7,7 +7,6 @@ import { OwnerLockVisibility, joinDeduplicationPlugin, withLockVisibility } from
 import {
   LockVisibilityRequest,
   RevealedLocks,
-  getAllOwnersLockVisibility,
   getHiddenAlbumIdsQuery,
   getHiddenContainerIdsQuery,
   getOwnerLockVisibility,
@@ -93,11 +92,6 @@ export class LockRepository {
    */
   getOwnerLockVisibility(request: LockVisibilityRequest): Promise<OwnerLockVisibility[]> {
     return getOwnerLockVisibility(this.db, request);
-  }
-
-  /** See getAllOwnersLockVisibility: entries for every lock holder, for surfaces whose source owners are open-ended. */
-  getAllOwnersLockVisibility(request: Omit<LockVisibilityRequest, 'ownerIds'>): Promise<OwnerLockVisibility[]> {
-    return getAllOwnersLockVisibility(this.db, request);
   }
 
   /** Whether one asset passes the given per-owner lock entries (an empty list passes everything that exists). */

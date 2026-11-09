@@ -211,7 +211,29 @@ const newSharedPerson = async (ctx: Ctx) => {
   return { owner, sharee, personGroupId: person.personGroupId };
 };
 
-const moveHistory = (ctx: Ctx) => ctx.database.selectFrom('move_history').selectAll().execute();
+/** move_history rows of these owners' person rows in the group, plus any legacy row keyed by the bare group id. */
+const moveHistory = (ctx: Ctx, ownerIds: string[], personGroupId: string) =>
+  ctx.database
+    .selectFrom('move_history')
+    .selectAll()
+    .where('entityId', 'in', [
+      personGroupId,
+      ...ownerIds.map((ownerId) => StorageCore.getPersonMoveKey(ownerId, personGroupId)),
+    ])
+    .execute();
+
+// Databases created for a single test are dropped from the pool afterwards, so the suite stays within the test
+// server's connection limit.
+const isolatedDatabases: Kysely<DB>[] = [];
+const isolatedDb = async () => {
+  const db = await getKyselyDB();
+  isolatedDatabases.push(db);
+  return db;
+};
+
+afterEach(async () => {
+  await Promise.all(isolatedDatabases.splice(0).map((db) => db.destroy()));
+});
 
 beforeAll(async () => {
   defaultDatabase = await getKyselyDB();
@@ -352,7 +374,7 @@ describe(MediaService.name, () => {
     });
 
     it('upgrade: existing thumbnails have null provenance and are withheld from everyone', async () => {
-      const db = await getKyselyDB();
+      const db = await isolatedDb();
       await provenanceMigration.down(db);
 
       const context = setup(db);
@@ -414,7 +436,7 @@ describe(MediaService.name, () => {
     });
 
     it('startup regeneration survives interruption', async () => {
-      const context = setup(await getKyselyDB());
+      const context = setup(await isolatedDb());
       const { ctx, people, sut, queued } = context;
       const { user: owner } = await ctx.newUser();
       const rows: { personGroupId: string; crop: string; faceId: string }[] = [];
@@ -474,7 +496,7 @@ describe(MediaService.name, () => {
     });
 
     it('failed generation stays retryable', async () => {
-      const context = setup(await getKyselyDB());
+      const context = setup(await isolatedDb());
       const { ctx, people, sut, faults } = context;
       const { user: owner } = await ctx.newUser();
       const { person } = await ctx.newPerson({ ownerId: owner.id, thumbnailPath: '/legacy/thumb.jpeg' });
@@ -513,6 +535,39 @@ describe(MediaService.name, () => {
     });
   });
 
+  describe('soft-deleted source faces', () => {
+    it('a soft-deleted source face is withheld and regenerated from a newly picked feature face', async () => {
+      const context = setup(await isolatedDb());
+      const { ctx, people, sut } = context;
+      const { user: owner } = await ctx.newUser();
+      const { person } = await ctx.newPerson({ ownerId: owner.id, thumbnailPath: '' });
+      const personGroupId = person.personGroupId;
+      const removed = await newFaceOn(ctx, { ownerId: owner.id, personGroupId });
+      await setFeatureFace(ctx, owner.id, personGroupId, removed.face.id);
+      await sut.handleGeneratePersonThumbnail({ ownerId: owner.id, personGroupId });
+      const replacement = await newFaceOn(ctx, { ownerId: owner.id, personGroupId });
+      await expect(servedBytes(people, factory.auth({ user: owner }), personGroupId)).resolves.toEqual(
+        expect.objectContaining({ bytes: removed.crop }),
+      );
+
+      // deleteFace without force soft-deletes the face
+      await ctx.get(PersonRepository).softDeleteAssetFaces(removed.face.id);
+      await expect(people.getThumbnail(factory.auth({ user: owner }), personGroupId)).rejects.toThrow('Not Found');
+
+      await sut.onBootstrap();
+      await expect(runQueuedPersonThumbnails(context)).resolves.toEqual([{ ownerId: owner.id, personGroupId }]);
+      const pair = await getPair(ctx, owner.id, personGroupId);
+      expect(pair).toEqual(
+        expect.objectContaining({ faceAssetId: replacement.face.id, thumbnailSourceFaceId: replacement.face.id }),
+      );
+      await expect(servedBytes(people, factory.auth({ user: owner }), personGroupId)).resolves.toEqual({
+        path: pair.thumbnailPath,
+        bytes: replacement.crop,
+      });
+      await expect(generationFiles(owner.id, personGroupId)).resolves.toEqual([pair.thumbnailPath]);
+    });
+  });
+
   describe('person thumbnail moves', () => {
     it('media-location move preserves provenance', async () => {
       const { ctx, people } = setup();
@@ -533,7 +588,7 @@ describe(MediaService.name, () => {
       );
       expect(moved.thumbnailSourceFaceId).toBe(face.face.id);
       expect(existsSync(legacyPath)).toBe(false);
-      await expect(moveHistory(ctx)).resolves.toEqual([]);
+      await expect(moveHistory(ctx, [owner.id], personGroupId)).resolves.toEqual([]);
       for (const [label, auth] of [...shareeAuths(sharee, []), ...shareeAuths(owner, [])]) {
         await expect(servedBytes(people, auth, personGroupId), label).resolves.toEqual({
           path: moved.thumbnailPath,
@@ -596,7 +651,7 @@ describe(MediaService.name, () => {
       expect(regenerated.thumbnailSourceFaceId).toBe(faceV.face.id);
       expect(existsSync(relocatedH)).toBe(false);
       await expect(generationFiles(owner.id, personGroupId)).resolves.toEqual([regenerated.thumbnailPath]);
-      await expect(moveHistory(ctx)).resolves.toEqual([]);
+      await expect(moveHistory(ctx, [owner.id], personGroupId)).resolves.toEqual([]);
       for (const [label, auth] of [...shareeAuths(sharee, [faceH.album.id]), ...shareeAuths(owner, [])]) {
         await expect(servedBytes(people, auth, personGroupId), label).resolves.toEqual({
           path: regenerated.thumbnailPath,
@@ -638,7 +693,7 @@ describe(MediaService.name, () => {
       await expect(getPair(ctx, owner.id, personGroupId)).resolves.toEqual(regenerated);
       expect(existsSync(relocatedH)).toBe(false);
       await expect(generationFiles(owner.id, personGroupId)).resolves.toEqual([regenerated.thumbnailPath]);
-      await expect(moveHistory(ctx)).resolves.toEqual([]);
+      await expect(moveHistory(ctx, [owner.id], personGroupId)).resolves.toEqual([]);
       for (const [label, auth] of [...shareeAuths(sharee, [faceH.album.id]), ...shareeAuths(owner, [])]) {
         await expect(servedBytes(people, auth, personGroupId), label).resolves.toEqual({
           path: regenerated.thumbnailPath,
@@ -648,7 +703,7 @@ describe(MediaService.name, () => {
     });
 
     it('two owners of the same personGroupId keep separate move histories', async () => {
-      const context = setup(await getKyselyDB());
+      const context = setup();
       const { ctx, people } = context;
       const { owner: ownerA, sharee: ownerB, personGroupId } = await newSharedPerson(ctx);
       const faceA = await newFaceOn(ctx, { ownerId: ownerA.id, personGroupId });
@@ -711,7 +766,9 @@ describe(MediaService.name, () => {
       });
 
       // only the foreign row is left, and its files were not touched
-      await expect(moveHistory(ctx)).resolves.toEqual([expect.objectContaining({ entityId: personGroupId })]);
+      await expect(moveHistory(ctx, [ownerA.id, ownerB.id], personGroupId)).resolves.toEqual([
+        expect.objectContaining({ entityId: personGroupId }),
+      ]);
       expect(await readFile(legacyOld, 'utf8')).toBe('legacy');
       expect(existsSync(legacyNew)).toBe(false);
       expect(ctx.getMock(LoggingRepository).warn).toHaveBeenCalledWith(
@@ -737,7 +794,7 @@ describe(MediaService.name, () => {
       await expect(getPair(ctx, owner.id, personGroupId)).resolves.toEqual(
         expect.objectContaining({ thumbnailPath: newPath, thumbnailSourceFaceId: face.face.id }),
       );
-      await expect(moveHistory(ctx)).resolves.toHaveLength(1);
+      await expect(moveHistory(ctx, [owner.id], personGroupId)).resolves.toHaveLength(1);
 
       const unlink = vi.spyOn(ctx.get(StorageRepository), 'unlink');
       await people.handlePersonMigration({ ownerId: owner.id, personGroupId });
@@ -750,7 +807,7 @@ describe(MediaService.name, () => {
         path: newPath,
         bytes: face.crop,
       });
-      await expect(moveHistory(ctx)).resolves.toEqual([]);
+      await expect(moveHistory(ctx, [owner.id], personGroupId)).resolves.toEqual([]);
       expect(unlink).not.toHaveBeenCalled();
       await expect(generationFiles(owner.id, personGroupId)).resolves.toEqual([newPath]);
     });

@@ -32,7 +32,7 @@ describe(SearchService.name, () => {
 
       mocks.person.getByName.mockResolvedValue([]);
       mocks.partner.getAll.mockResolvedValue([]);
-      mocks.lock.getAllOwnersLockVisibility.mockResolvedValue([]);
+      mocks.lock.getOwnerLockVisibility.mockResolvedValue([]);
 
       await sut.searchPerson(auth, { name, withHidden: false });
 
@@ -48,19 +48,20 @@ describe(SearchService.name, () => {
       expect(mocks.person.getByName).toHaveBeenCalledWith(auth.user.id, name, { withHidden: true, partnerIds: [] }, []);
     });
 
-    it("should apply every source owner's locks, with the viewer's reveal only when elevated", async () => {
+    it("should apply the viewer's and partners' locks, with the viewer's reveal only when elevated", async () => {
       const auth = AuthFactory.create();
       const lockVisibility = [
         { ownerId: newUuid(), hiddenAlbumIds: [newUuid()], hiddenSmartFilters: [], visibleSmartFilters: [] },
       ];
       mocks.person.getByName.mockResolvedValue([]);
       mocks.partner.getAll.mockResolvedValue([]);
-      mocks.lock.getAllOwnersLockVisibility.mockResolvedValue(lockVisibility);
+      mocks.lock.getOwnerLockVisibility.mockResolvedValue(lockVisibility);
 
       await sut.searchPerson(auth, { name: 'foo', withHidden: false });
 
-      expect(mocks.lock.getAllOwnersLockVisibility).toHaveBeenCalledWith({
+      expect(mocks.lock.getOwnerLockVisibility).toHaveBeenCalledWith({
         viewerId: auth.user.id,
+        ownerIds: [auth.user.id],
         revealed: { albumIds: [], containerIds: [] },
         isElevated: false,
       });

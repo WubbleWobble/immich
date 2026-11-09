@@ -119,7 +119,7 @@ describe(MediaService.name, () => {
       mocks.person.getAll.mockReturnValue(makeStream([person1, person2]));
       mocks.person.getRandomFace.mockResolvedValueOnce(AssetFaceFactory.create());
       mocks.person.getClusterMemberIds.mockResolvedValue([person1.ownerId]);
-      mocks.lock.getAllOwnersLockVisibility.mockResolvedValue([]);
+      mocks.lock.getOwnerLockVisibility.mockResolvedValue([]);
 
       await sut.handleQueueGenerateThumbnails({ force: false });
 

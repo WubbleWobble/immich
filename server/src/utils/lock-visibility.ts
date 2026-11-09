@@ -159,30 +159,6 @@ export async function getOwnerLockVisibility(
   return entries;
 }
 
-/** Every user with at least one lock row. Owners without locks never produce a visibility entry. */
-export async function getLockHolderIdsQuery(db: Kysely<DB>): Promise<string[]> {
-  const rows = await db
-    .selectFrom('locked_album')
-    .select('userId')
-    .union((eb) => eb.selectFrom('locked_container').select('userId'))
-    .execute();
-  return rows.map(({ userId }) => userId);
-}
-
-/**
- * Per-owner visibility entries for EVERY owner that has locks, for surfaces whose rows can come from owners that are
- * not known up front - people and person timelines, where a face can sit on an asset of the viewer, a partner, the
- * owner of an album shared with the viewer, or another cluster member. Passing every lock holder is equivalent to
- * passing every owner (owners without locks produce no entry). The viewer's reveal set still applies only to the
- * viewer's own locks, and only when elevated (see getOwnerLockVisibility).
- */
-export async function getAllOwnersLockVisibility(
-  db: Kysely<DB>,
-  request: Omit<LockVisibilityRequest, 'ownerIds'>,
-): Promise<OwnerLockVisibility[]> {
-  return getOwnerLockVisibility(db, { ...request, ownerIds: await getLockHolderIdsQuery(db) });
-}
-
 /**
  * Whether a single album is effectively hidden for `viewerId` (directly locked, or inside
  * a locked folder subtree). No reveal parameter: callers gate on elevation, and reveal only

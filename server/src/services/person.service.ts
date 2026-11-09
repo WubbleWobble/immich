@@ -62,13 +62,15 @@ const personKey = ({ ownerId, personGroupId }: PersonId) => `${ownerId}/${person
 @Injectable()
 export class PersonService extends BaseService {
   /**
-   * D10: a person's faces can sit on assets of the viewer, partners, owners of albums shared with the viewer, and
-   * other cluster members, so lists and counts use entries for every lock-holding owner. Each owner's own locks hide
-   * that owner's content; the viewer's reveal set applies only to the viewer's own locks, and only when elevated.
+   * Lock entries for people lists, counts and name search: the viewer and the partners, whose own locks hide their
+   * own content (the viewer's reveal set applies only to the viewer's own locks, and only when elevated). Faces reached
+   * through a shared album follow album-grant rules instead (ruling R19): only the viewer's own entry matters there,
+   * through the shares the viewer locked for themselves.
    */
-  private getViewerLockVisibility(auth: AuthDto) {
-    return this.lockRepository.getAllOwnersLockVisibility({
+  private getViewerLockVisibility(auth: AuthDto, partnerIds: string[]) {
+    return this.lockRepository.getOwnerLockVisibility({
       viewerId: auth.user.id,
+      ownerIds: [auth.user.id, ...partnerIds],
       revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
       isElevated: !!auth.session?.hasElevatedPermission,
     });
@@ -104,8 +106,9 @@ export class PersonService extends BaseService {
    */
   async pickFeatureFace({ ownerId, personGroupId }: PersonId) {
     const eligibleOwnerIds = await this.personRepository.getClusterMemberIds(ownerId);
-    const lockVisibility = await this.lockRepository.getAllOwnersLockVisibility({
+    const lockVisibility = await this.lockRepository.getOwnerLockVisibility({
       viewerId: ownerId,
+      ownerIds: eligibleOwnerIds,
       revealed: NO_REVEALED_LOCKS,
       isElevated: false,
     });
@@ -122,7 +125,7 @@ export class PersonService extends BaseService {
       userId: auth.user.id,
       repository: this.partnerRepository,
     });
-    // People whose every in-scope face is hidden by its owner's locks vanish from the list and from total/hidden.
+    // People whose every in-scope face is hidden vanish from the list and from total/hidden.
     const { items, hasNextPage, total, hidden } = await this.personRepository.getAllForUser(
       pagination,
       auth.user.id,
@@ -133,7 +136,7 @@ export class PersonService extends BaseService {
         closestPersonId,
         ...filters,
       },
-      await this.getViewerLockVisibility(auth),
+      await this.getViewerLockVisibility(auth, partnerIds),
     );
 
     return {
@@ -260,7 +263,7 @@ export class PersonService extends BaseService {
     );
   }
 
-  /** Upstream's scope (own + partner + shared-album), with each source owner's locks applied inside it (D10). */
+  /** Upstream's scope (own + partner + shared-album); see getViewerLockVisibility for which locks apply. */
   async getStatistics(auth: AuthDto, personGroupId: string): Promise<PersonStatisticsResponseDto> {
     await this.requirePersonAccess({
       auth,
@@ -275,7 +278,7 @@ export class PersonService extends BaseService {
     return this.personRepository.getStatistics(
       personGroupId,
       { ownerId: auth.user.id, partnerIds },
-      await this.getViewerLockVisibility(auth),
+      await this.getViewerLockVisibility(auth, partnerIds),
     );
   }
 

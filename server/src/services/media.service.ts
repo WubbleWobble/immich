@@ -96,7 +96,8 @@ export class MediaService extends BaseService {
       const jobs: JobItem[] = [];
       for (const person of people) {
         const { ownerId, personGroupId } = person;
-        if (!person.faceAssetId) {
+        // a removed or edited-out feature face would only publish another unverifiable thumbnail, so it is re-picked
+        if (!person.faceAssetId || person.hasUsableFeatureFace === false) {
           const face = await personService.pickFeatureFace({ ownerId, personGroupId });
           if (!face) {
             continue;

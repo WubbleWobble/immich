@@ -39,11 +39,12 @@ export class SearchService extends BaseService {
   private embeddingCache = new LRUMap<string, string>(100);
 
   async searchPerson(auth: AuthDto, dto: SearchPeopleDto): Promise<PersonResponseDto[]> {
-    // D10: a person's faces can sit on assets of the viewer, partners and owners of albums shared with the viewer, so
-    // every source owner's locks apply (the viewer's reveal set only to the viewer's own locks, when elevated).
+    // Same scope and lock rules as the people list: own/partner faces follow their owner's locks (the viewer's reveal
+    // set only for the viewer's own, when elevated); shared-album faces follow album-grant rules (ruling R19).
     const partnerIds = await getMyPartnerIds({ userId: auth.user.id, repository: this.partnerRepository });
-    const lockVisibility = await this.lockRepository.getAllOwnersLockVisibility({
+    const lockVisibility = await this.lockRepository.getOwnerLockVisibility({
       viewerId: auth.user.id,
+      ownerIds: [auth.user.id, ...partnerIds],
       revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
       isElevated: !!auth.session?.hasElevatedPermission,
     });
