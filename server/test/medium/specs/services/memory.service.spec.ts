@@ -75,6 +75,27 @@ const assetIds = (memory: { assets: { id: string }[] }) => memory.assets.map(({ 
 const ids = (memories: { id: string; assets: { id: string }[] }[]) =>
   memories.map(({ id, assets }) => ({ id, assets: assets.map(({ id }) => id) }));
 
+/** Fork: a user with a locked album and memories holding only / partly its hidden asset. */
+const newHiddenMemories = async (ctx: ReturnType<typeof setup>['ctx']) => {
+  const { user } = await ctx.newUser();
+  const { asset: visible } = await ctx.newAsset({ ownerId: user.id });
+  const { asset: hidden } = await ctx.newAsset({ ownerId: user.id });
+  const { asset: spare } = await ctx.newAsset({ ownerId: user.id });
+  const { album: locked } = await ctx.newAlbum({ ownerId: user.id }, [hidden.id]);
+  await ctx.get(LockRepository).lockAlbum(user.id, locked.id);
+  const { memory: hiddenOnly } = await ctx.newMemory({ ownerId: user.id });
+  const { memory: mixed } = await ctx.newMemory({ ownerId: user.id });
+  await ctx.newMemoryAsset({ memoryId: hiddenOnly.id, assetId: hidden.id });
+  await ctx.newMemoryAsset({ memoryId: mixed.id, assetId: hidden.id });
+  await ctx.newMemoryAsset({ memoryId: mixed.id, assetId: visible.id });
+  const memoryAssets = (memoryId: string) =>
+    ctx
+      .get(MemoryRepository)
+      .get(memoryId)
+      .then((memory) => memory && assetIds(memory).toSorted());
+  return { user, visible, hidden, spare, locked, hiddenOnly, mixed, memoryAssets };
+};
+
 describe(MemoryService.name, () => {
   describe('get', () => {
     it('should return the memory', async () => {
@@ -866,6 +887,64 @@ describe(MemoryService.name, () => {
       await expect(sut.get(elevated, hiddenOnly.id).then(assetIds)).resolves.toEqual([]);
       const revealing = { ...elevated, revealedLocks: { albumIds: [locked.id], containerIds: [] } };
       await expect(sut.get(revealing, hiddenOnly.id).then(assetIds)).resolves.toEqual([hidden.id]);
+    });
+  });
+
+  describe('fork locks: mutations on an all-hidden memory (R36-4, §15.2)', () => {
+    it('refuses update, remove, addAssets and removeAssets outside elevation like a missing memory', async () => {
+      const { sut, ctx } = setup();
+      const { user, hidden, spare, locked, hiddenOnly, memoryAssets } = await newHiddenMemories(ctx);
+      const auth = factory.auth({ user });
+      const revealingUnelevated = { ...auth, revealedLocks: { albumIds: [locked.id], containerIds: [] } };
+
+      for (const viewer of [auth, revealingUnelevated]) {
+        await expect(sut.update(viewer, hiddenOnly.id, { isSaved: true })).rejects.toThrow(
+          'Not found or no memory.update access',
+        );
+        await expect(sut.remove(viewer, hiddenOnly.id)).rejects.toThrow('Not found or no memory.delete access');
+        await expect(sut.addAssets(viewer, hiddenOnly.id, { ids: [spare.id] })).rejects.toThrow(
+          'Not found or no memory.read access',
+        );
+        await expect(sut.removeAssets(viewer, hiddenOnly.id, { ids: [hidden.id] })).rejects.toThrow(
+          'Not found or no memory.update access',
+        );
+      }
+
+      // nothing changed
+      await expect(memoryAssets(hiddenOnly.id)).resolves.toEqual([hidden.id]);
+      await expect(
+        ctx.database.selectFrom('memory').select('isSaved').where('id', '=', hiddenOnly.id).executeTakeFirst(),
+      ).resolves.toEqual({ isSaved: false });
+    });
+
+    it('still allows mutations on a memory with a visible asset, and on a hidden one when elevated', async () => {
+      const { sut, ctx } = setup();
+      const { user, visible, hidden, spare, hiddenOnly, mixed, memoryAssets } = await newHiddenMemories(ctx);
+      const auth = factory.auth({ user });
+
+      await expect(sut.update(auth, mixed.id, { isSaved: true })).resolves.toEqual(
+        expect.objectContaining({ id: mixed.id, isSaved: true }),
+      );
+      await expect(sut.addAssets(auth, mixed.id, { ids: [spare.id] })).resolves.toEqual([
+        { id: spare.id, success: true },
+      ]);
+      await expect(sut.removeAssets(auth, mixed.id, { ids: [spare.id] })).resolves.toEqual([
+        { id: spare.id, success: true },
+      ]);
+      await expect(memoryAssets(mixed.id)).resolves.toEqual([hidden.id, visible.id].toSorted());
+
+      const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+      await expect(sut.update(elevated, hiddenOnly.id, { isSaved: true })).resolves.toEqual(
+        expect.objectContaining({ id: hiddenOnly.id, isSaved: true }),
+      );
+      await expect(sut.addAssets(elevated, hiddenOnly.id, { ids: [spare.id] })).resolves.toEqual([
+        { id: spare.id, success: true },
+      ]);
+      await expect(sut.removeAssets(elevated, hiddenOnly.id, { ids: [spare.id] })).resolves.toEqual([
+        { id: spare.id, success: true },
+      ]);
+      await expect(sut.remove(elevated, hiddenOnly.id)).resolves.toBeUndefined();
+      await expect(memoryAssets(hiddenOnly.id)).resolves.toBeUndefined();
     });
   });
 

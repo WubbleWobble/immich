@@ -208,18 +208,31 @@ export class MemoryService extends BaseService {
     return this.memoryRepository.statistics(auth.user.id, dto, await this.getViewerLockVisibility(auth));
   }
 
-  async get(auth: AuthDto, id: string): Promise<MemoryResponseDto> {
-    await this.requireAccess({ auth, permission: Permission.MemoryRead, ids: [id] });
+  /**
+   * Fork (7A.8e, R36-4, §15.2): outside elevation, a memory whose every asset is hidden is not found - matching
+   * search({ id }) (the memories-page rule) - and refused exactly like a missing memory (ruling R32), for reads and for
+   * every mutation (a write on hidden content). A memory that never had an asset is unaffected, so not-found is no
+   * lock-state oracle. Returns the viewer's lock entries for reuse.
+   */
+  private async assertMemoryReachable(auth: AuthDto, id: string, permission: Permission) {
     const lockVisibility = await this.getViewerLockVisibility(auth);
-    const memory = await this.findOrFail(id, lockVisibility);
-    // Fork (7A.8e): outside elevation, a memory whose every asset is hidden is not found, matching search({ id }) (the
-    // memories-page rule) and refused like a missing memory (ruling R32). A memory that never had an asset is unaffected.
-    if (!auth.session?.hasElevatedPermission && lockVisibility.length > 0 && memory.assets.length === 0) {
+    if (auth.session?.hasElevatedPermission || lockVisibility.length === 0) {
+      return lockVisibility;
+    }
+    const filtered = await this.memoryRepository.get(id, lockVisibility);
+    if (filtered && filtered.assets.length === 0) {
       const unfiltered = await this.memoryRepository.get(id);
       if (unfiltered && unfiltered.assets.length > 0) {
-        throw new BadRequestException(`Not found or no ${Permission.MemoryRead} access`);
+        throw new BadRequestException(`Not found or no ${permission} access`);
       }
     }
+    return lockVisibility;
+  }
+
+  async get(auth: AuthDto, id: string): Promise<MemoryResponseDto> {
+    await this.requireAccess({ auth, permission: Permission.MemoryRead, ids: [id] });
+    const lockVisibility = await this.assertMemoryReachable(auth, id, Permission.MemoryRead);
+    const memory = await this.findOrFail(id, lockVisibility);
     return mapMemory(memory, auth);
   }
 
@@ -250,7 +263,7 @@ export class MemoryService extends BaseService {
   async update(auth: AuthDto, id: string, dto: MemoryUpdateDto): Promise<MemoryResponseDto> {
     await this.requireAccess({ auth, permission: Permission.MemoryUpdate, ids: [id] });
 
-    const lockVisibility = await this.getViewerLockVisibility(auth);
+    const lockVisibility = await this.assertMemoryReachable(auth, id, Permission.MemoryUpdate);
     const memory = await this.memoryRepository.update(
       id,
       {
@@ -266,11 +279,13 @@ export class MemoryService extends BaseService {
 
   async remove(auth: AuthDto, id: string): Promise<void> {
     await this.requireAccess({ auth, permission: Permission.MemoryDelete, ids: [id] });
+    await this.assertMemoryReachable(auth, id, Permission.MemoryDelete);
     await this.memoryRepository.delete(id);
   }
 
   async addAssets(auth: AuthDto, id: string, dto: BulkIdsDto): Promise<BulkIdResponseDto[]> {
     await this.requireAccess({ auth, permission: Permission.MemoryRead, ids: [id] });
+    await this.assertMemoryReachable(auth, id, Permission.MemoryRead);
 
     const repos = { access: this.accessRepository, bulk: this.memoryRepository };
     const results = await addAssets(auth, repos, {
@@ -289,6 +304,7 @@ export class MemoryService extends BaseService {
 
   async removeAssets(auth: AuthDto, id: string, dto: BulkIdsDto): Promise<BulkIdResponseDto[]> {
     await this.requireAccess({ auth, permission: Permission.MemoryUpdate, ids: [id] });
+    await this.assertMemoryReachable(auth, id, Permission.MemoryUpdate);
 
     const repos = { access: this.accessRepository, bulk: this.memoryRepository };
     const results = await removeAssets(auth, repos, {
