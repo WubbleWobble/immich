@@ -34,6 +34,7 @@ import { AssetSyncResult } from 'src/repositories/library.repository.js';
 import { AssetTable } from 'src/schema/tables/asset.table.js';
 import { AlbumService } from 'src/services/album.service.js';
 import { BaseService } from 'src/services/base.service.js';
+import { LockService } from 'src/services/lock.service.js';
 import { mimeTypes } from 'src/utils/mime-types.js';
 import { batched, findOrFail, handlePromiseError } from 'src/utils/misc.js';
 
@@ -704,9 +705,15 @@ export class LibraryService extends BaseService {
     this.logger.verbose(`Deleting asset(s) ${job.paths} from library ${job.libraryId}`);
     for (const assetPath of job.paths) {
       const asset = await this.assetRepository.getByLibraryIdAndOriginalPath(job.libraryId, assetPath);
-      if (asset) {
-        await this.assetRepository.remove(asset);
+      if (!asset) {
+        continue;
       }
+      // Fork (R66): judged before the delete so the audit row carries the owner's lock verdict for partner sync.
+      const ownerHidden = await BaseService.create(LockService, this).isAssetHiddenForOwnerDeletion(
+        asset.ownerId,
+        asset.id,
+      );
+      await this.assetRepository.remove(asset, { ownerHidden });
     }
 
     return JobStatus.Success;

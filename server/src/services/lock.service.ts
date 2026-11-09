@@ -378,12 +378,38 @@ export class LockService extends BaseService {
    * stack exists (a delete judges before deleting). One probe when the owner holds no locks.
    */
   async isStackHiddenForOwnerEvents(ownerId: string, stackId: string): Promise<boolean> {
+    const { hiddenFromOrdinary } = await this.judgeStackForDeletion(ownerId, stackId);
+    return hiddenFromOrdinary;
+  }
+
+  /**
+   * Both stack verdicts a deletion needs, judged while the stack still exists (one probe when the owner holds no
+   * locks): `hiddenFromOrdinary` is the R58 event rule above; `ownerHidden` (ruling R66) is whether ANY member is
+   * hidden by the owner's own locks outside elevation - the partner stack streams' rule (noHiddenMember), persisted
+   * on the stack's audit row so the partner delete stream never names a stack the partner was never sent.
+   */
+  async judgeStackForDeletion(
+    ownerId: string,
+    stackId: string,
+  ): Promise<{ hiddenFromOrdinary: boolean; ownerHidden: boolean }> {
     if (!(await this.lockRepository.anyHasLocks([ownerId]))) {
-      return false;
+      return { hiddenFromOrdinary: false, ownerHidden: false };
     }
     const memberIds = await this.stackRepository.getMemberIds(stackId);
     const hidden = await this.getOwnHiddenAssetIdsForUpload({ user: { id: ownerId } } as AuthDto, memberIds);
-    return hidden.size > 0 && memberIds.length - hidden.size < 2;
+    return {
+      hiddenFromOrdinary: hidden.size > 0 && memberIds.length - hidden.size < 2,
+      ownerHidden: hidden.size > 0,
+    };
+  }
+
+  /**
+   * Ruling R66, asset deletions outside the AssetDelete job (upload clean-up, library file removal): whether the
+   * owner's asset is hidden by the owner's own locks outside elevation - the verdict persisted on its audit row.
+   */
+  async isAssetHiddenForOwnerDeletion(ownerId: string, assetId: string): Promise<boolean> {
+    const hidden = await this.getOwnerEventHiddenIds(ownerId, [assetId]);
+    return hidden.has(assetId);
   }
 
   /** R58: the rooms for an owner event judged hidden from ordinary sessions (elevated sessions) or not (user room). */

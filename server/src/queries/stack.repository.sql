@@ -66,7 +66,7 @@ where
 -- StackRepository.delete
 delete from "stack"
 where
-  "id" = $1::uuid
+  "id" in ($1)
 
 -- StackRepository.getById
 select

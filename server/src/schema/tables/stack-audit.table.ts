@@ -14,4 +14,12 @@ export class StackAuditTable {
 
   @CreateDateColumn({ default: () => 'clock_timestamp()', index: true })
   deletedAt!: Generated<Timestamp>;
+
+  /**
+   * Fork (ruling R66): the owner's lock verdict judged before the delete - true when the row was hidden by the owner's
+   * own locks outside elevation (for a stack: any member was). Partner delete streams skip true rows; NULL (legacy or
+   * judged visible) streams. Set by the deleting repository call in the delete's transaction.
+   */
+  @Column({ type: 'boolean', nullable: true })
+  ownerHidden!: boolean | null;
 }

@@ -63,7 +63,10 @@ export class StackService extends BaseService {
     await this.requireAccess({ auth, permission: Permission.AssetUpdate, ids: dto.assetIds });
     await this.assertExistingStacksMutableForViewer(auth, dto.assetIds);
 
-    const stack = await this.stackRepository.create({ ownerId: auth.user.id }, dto.assetIds);
+    // Fork (R66): the existing stacks of the requested assets are merged away below; judged before they are gone so
+    // their audit rows carry the partner verdict (outside elevation the guard above already refused hidden ones).
+    const hiddenStackIds = await this.getHiddenStackIdsOfAssets(auth.user.id, dto.assetIds);
+    const stack = await this.stackRepository.create({ ownerId: auth.user.id }, dto.assetIds, { hiddenStackIds });
 
     await this.eventRepository.emit('StackCreate', { stackId: stack.id, userId: auth.user.id });
 
@@ -120,6 +123,23 @@ export class StackService extends BaseService {
     }
   }
 
+  /** R66: the stacks of `assetIds` with a member hidden by the owner's own locks (empty when the owner has no locks). */
+  private async getHiddenStackIdsOfAssets(ownerId: string, assetIds: string[]): Promise<string[]> {
+    if (!(await this.lockRepository.anyHasLocks([ownerId]))) {
+      return [];
+    }
+    const assets = await this.assetRepository.getByIds(assetIds);
+    const stackIds = new Set(assets.map(({ stackId }) => stackId).filter((stackId) => stackId !== null));
+    const hidden: string[] = [];
+    for (const stackId of stackIds) {
+      const { ownerHidden } = await this.lockService().judgeStackForDeletion(ownerId, stackId);
+      if (ownerHidden) {
+        hidden.push(stackId);
+      }
+    }
+    return hidden;
+  }
+
   /** The viewer's lock entries for a mutation guard: no reveal set - reveal headers never grant writes. */
   private getMutationLockVisibility(auth: AuthDto) {
     return this.lockRepository.getOwnerLockVisibility({
@@ -170,9 +190,10 @@ export class StackService extends BaseService {
   async delete(auth: AuthDto, id: string): Promise<void> {
     await this.requireAccess({ auth, permission: Permission.StackDelete, ids: [id] });
     await this.assertStackMutableForViewer(auth, id);
-    // Fork (R58): judged before the stack is gone - see NotificationService.onStackDelete.
-    const hiddenFromOrdinary = await this.lockService().isStackHiddenForOwnerEvents(auth.user.id, id);
-    await this.stackRepository.delete(id);
+    // Fork (R58): judged before the stack is gone - see NotificationService.onStackDelete. R66: the partner verdict
+    // (any hidden member) is persisted on the audit row.
+    const { hiddenFromOrdinary, ownerHidden } = await this.lockService().judgeStackForDeletion(auth.user.id, id);
+    await this.stackRepository.delete(id, { ownerHidden });
     await this.eventRepository.emit('StackDelete', { stackId: id, userId: auth.user.id, hiddenFromOrdinary });
   }
 
@@ -182,14 +203,19 @@ export class StackService extends BaseService {
       await this.assertStackMutableForViewer(auth, id);
     }
     // Fork (R58): one event for all - ordinary sessions get it unless none of them presented any of these stacks.
+    // R66: each stack's partner verdict (any hidden member) is persisted on its audit row.
     let hiddenFromOrdinary = true;
+    const hiddenIds: string[] = [];
     for (const id of dto.ids) {
-      if (!(await this.lockService().isStackHiddenForOwnerEvents(auth.user.id, id))) {
+      const verdict = await this.lockService().judgeStackForDeletion(auth.user.id, id);
+      if (!verdict.hiddenFromOrdinary) {
         hiddenFromOrdinary = false;
-        break;
+      }
+      if (verdict.ownerHidden) {
+        hiddenIds.push(id);
       }
     }
-    await this.stackRepository.deleteAll(dto.ids);
+    await this.stackRepository.deleteAll(dto.ids, { hiddenIds });
     await this.eventRepository.emit('StackDeleteAll', { stackIds: dto.ids, userId: auth.user.id, hiddenFromOrdinary });
   }
 

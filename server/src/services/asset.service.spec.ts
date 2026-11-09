@@ -673,7 +673,7 @@ describe(AssetService.name, () => {
           },
         ],
       ]);
-      expect(mocks.asset.remove).toHaveBeenCalledWith(getForAssetDeletion(asset));
+      expect(mocks.asset.remove).toHaveBeenCalledWith(getForAssetDeletion(asset), { ownerHidden: false });
     });
 
     it('should delete the entire stack if deleted asset was the primary asset and the stack would only contain one asset afterwards', async () => {
@@ -685,7 +685,7 @@ describe(AssetService.name, () => {
 
       await sut.handleAssetDeletion({ id: asset.id, deleteOnDisk: true });
 
-      expect(mocks.stack.delete).toHaveBeenCalledWith(asset.stackId);
+      expect(mocks.stack.delete).toHaveBeenCalledWith(asset.stackId, { ownerHidden: false });
     });
 
     it('should delete the stack when a non-primary asset is deleted and only the primary would remain', async () => {
@@ -699,7 +699,7 @@ describe(AssetService.name, () => {
 
       await sut.handleAssetDeletion({ id: asset.id, deleteOnDisk: true });
 
-      expect(mocks.stack.delete).toHaveBeenCalledWith(deletionAsset.stack.id);
+      expect(mocks.stack.delete).toHaveBeenCalledWith(deletionAsset.stack.id, { ownerHidden: false });
     });
 
     it('should keep the stack when a non-primary asset is deleted and the primary plus another asset remain', async () => {

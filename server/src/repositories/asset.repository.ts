@@ -711,8 +711,19 @@ export class AssetRepository {
     return this.getById(asset.id, { exifInfo: true, faces: {}, edits: true });
   }
 
-  async remove(asset: { id: string }): Promise<void> {
-    await this.db.deleteFrom('asset').where('id', '=', asUuid(asset.id)).execute();
+  /**
+   * Fork (ruling R66): `ownerHidden` is the owner's lock verdict judged before the call; when true it is persisted on
+   * the audit row the delete trigger writes, in the same transaction, so the partner delete streams skip it.
+   */
+  async remove(asset: { id: string }, { ownerHidden = false }: { ownerHidden?: boolean } = {}): Promise<void> {
+    if (!ownerHidden) {
+      await this.db.deleteFrom('asset').where('id', '=', asUuid(asset.id)).execute();
+      return;
+    }
+    await this.db.transaction().execute(async (tx) => {
+      await tx.deleteFrom('asset').where('id', '=', asUuid(asset.id)).execute();
+      await tx.updateTable('asset_audit').set({ ownerHidden: true }).where('assetId', '=', asUuid(asset.id)).execute();
+    });
   }
 
   @GenerateSql({ params: [{ ownerId: DummyValue.UUID, libraryId: DummyValue.UUID, checksum: DummyValue.BUFFER }] })

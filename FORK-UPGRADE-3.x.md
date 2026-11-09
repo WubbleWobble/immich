@@ -42,10 +42,13 @@ timestamped after upstream's newest at that point.
 | `1792300000000-AddPersonThumbnailSourceFace` | **New.** Records which face a person thumbnail was cropped from |
 | `1792300000001-AddAlbumCacheRevision` | **New.** `cacheRevision` for smart-album list cache freshness |
 | `1792300000002-AddAssetVisibilityNotLockedCheck` | **New.** CHECK constraint rejecting `asset.visibility = 'locked'` |
+| `1792300000003-AddAuditOwnerHidden` | **New.** Nullable `ownerHidden` on `asset_audit` and `stack_audit`: the pre-delete lock verdict that keeps a hidden asset's or stack's deletion out of the partner sync delete streams (R66). Existing rows stay `NULL` (treated as visible; prod has no locks) |
 
-**Expected ledger after upgrading from prod: 110 rows** in `kysely_migrations`
-(94 existing + 13 upstream + 3 fork), applied in order. Verified on a restored
-copy of prod on 2026-11-09. The ledger also equals the list of files in
+**Expected ledger after upgrading from prod: 111 rows** in `kysely_migrations`
+(94 existing + 13 upstream + 4 fork), applied in order. The 110-row figure was
+verified on a restored copy of prod on 2026-11-09, before
+`1792300000003-AddAuditOwnerHidden` was added; re-verify at the next
+rehearsal. The ledger also equals the list of files in
 `server/src/schema/migrations/`.
 
 ### Unsupported: interim-commit databases
@@ -104,6 +107,16 @@ State these plainly to users.
   - assets withheld while locked are not re-sent after an unlock until a
     re-sync. Cause: lock toggles do not bump `updateId`, so the sync cursor
     does not move.
+  Deletions follow the same rule (R66): when a photo or stack is deleted,
+  the owner's lock verdict is judged first and stored on the audit row
+  (`ownerHidden`), and the partner delete streams skip rows judged hidden,
+  so a partner device never learns the id of a photo or stack it was never
+  sent. A stack counts as hidden when any member is hidden (the rule the
+  partner stack stream uses). Residual: a stack or photo a partner already
+  received, then hidden by a lock, then deleted, is not removed from that
+  device by sync. Your own device's streams are unchanged and still carry
+  every deletion. Audit rows written before this release have no verdict
+  and stream as before.
 - **Locking does not revoke shared links already handed out.** To revoke a
   link to your own locked content, elevate your session (PIN) first, then
   delete it. While you are not elevated, such a link is neither listed nor
@@ -210,8 +223,8 @@ Deploy only inside a window the user has confirmed.
    still be shown without a fresh access check. Clearing cookies also signs
    the user out, which is expected.
 8. Repeat the rehearsal checks:
-   - `kysely_migrations` = 110 rows with exact names and order (94 old rows
-     unchanged, then 13 upstream, then 3 fork);
+   - `kysely_migrations` = 111 rows with exact names and order (94 old rows
+     unchanged, then 13 upstream, then 4 fork);
    - asset count and person count unchanged;
    - the `asset.visibility` CHECK constraint is present, and 0 assets have
      `visibility = 'locked'`;

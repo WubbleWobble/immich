@@ -77,7 +77,15 @@ export class StackRepository {
     );
   }
 
-  async create(entity: Omit<Insertable<StackTable>, 'primaryAssetId'>, assetIds: string[]) {
+  /**
+   * Fork (ruling R66): `hiddenStackIds` are the caller's existing stacks judged hidden (any member hidden by the
+   * owner's own locks) before the call; those merged away here get `ownerHidden` on their audit rows.
+   */
+  async create(
+    entity: Omit<Insertable<StackTable>, 'primaryAssetId'>,
+    assetIds: string[],
+    { hiddenStackIds = [] }: { hiddenStackIds?: string[] } = {},
+  ) {
     return this.db.transaction().execute(async (tx) => {
       const stacks = await tx
         .selectFrom('stack')
@@ -115,6 +123,10 @@ export class StackRepository {
             stacks.map((stack) => stack.id),
           )
           .execute();
+        const hidden = stacks.map((stack) => stack.id).filter((id) => hiddenStackIds.includes(id));
+        if (hidden.length > 0) {
+          await tx.updateTable('stack_audit').set({ ownerHidden: true }).where('stackId', 'in', hidden).execute();
+        }
       }
 
       const newRecord = await tx
@@ -141,13 +153,28 @@ export class StackRepository {
     });
   }
 
+  /**
+   * Fork (ruling R66): `ownerHidden` is the stack's lock verdict judged before the call (any member hidden by the
+   * owner's own locks); when true it is persisted on the audit row the delete trigger writes, in the same transaction.
+   */
   @GenerateSql({ params: [DummyValue.UUID] })
-  async delete(id: string): Promise<void> {
-    await this.db.deleteFrom('stack').where('id', '=', asUuid(id)).execute();
+  async delete(id: string, { ownerHidden = false }: { ownerHidden?: boolean } = {}): Promise<void> {
+    await this.deleteAll([id], { hiddenIds: ownerHidden ? [id] : [] });
   }
 
-  async deleteAll(ids: string[]): Promise<void> {
-    await this.db.deleteFrom('stack').where('id', 'in', ids).execute();
+  /** `hiddenIds`: the subset of `ids` judged hidden before the call (see {@link delete}). */
+  async deleteAll(ids: string[], { hiddenIds = [] }: { hiddenIds?: string[] } = {}): Promise<void> {
+    if (ids.length === 0) {
+      return;
+    }
+    if (hiddenIds.length === 0) {
+      await this.db.deleteFrom('stack').where('id', 'in', ids).execute();
+      return;
+    }
+    await this.db.transaction().execute(async (tx) => {
+      await tx.deleteFrom('stack').where('id', 'in', ids).execute();
+      await tx.updateTable('stack_audit').set({ ownerHidden: true }).where('stackId', 'in', hiddenIds).execute();
+    });
   }
 
   update(id: string, entity: Updateable<StackTable>, lockVisibility?: OwnerLockVisibility[]) {

@@ -212,10 +212,39 @@ describe(StackService.name, () => {
 
       await sut.delete(auth, 'stack-id');
 
-      expect(mocks.stack.delete).toHaveBeenCalledWith('stack-id');
+      expect(mocks.stack.delete).toHaveBeenCalledWith('stack-id', { ownerHidden: false });
       expect(mocks.event.emit).toHaveBeenCalledWith('StackDelete', {
         stackId: 'stack-id',
         userId: auth.user.id,
+        hiddenFromOrdinary: false,
+      });
+    });
+
+    // Fork (ruling R66): the partner verdict (any hidden member) is persisted even when ordinary sessions still saw
+    // the stack (two visible members remain, R58).
+    it('should persist the hidden-member verdict on the audit row of a stack with a hidden member', async () => {
+      const auth = AuthFactory.from().session({ hasElevatedPermission: true }).build();
+      const ownerId = auth.user.id;
+      mocks.access.stack.checkOwnerAccess.mockResolvedValue(new Set(['stack-id']));
+      mocks.stack.delete.mockResolvedValue();
+      mocks.lock.anyHasLocks.mockResolvedValue(true);
+      mocks.stack.getMemberIds.mockResolvedValue(['asset-a', 'asset-b', 'asset-c']);
+      mocks.lock.getAssetOwners.mockResolvedValue([
+        { id: 'asset-a', ownerId, isPartner: false },
+        { id: 'asset-b', ownerId, isPartner: false },
+        { id: 'asset-c', ownerId, isPartner: false },
+      ]);
+      mocks.lock.getOwnerLockVisibility.mockResolvedValue([
+        { ownerId, hiddenAlbumIds: ['locked-album'], hiddenSmartFilters: [], visibleSmartFilters: [] },
+      ]);
+      mocks.lock.getVisibleAssetIds.mockResolvedValue(new Set(['asset-a', 'asset-b']));
+
+      await sut.delete(auth, 'stack-id');
+
+      expect(mocks.stack.delete).toHaveBeenCalledWith('stack-id', { ownerHidden: true });
+      expect(mocks.event.emit).toHaveBeenCalledWith('StackDelete', {
+        stackId: 'stack-id',
+        userId: ownerId,
         hiddenFromOrdinary: false,
       });
     });
@@ -235,7 +264,7 @@ describe(StackService.name, () => {
 
       await sut.deleteAll(authStub.admin, { ids: ['stack-id'] });
 
-      expect(mocks.stack.deleteAll).toHaveBeenCalledWith(['stack-id']);
+      expect(mocks.stack.deleteAll).toHaveBeenCalledWith(['stack-id'], { hiddenIds: [] });
       expect(mocks.event.emit).toHaveBeenCalledWith('StackDeleteAll', {
         stackIds: ['stack-id'],
         userId: authStub.admin.user.id,

@@ -710,6 +710,10 @@ class PartnerAssetsSync extends BaseSync {
       .stream();
   }
 
+  /**
+   * Fork (ruling R66): rows judged hidden by the owner's own locks before the delete (`ownerHidden = true`) are
+   * skipped - the partner was never sent that asset. NULL (legacy, or judged visible) streams.
+   */
   @GenerateSql({ params: [dummyQueryOptions], stream: true })
   getDeletes(options: SyncQueryOptions) {
     return this.auditQuery('asset_audit', options)
@@ -717,6 +721,7 @@ class PartnerAssetsSync extends BaseSync {
       .where('ownerId', 'in', (eb) =>
         eb.selectFrom('partner').select(['sharedById']).where('sharedWithId', '=', options.userId),
       )
+      .where('ownerHidden', 'is not', true)
       .stream();
   }
 
@@ -800,6 +805,7 @@ class StackSync extends BaseSync {
 }
 
 class PartnerStackSync extends BaseSync {
+  /** Fork (ruling R66): stacks judged hidden (any member hidden by the owner's locks) before the delete are skipped. */
   @GenerateSql({ params: [dummyQueryOptions], stream: true })
   getDeletes(options: SyncQueryOptions) {
     return this.auditQuery('stack_audit', options)
@@ -807,6 +813,7 @@ class PartnerStackSync extends BaseSync {
       .where('userId', 'in', (eb) =>
         eb.selectFrom('partner').select(['sharedById']).where('sharedWithId', '=', options.userId),
       )
+      .where('ownerHidden', 'is not', true)
       .stream();
   }
 

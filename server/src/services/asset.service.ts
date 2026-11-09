@@ -314,7 +314,7 @@ export class AssetService extends BaseService {
     }
 
     if (stack) {
-      await this.copyStack({ sourceAsset, targetAsset });
+      await this.copyStack({ ownerId: auth.user.id, sourceAsset, targetAsset });
     }
 
     if (favorite) {
@@ -327,9 +327,12 @@ export class AssetService extends BaseService {
   }
 
   private async copyStack({
+    ownerId,
     sourceAsset,
     targetAsset,
   }: {
+    /** The copying user: asset.copy is owner-only, so the stacks are theirs. */
+    ownerId: string;
     sourceAsset: { id: string; stackId: string | null };
     targetAsset: { id: string; stackId: string | null };
   }) {
@@ -338,8 +341,13 @@ export class AssetService extends BaseService {
     }
 
     if (targetAsset.stackId) {
+      // Fork (R66): judged before the merge empties the source stack, so its audit row carries the partner verdict.
+      const { ownerHidden } = await BaseService.create(LockService, this).judgeStackForDeletion(
+        ownerId,
+        sourceAsset.stackId,
+      );
       await this.stackRepository.merge({ sourceId: sourceAsset.stackId, targetId: targetAsset.stackId });
-      await this.stackRepository.delete(sourceAsset.stackId);
+      await this.stackRepository.delete(sourceAsset.stackId, { ownerHidden });
     } else {
       await this.assetRepository.update({ id: targetAsset.id, stackId: sourceAsset.stackId });
     }
@@ -403,6 +411,20 @@ export class AssetService extends BaseService {
       return JobStatus.Failed;
     }
 
+    // Fork (R58): judged while the asset (and its album memberships) still exist - see NotificationService. The motion
+    // part is judged now too, as a Live Photo unit with this still (7A.2), and its delete job carries the verdict.
+    const lockService = BaseService.create(LockService, this);
+    const motionId = asset.livePhotoVideoId;
+    const hiddenForOwner = await lockService.getOwnerEventHiddenIds(asset.ownerId, motionId ? [id, motionId] : [id]);
+    // Fork (R61): a motion part no still references any more (library deletion or metadata replacement queue its
+    // delete unflagged, after the still was removed or unlinked) has no container to judge and would read as visible.
+    // With any lock on its owner it is withheld from ordinary sessions, which never present a standalone motion part.
+    const strandedMotionPart =
+      asset.visibility === AssetVisibility.Hidden &&
+      (await this.lockRepository.anyHasLocks([asset.ownerId])) &&
+      (await this.assetRepository.getLivePhotoCount(id)) === 0;
+    const hiddenFromOrdinary = !!job.hiddenFromOrdinary || hiddenForOwner.has(id) || strandedMotionPart;
+
     if (asset.stack) {
       // asset.stack.assets only includes timeline visible assets and excludes the primary asset
       const remainingStackAssetIds = asset.stack.assets.map((a) => a.id).filter((assetId) => assetId !== id);
@@ -414,8 +436,10 @@ export class AssetService extends BaseService {
       }
 
       if (remainingCount < 2) {
-        // 0 or 1 asset would remain: dissolve the stack so it does not linger as a single-asset stack
-        await this.stackRepository.delete(asset.stack.id);
+        // 0 or 1 asset would remain: dissolve the stack so it does not linger as a single-asset stack.
+        // Fork (R66): the stack is judged before it is gone, so its audit row carries the partner verdict.
+        const { ownerHidden } = await lockService.judgeStackForDeletion(asset.ownerId, asset.stack.id);
+        await this.stackRepository.delete(asset.stack.id, { ownerHidden });
       } else if (asset.stack.primaryAssetId === id) {
         // the primary is being deleted but others remain: promote a new primary
         await this.stackRepository.update(asset.stack.id, {
@@ -425,23 +449,8 @@ export class AssetService extends BaseService {
       }
     }
 
-    // Fork (R58): judged while the asset (and its album memberships) still exist - see NotificationService. The motion
-    // part is judged now too, as a Live Photo unit with this still (7A.2), and its delete job carries the verdict.
-    const motionId = asset.livePhotoVideoId;
-    const hiddenForOwner = await BaseService.create(LockService, this).getOwnerEventHiddenIds(
-      asset.ownerId,
-      motionId ? [id, motionId] : [id],
-    );
-    // Fork (R61): a motion part no still references any more (library deletion or metadata replacement queue its
-    // delete unflagged, after the still was removed or unlinked) has no container to judge and would read as visible.
-    // With any lock on its owner it is withheld from ordinary sessions, which never present a standalone motion part.
-    const strandedMotionPart =
-      asset.visibility === AssetVisibility.Hidden &&
-      (await this.lockRepository.anyHasLocks([asset.ownerId])) &&
-      (await this.assetRepository.getLivePhotoCount(id)) === 0;
-    const hiddenFromOrdinary = !!job.hiddenFromOrdinary || hiddenForOwner.has(id) || strandedMotionPart;
-
-    await this.assetRepository.remove(asset);
+    // Fork (R66): the same verdict is persisted on the audit row, so the partner delete stream skips a hidden asset.
+    await this.assetRepository.remove(asset, { ownerHidden: hiddenFromOrdinary });
     if (!asset.libraryId) {
       await this.userRepository.updateUsage(asset.ownerId, -(asset.exifInfo?.fileSizeInByte || 0));
     }

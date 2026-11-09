@@ -236,9 +236,14 @@ export class AssetMediaService extends BaseService {
         return { status: AssetMediaStatus.DUPLICATE, id: duplicateId };
       }
 
-      // clean up the asset row if one was created
+      // clean up the asset row if one was created. Fork (R66): judged like any deletion - a hidden smart filter can
+      // already match the row - so its audit row carries the partner verdict.
       if (asset) {
-        await this.assetRepository.remove({ id: asset.id });
+        const ownerHidden = await BaseService.create(LockService, this).isAssetHiddenForOwnerDeletion(
+          auth.user.id,
+          asset.id,
+        );
+        await this.assetRepository.remove({ id: asset.id }, { ownerHidden });
       }
 
       this.logger.error(`Error uploading file ${error}`, error?.stack);

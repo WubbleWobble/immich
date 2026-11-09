@@ -108,3 +108,4 @@
 1792300000000-AddPersonThumbnailSourceFace
 1792300000001-AddAlbumCacheRevision
 1792300000002-AddAssetVisibilityNotLockedCheck
+1792300000003-AddAuditOwnerHidden

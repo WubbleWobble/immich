@@ -917,6 +917,7 @@ where
     where
       "sharedWithId" = $3
   )
+  and "ownerHidden" is not true
 order by
   "asset_audit"."id" asc
 
@@ -1066,6 +1067,7 @@ where
     where
       "sharedWithId" = $3
   )
+  and "ownerHidden" is not true
 order by
   "stack_audit"."id" asc
 
