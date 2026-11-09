@@ -44,7 +44,10 @@ const AUTHORIZATION_HEADERS = [
   'x-immich-revealed-containers',
 ];
 
-/** In-flight requests are shared only between requests for the same URL with the same explicit credentials. */
+/**
+ * In-flight requests are shared only between requests for the same URL with the same explicit credentials, and never
+ * for a byte range (see isRangeRequest).
+ */
 const getPendingKey = (request: URL | Request): string => {
   const url = getRequestKey(request);
   if (request instanceof URL) {
@@ -52,6 +55,14 @@ const getPendingKey = (request: URL | Request): string => {
   }
   return JSON.stringify([url, ...AUTHORIZATION_HEADERS.map((name) => request.headers.get(name))]);
 };
+
+/**
+ * Fork: a byte-range request (`Range`, or a conditional `If-Range`) is never shared - not even between equal ranges -
+ * since its response depends on headers the pending key leaves out (video seeking, two tabs playing one original). It
+ * gets its own network request, still tracked for cancel and purge like any other.
+ */
+const isRangeRequest = (request: URL | Request): boolean =>
+  !(request instanceof URL) && (request.headers.has('range') || request.headers.has('if-range'));
 
 const CANCELATION_MESSAGE = 'Request canceled by application';
 const CLEANUP_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
@@ -148,7 +159,8 @@ const settle = async (record: TrackedRequest, request: URL | Request): Promise<R
 
 export const handleFetch = async (request: URL | Request, clientId = ''): Promise<Response> => {
   const pendingKey = getPendingKey(request);
-  const existing = pendingRequests.get(pendingKey);
+  const shared = !isRangeRequest(request);
+  const existing = shared ? pendingRequests.get(pendingKey) : undefined;
 
   if (existing) {
     existing.consumers.set(clientId, (existing.consumers.get(clientId) ?? 0) + 1);
@@ -164,7 +176,9 @@ export const handleFetch = async (request: URL | Request, clientId = ''): Promis
     joiners: 1,
     promise: undefined as unknown as Promise<Response[]>,
   };
-  pendingRequests.set(pendingKey, record);
+  if (shared) {
+    pendingRequests.set(pendingKey, record);
+  }
   activeRequests.add(record);
   record.promise = settle(record, request);
 

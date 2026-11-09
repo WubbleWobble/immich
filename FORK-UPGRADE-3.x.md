@@ -133,9 +133,10 @@ State these plainly to users.
   `private, no-cache`. The browser keeps them but asks the server each time,
   and the server runs the access check before answering. A photo hidden
   since it was cached therefore gets the access error, never `304` or the
-  cached bytes. The service worker shares only in-flight requests. Every
-  tab purges them on logout, session loss or lock, end of elevation,
-  lock/unlock, reveal changes and move-to-locked. Cost: scrolling the
+  cached bytes. The service worker shares only in-flight requests, never
+  byte-range ones (each video seek gets its own request). Every tab purges
+  them on logout, session loss or lock, end of elevation, lock/unlock,
+  reveal changes and move-to-locked. Cost: scrolling the
   timeline makes one `304` round trip per thumbnail instead of serving the
   thumbnail from cache for 24 hours.
   Remaining gaps:

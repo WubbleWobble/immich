@@ -96,6 +96,91 @@ describe('service worker asset requests (R50)', () => {
     await expect(textOf(ordinary)).resolves.toBe('access denied');
   });
 
+  describe('byte-range requests bypass sharing', () => {
+    const originalUrl = url.replace('thumbnail?size=preview', 'original');
+    const bytes = 'ABCDEFGH';
+    /** The server's partial response for `range` (`bytes=start-end`) of the 8-byte original. */
+    const partial = (range: string) => {
+      const [start, end] = range.replace('bytes=', '').split('-').map(Number);
+      return new Response(bytes.slice(start, end + 1), {
+        status: 206,
+        headers: { 'Content-Range': `bytes ${start}-${end}/${bytes.length}` },
+      });
+    };
+    const ranged = (range: string, headers: Record<string, string> = {}) =>
+      new Request(originalUrl, { headers: { Range: range, ...headers } });
+
+    it('simultaneous different ranges each get their own network request and bytes', async () => {
+      const { fetchMock, calls } = controlledFetch();
+
+      const head = handleFetch(ranged('bytes=0-3'));
+      const tail = handleFetch(ranged('bytes=4-7'));
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(calls.map(({ request }) => request.headers.get('range'))).toEqual(['bytes=0-3', 'bytes=4-7']);
+
+      calls[0].release(partial('bytes=0-3'));
+      calls[1].release(partial('bytes=4-7'));
+      const [headResponse, tailResponse] = await Promise.all([head, tail]);
+      expect(headResponse.headers.get('content-range')).toBe('bytes 0-3/8');
+      expect(tailResponse.headers.get('content-range')).toBe('bytes 4-7/8');
+      await expect(headResponse.text()).resolves.toBe('ABCD');
+      await expect(tailResponse.text()).resolves.toBe('EFGH');
+    });
+
+    it('a ranged and a full request for the same URL are not shared, in either order', async () => {
+      const { fetchMock, calls } = controlledFetch();
+
+      const full = handleFetch(new Request(originalUrl));
+      const range = handleFetch(ranged('bytes=4-7'));
+      const conditional = handleFetch(new Request(originalUrl, { headers: { 'If-Range': '"etag"' } }));
+      const fullAgain = handleFetch(new Request(originalUrl));
+      // the second full request still joins the first; the ranged and conditional-range ones go to the network
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+
+      calls[0].release(new Response(bytes, { status: 200 }));
+      calls[1].release(partial('bytes=4-7'));
+      calls[2].release(new Response(bytes, { status: 200 }));
+      await expect(textOf(full)).resolves.toBe(bytes);
+      await expect(textOf(fullAgain)).resolves.toBe(bytes);
+      await expect(range).resolves.toMatchObject({ status: 206 });
+      await expect(textOf(range)).resolves.toBe('EFGH');
+      await expect(textOf(conditional)).resolves.toBe(bytes);
+
+      // a ranged request in flight is not joined by a later full request either
+      const laterRange = handleFetch(ranged('bytes=0-3'));
+      const laterFull = handleFetch(new Request(originalUrl));
+      expect(fetchMock).toHaveBeenCalledTimes(5);
+      calls[3].release(partial('bytes=0-3'));
+      calls[4].release(new Response(bytes, { status: 200 }));
+      await expect(textOf(laterRange)).resolves.toBe('ABCD');
+      await expect(textOf(laterFull)).resolves.toBe(bytes);
+    });
+
+    it('a purge still aborts an in-flight ranged request, headers pending or body streaming', async () => {
+      const { calls } = controlledFetch();
+
+      const pending = handleFetch(ranged('bytes=0-3'));
+      const streaming = handleFetch(ranged('bytes=4-7'));
+      const { stream } = streamingBody(calls[1].signal);
+      calls[1].release(new Response(stream, { status: 206 }));
+      await streaming;
+
+      handlePurge();
+      expect(calls.map(({ signal }) => signal.aborted)).toEqual([true, true]);
+      await expect(pending).resolves.toMatchObject({ status: 204 });
+    });
+
+    it('a cancel from its last consumer still aborts a ranged request', async () => {
+      const { calls } = controlledFetch();
+
+      const pending = handleFetch(ranged('bytes=0-3'), 'tab-a');
+      handleCancel(new URL(originalUrl), 'tab-a');
+
+      expect(calls[0].signal.aborted).toBe(true);
+      await expect(pending).resolves.toMatchObject({ status: 204 });
+    });
+  });
+
   it('a failed request is not reused either', async () => {
     const fetchMock = vi
       .fn()
