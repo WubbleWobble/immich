@@ -429,6 +429,8 @@ export function getAlbum(
     lastModifiedAssetTimestamp: albumAssets.length > 0 ? albumAssets[0].fileCreatedAt : undefined,
     kind: AlbumKind.Regular,
     filter: null,
+    // The mock album is viewed by its owner.
+    viewerRole: AlbumUserRole.Owner,
   };
 
   return response;

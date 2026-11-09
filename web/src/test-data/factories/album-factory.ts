@@ -1,5 +1,5 @@
 import { faker } from '@faker-js/faker';
-import { AlbumKind, AssetOrder, type AlbumResponseDto } from '@immich/sdk';
+import { AlbumKind, AlbumUserRole, AssetOrder, type AlbumResponseDto } from '@immich/sdk';
 import { Sync } from 'factory.ts';
 
 export const albumFactory = Sync.makeFactory<AlbumResponseDto>({
@@ -18,4 +18,6 @@ export const albumFactory = Sync.makeFactory<AlbumResponseDto>({
   order: AssetOrder.Desc,
   kind: AlbumKind.Regular,
   filter: null,
+  // The viewer's effective role (direct or folder-inherited). Factory albums are viewed by their owner.
+  viewerRole: AlbumUserRole.Owner,
 });
