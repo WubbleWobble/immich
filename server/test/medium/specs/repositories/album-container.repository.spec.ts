@@ -1,10 +1,19 @@
 import { Kysely } from 'kysely';
-import { AlbumUserRole } from 'src/enum.js';
+import { StorageCore } from 'src/cores/storage.core.js';
+import { AlbumKind, AlbumUserRole } from 'src/enum.js';
 import { AlbumContainerRepository } from 'src/repositories/album-container.repository.js';
 import { AlbumRepository } from 'src/repositories/album.repository.js';
+import { ConfigRepository } from 'src/repositories/config.repository.js';
+import { CryptoRepository } from 'src/repositories/crypto.repository.js';
+import { EventRepository } from 'src/repositories/event.repository.js';
+import { LockRepository } from 'src/repositories/lock.repository.js';
 import { LoggingRepository } from 'src/repositories/logging.repository.js';
+import { StorageRepository } from 'src/repositories/storage.repository.js';
+import { SystemMetadataRepository } from 'src/repositories/system-metadata.repository.js';
+import { UserRepository } from 'src/repositories/user.repository.js';
 import { DB } from 'src/schema/index.js';
 import { BaseService } from 'src/services/base.service.js';
+import { UserService } from 'src/services/user.service.js';
 import { newMediumService } from 'test/medium.factory.js';
 import { getKyselyDB } from 'test/utils.js';
 
@@ -17,6 +26,11 @@ const setup = (db?: Kysely<DB>) => {
     mock: [LoggingRepository],
   });
   return { ctx, sut: ctx.get(AlbumContainerRepository) };
+};
+
+const countOf = async (query: { executeTakeFirstOrThrow: () => Promise<{ count: string | number | bigint }> }) => {
+  const row = await query.executeTakeFirstOrThrow();
+  return Number(row.count);
 };
 
 const getClosureRows = (db: Kysely<DB>, containerIds: string[]) =>
@@ -363,6 +377,117 @@ describe(AlbumContainerRepository.name, () => {
       const sharedAlbums = await albumRepo.getAll(viewer.id, { isShared: true });
 
       expect(sharedAlbums.map((a) => a.id)).toContain(album.id);
+    });
+  });
+
+  describe('owner deletion', () => {
+    it('owner deletion cascades albums without orphaning folders or lock rows', async () => {
+      const { ctx, sut } = setup();
+      const { user: owner } = await ctx.newUser();
+      const { user: sharee } = await ctx.newUser();
+      const lockRepo = ctx.get(LockRepository);
+
+      const folder = await sut.create({ ownerId: owner.id, name: 'F', parentId: null });
+      const child = await sut.create({ ownerId: owner.id, name: 'F child', parentId: folder.id });
+      const { album: smart } = await ctx.newAlbum({
+        ownerId: owner.id,
+        kind: AlbumKind.Smart,
+        filter: { personIds: [] } as any,
+      });
+      const { album: regular } = await ctx.newAlbum({ ownerId: owner.id, containerId: child.id });
+      await sut.addUser(folder.id, sharee.id, AlbumUserRole.Viewer);
+      await lockRepo.lockContainer(owner.id, folder.id);
+      await lockRepo.lockAlbum(owner.id, smart.id);
+      await lockRepo.lockAlbum(sharee.id, regular.id);
+      await lockRepo.lockContainer(sharee.id, folder.id);
+
+      const albumIds = [smart.id, regular.id];
+      const containerIds = [folder.id, child.id];
+      const countRows = async () => {
+        const db = ctx.database;
+        return {
+          albums: await countOf(
+            db
+              .selectFrom('album')
+              .select((eb) => eb.fn.countAll().as('count'))
+              .where('id', 'in', albumIds),
+          ),
+          containers: await countOf(
+            db
+              .selectFrom('album_container')
+              .select((eb) => eb.fn.countAll().as('count'))
+              .where('id', 'in', containerIds),
+          ),
+          containerUsers: await countOf(
+            db
+              .selectFrom('album_container_user')
+              .select((eb) => eb.fn.countAll().as('count'))
+              .where((eb) => eb.or([eb('albumContainerId', 'in', containerIds), eb('userId', '=', owner.id)])),
+          ),
+          closure: await countOf(
+            db
+              .selectFrom('album_container_closure')
+              .select((eb) => eb.fn.countAll().as('count'))
+              .where((eb) => eb.or([eb('id_ancestor', 'in', containerIds), eb('id_descendant', 'in', containerIds)])),
+          ),
+          lockedAlbums: await countOf(
+            db
+              .selectFrom('locked_album')
+              .select((eb) => eb.fn.countAll().as('count'))
+              .where((eb) => eb.or([eb('albumId', 'in', albumIds), eb('userId', '=', owner.id)])),
+          ),
+          lockedContainers: await countOf(
+            db
+              .selectFrom('locked_container')
+              .select((eb) => eb.fn.countAll().as('count'))
+              .where((eb) => eb.or([eb('containerId', 'in', containerIds), eb('userId', '=', owner.id)])),
+          ),
+        };
+      };
+
+      // Guard against a vacuous pass: every table must actually hold rows before the delete.
+      const before = await countRows();
+      expect(before).toEqual({
+        albums: 2,
+        containers: 2,
+        containerUsers: 1,
+        closure: 3,
+        lockedAlbums: 2,
+        lockedContainers: 2,
+      });
+
+      // handleUserDelete resolves per-user storage folders; the (mocked) storage repository never touches disk.
+      StorageCore.setMediaLocation('/path/to/media');
+
+      // The real job path: UserService.handleUserDelete -> AlbumRepository.deleteAll -> UserRepository.delete(user, true).
+      const { sut: userService, ctx: userCtx } = newMediumService(UserService, {
+        database: ctx.database,
+        real: [AlbumRepository, ConfigRepository, CryptoRepository, SystemMetadataRepository, UserRepository],
+        mock: [EventRepository, LoggingRepository, StorageRepository],
+      });
+      userCtx.getMock(StorageRepository).unlinkDir.mockResolvedValue(void 0);
+      userCtx.getMock(EventRepository).emit.mockResolvedValue(void 0);
+      await expect(userService.handleUserDelete({ id: owner.id, force: true })).resolves.toBeUndefined();
+      expect(userCtx.getMock(EventRepository).emit).toHaveBeenCalledWith(
+        'UserDelete',
+        expect.objectContaining({ id: owner.id }),
+      );
+
+      await expect(countRows()).resolves.toEqual({
+        albums: 0,
+        containers: 0,
+        containerUsers: 0,
+        closure: 0,
+        lockedAlbums: 0,
+        lockedContainers: 0,
+      });
+      await expect(
+        ctx.database.selectFrom('user').select('id').where('id', '=', owner.id).executeTakeFirst(),
+      ).resolves.toBeUndefined();
+      // The sharee is untouched.
+      await expect(
+        ctx.database.selectFrom('user').select('id').where('id', '=', sharee.id).executeTakeFirst(),
+      ).resolves.toBeDefined();
     });
   });
 });
