@@ -133,7 +133,11 @@ State these plainly to users.
   delete events are split: ids of hidden assets go to elevated sessions only
   (a deletion is judged before the asset is removed). A stack event goes to
   elevated sessions only when an ordinary session would not show that stack
-  (a hidden member and fewer than two visible members).
+  (a hidden member and fewer than two visible members). Album updates and
+  in-app notifications about an album you locked (or an asset hidden from
+  you) likewise reach only your elevated sessions, and such notifications
+  are left out of the notification list outside elevation. Sharees who did
+  not lock the album are unaffected.
 - **CLI and API-key uploads re-send hidden files every run (R49).** API-key
   sessions are never elevated. So `immich-cli` and `immich-go` see an
   already-hidden file as new each time, upload it again and get a phantom

@@ -16,6 +16,7 @@ import {
   JobStatus,
   QueueName,
   SharedLinkType,
+  UserMetadataKey,
 } from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { AlbumRepository } from 'src/repositories/album.repository.js';
@@ -29,6 +30,7 @@ import { JobRepository } from 'src/repositories/job.repository.js';
 import { LockRepository } from 'src/repositories/lock.repository.js';
 import { LoggingRepository } from 'src/repositories/logging.repository.js';
 import { MemoryRepository } from 'src/repositories/memory.repository.js';
+import { NotificationRepository } from 'src/repositories/notification.repository.js';
 import { OcrRepository } from 'src/repositories/ocr.repository.js';
 import { PartnerRepository } from 'src/repositories/partner.repository.js';
 import { PersonRepository } from 'src/repositories/person.repository.js';
@@ -185,6 +187,31 @@ const newLibrary = async (ctx: ReturnType<typeof setup>['ctx'], { lock = true } 
 
 const sent = (ctx: ReturnType<typeof notifier>['ctx']) =>
   ctx.getMock(WebsocketRepository).clientSend.mock.calls.map(([event, room, ids]) => ({ event, room, ids }));
+
+/** Notification data is stored as a JSON string. */
+const asJson = (data: unknown) => (typeof data === 'string' ? JSON.parse(data) : data);
+
+// Fork (R58, round 3): NotificationService with notifications and sessions.
+const albumNotifier = () =>
+  newMediumService(NotificationService, {
+    database: defaultDatabase,
+    real: [
+      AccessRepository,
+      AlbumRepository,
+      AssetRepository,
+      LockRepository,
+      NotificationRepository,
+      SessionRepository,
+      UserRepository,
+    ],
+    mock: [JobRepository, LoggingRepository, WebsocketRepository],
+  });
+/** A user with an ordinary and an elevated session; returns the elevated session's room. */
+const withSessions = async (ctx: ReturnType<typeof setup>['ctx'], userId: string) => {
+  await ctx.newSession({ userId });
+  const { session } = await ctx.newSession({ userId, pinExpiresAt: new Date(Date.now() + 60_000) });
+  return session.id;
+};
 
 beforeAll(async () => {
   defaultDatabase = await getKyselyDB();
@@ -1738,6 +1765,116 @@ describe(AssetService.name, () => {
           { event: 'on_asset_delete', room: user.id, ids: hidden.id },
           { event: 'on_asset_stack_update', room: user.id, ids: undefined },
         ]);
+      });
+    });
+
+    describe('album-id events and notifications (round 3)', () => {
+      it("on_album_update follows each recipient's own locks: the locker's elevated sessions, the sharee as today", async () => {
+        const { ctx } = setup();
+        const { sut, ctx: notifyCtx } = albumNotifier();
+        notifyCtx.getMock(WebsocketRepository).clientSend.mockReturnValue();
+        notifyCtx.getMock(JobRepository).queue.mockResolvedValue();
+        const { user: owner } = await ctx.newUser();
+        const { user: sharee } = await ctx.newUser();
+        const { album } = await ctx.newAlbum({ ownerId: owner.id });
+        await ctx.newAlbumUser({ albumId: album.id, userId: sharee.id });
+        const ownerElevated = await withSessions(ctx, owner.id);
+        await withSessions(ctx, sharee.id);
+
+        await sut.onAlbumUpdate({ id: album.id, userIds: [owner.id, sharee.id], recipientIds: [] });
+        await ctx.get(LockRepository).lockAlbum(owner.id, album.id);
+        await sut.onAlbumUpdate({ id: album.id, userIds: [owner.id, sharee.id], recipientIds: [] });
+
+        const rooms = notifyCtx.getMock(WebsocketRepository).clientSend.mock.calls.map(([event, room, id]) => {
+          expect({ event, id }).toEqual({ event: 'on_album_update', id: album.id });
+          return room;
+        });
+        // unlocked: both user rooms (no-locks unchanged); locked by the owner: the owner's elevated session only, while
+        // the owner's lock never affects the sharee (spec §4)
+        expect(rooms).toEqual([owner.id, sharee.id, ownerElevated, sharee.id]);
+      });
+
+      it('a notification about hidden content is pushed to elevated sessions only and left out of ordinary lists', async () => {
+        const { ctx } = setup();
+        const { sut, ctx: notifyCtx } = albumNotifier();
+        notifyCtx.getMock(WebsocketRepository).clientSend.mockReturnValue();
+        const { user: owner } = await ctx.newUser();
+        const { user: sharee } = await ctx.newUser();
+        await ctx.get(UserRepository).upsertMetadata(sharee.id, {
+          key: UserMetadataKey.Preferences,
+          value: { emailNotifications: { enabled: false } },
+        });
+        const { album: locked } = await ctx.newAlbum({ ownerId: owner.id });
+        const { album: open } = await ctx.newAlbum({ ownerId: owner.id });
+        for (const album of [locked, open]) {
+          await ctx.newAlbumUser({ albumId: album.id, userId: sharee.id });
+        }
+        // the sharee locks one shared album for themselves
+        await ctx.get(LockRepository).lockAlbum(sharee.id, locked.id);
+        const shareeElevated = await withSessions(ctx, sharee.id);
+        // an asset hidden for the sharee (their own, in the locked album) referenced by an admin notification
+        const { asset: hiddenAsset } = await ctx.newAsset({ ownerId: sharee.id });
+        await ctx.newAlbumAsset({ albumId: locked.id, assetId: hiddenAsset.id });
+        const assetNotice = await ctx.get(NotificationRepository).create({
+          userId: sharee.id,
+          title: 'about an asset',
+          data: JSON.stringify({ assetId: hiddenAsset.id }),
+        });
+
+        for (const album of [locked, open]) {
+          await sut.handleAlbumInvite({ id: album.id, recipientId: sharee.id, senderName: owner.name });
+        }
+
+        const pushes = notifyCtx.getMock(WebsocketRepository).clientSend.mock.calls.map(([event, room, item]) => ({
+          event,
+          room,
+          data: asJson((item as { data: unknown }).data),
+        }));
+        expect(pushes).toEqual([
+          { event: 'on_notification', room: shareeElevated, data: { albumId: locked.id } },
+          { event: 'on_notification', room: sharee.id, data: { albumId: open.id } },
+        ]);
+
+        const listed = async (auth: AuthDto) => {
+          const items = await sut.search(auth, {});
+          return items
+            .map(({ data }) => asJson(data))
+            .toSorted((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+        };
+        const sorted = (values: unknown[]) =>
+          values.toSorted((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+        await expect(listed(factory.auth({ user: sharee }))).resolves.toEqual([{ albumId: open.id }]);
+        await expect(
+          listed(factory.auth({ user: sharee, session: { id: shareeElevated, hasElevatedPermission: true } })),
+        ).resolves.toEqual(sorted([{ albumId: locked.id }, { albumId: open.id }, { assetId: hiddenAsset.id }]));
+        await expect(
+          sut.update(factory.auth({ user: sharee }), assetNotice.id, { readAt: new Date() }),
+        ).rejects.toThrow('Notification not found');
+      });
+
+      it('a user without locks gets album updates and notifications unchanged', async () => {
+        const { ctx } = setup();
+        const { sut, ctx: notifyCtx } = albumNotifier();
+        notifyCtx.getMock(WebsocketRepository).clientSend.mockReturnValue();
+        notifyCtx.getMock(JobRepository).queue.mockResolvedValue();
+        const { user } = await ctx.newUser();
+        await ctx.get(UserRepository).upsertMetadata(user.id, {
+          key: UserMetadataKey.Preferences,
+          value: { emailNotifications: { enabled: false } },
+        });
+        const { album } = await ctx.newAlbum({ ownerId: user.id });
+        await withSessions(ctx, user.id);
+
+        await sut.onAlbumUpdate({ id: album.id, userIds: [user.id], recipientIds: [] });
+        await sut.handleAlbumInvite({ id: album.id, recipientId: user.id, senderName: 'someone' });
+
+        expect(
+          notifyCtx.getMock(WebsocketRepository).clientSend.mock.calls.map(([event, room]) => ({ event, room })),
+        ).toEqual([
+          { event: 'on_album_update', room: user.id },
+          { event: 'on_notification', room: user.id },
+        ]);
+        await expect(sut.search(factory.auth({ user }), {})).resolves.toHaveLength(1);
       });
     });
   });

@@ -15,6 +15,26 @@ import { setDifference } from 'src/utils/set.js';
 /** The parts of a shared link that decide whether it exposes content hidden for its manager. */
 export type SharedLinkLockTarget = { id: string; type: SharedLinkType; albumId: string | null };
 
+/** R58: the album and asset a notification's `data` references (stored as JSON, or as a JSON string). */
+const getNotificationRefs = (data: unknown): { albumId?: string; assetId?: string } => {
+  let value = data;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return {};
+    }
+  }
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+  const { albumId, assetId } = value as Record<string, unknown>;
+  return {
+    albumId: typeof albumId === 'string' ? albumId : undefined,
+    assetId: typeof assetId === 'string' ? assetId : undefined,
+  };
+};
+
 /** R56: copies of `assets` whose motion part is not in `reachable` carry `livePhotoVideoId: null`. */
 const withheldMotionIds = <T extends { livePhotoVideoId: string | null }>(assets: T[], reachable: Set<string>): T[] =>
   assets.map((asset) =>
@@ -368,6 +388,48 @@ export class LockService extends BaseService {
   /** R58: the rooms for an owner event judged hidden from ordinary sessions (elevated sessions) or not (user room). */
   async getOwnerEventRooms(ownerId: string, hiddenFromOrdinary: boolean): Promise<string[]> {
     return hiddenFromOrdinary ? this.getElevatedSessionIds(ownerId) : [ownerId];
+  }
+
+  /**
+   * R58 (round 3), album-id events (`on_album_update`): the rooms of `userId` for an event about `albumId` - only their
+   * elevated sessions when the album is hidden by THEIR OWN locks (folder cascade included; another member's locks
+   * never matter, spec §4), their user room otherwise. One probe when the user holds no locks.
+   */
+  async getAlbumEventRooms(userId: string, albumId: string): Promise<string[]> {
+    const hidden =
+      (await this.lockRepository.anyHasLocks([userId])) &&
+      (await this.lockRepository.isAlbumHiddenForViewer(userId, albumId));
+    return this.getOwnerEventRooms(userId, hidden);
+  }
+
+  /**
+   * R58 (round 3), notifications: the subset of `notifications` (all of `userId`) whose data references an album
+   * (`albumId`) hidden by the recipient's own locks or an asset (`assetId`) hidden for the recipient, both under the
+   * non-elevated rule. Nothing is queried for notifications without such references, and the album side only when the
+   * recipient holds locks.
+   */
+  async getHiddenNotificationIds(userId: string, notifications: { id: string; data: unknown }[]): Promise<Set<string>> {
+    const refs = notifications.map(({ id, data }) => ({ id, ...getNotificationRefs(data) }));
+    const albumRefs = refs.filter(({ albumId }) => albumId);
+    const assetIds = [...new Set(refs.flatMap(({ assetId }) => (assetId ? [assetId] : [])))];
+    const hidden = new Set<string>();
+    if (albumRefs.length > 0 && (await this.lockRepository.anyHasLocks([userId]))) {
+      const hiddenAlbumIds = new Set(await this.lockRepository.getHiddenAlbumIds(userId, NO_REVEALED_LOCKS));
+      for (const { id, albumId } of albumRefs) {
+        if (hiddenAlbumIds.has(albumId!)) {
+          hidden.add(id);
+        }
+      }
+    }
+    if (assetIds.length > 0) {
+      const hiddenAssetIds = await this.getHiddenAssetIdsForRead({ user: { id: userId } } as AuthDto, assetIds);
+      for (const { id, assetId } of refs) {
+        if (assetId && hiddenAssetIds.has(assetId)) {
+          hidden.add(id);
+        }
+      }
+    }
+    return hidden;
   }
 
   /** The owner's sessions that are elevated right now (the PIN window of AuthService.validateSession). */

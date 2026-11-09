@@ -41,7 +41,33 @@ export class NotificationService extends BaseService {
 
   async search(auth: AuthDto, dto: NotificationSearchDto): Promise<NotificationDto[]> {
     const items = await this.notificationRepository.search(auth.user.id, dto);
-    return items.map((item) => mapNotification(item));
+    // Fork (R58): outside elevation, a notification about a hidden album or asset is not listed (see sendNotification).
+    const hidden = auth.session?.hasElevatedPermission
+      ? new Set<string>()
+      : await this.lockService().getHiddenNotificationIds(auth.user.id, items);
+    return items.filter(({ id }) => !hidden.has(id)).map((item) => mapNotification(item));
+  }
+
+  /** Fork (R58): a notification about hidden content reads as missing outside elevation (ruling R32). */
+  private async assertNotificationVisible(auth: AuthDto, item: { id: string; data: unknown }) {
+    if (auth.session?.hasElevatedPermission) {
+      return;
+    }
+    const hidden = await this.lockService().getHiddenNotificationIds(auth.user.id, [item]);
+    if (hidden.has(item.id)) {
+      throw new BadRequestException('Notification not found');
+    }
+  }
+
+  /**
+   * Fork (R58): the `on_notification` push follows the recipient's lock state - a notification about an album or asset
+   * hidden for the recipient outside elevation reaches only their elevated sessions.
+   */
+  private async sendNotification(userId: string, item: Parameters<typeof mapNotification>[0]) {
+    const hidden = await this.lockService().getHiddenNotificationIds(userId, [item]);
+    for (const room of await this.lockService().getOwnerEventRooms(userId, hidden.has(item.id))) {
+      this.websocketRepository.clientSend('on_notification', room, mapNotification(item));
+    }
   }
 
   async updateAll(auth: AuthDto, dto: NotificationUpdateAllDto) {
@@ -62,11 +88,16 @@ export class NotificationService extends BaseService {
     if (!item) {
       throw new BadRequestException('Notification not found');
     }
+    await this.assertNotificationVisible(auth, item);
     return mapNotification(item);
   }
 
   async update(auth: AuthDto, id: string, dto: NotificationUpdateDto) {
     await this.requireAccess({ auth, ids: [id], permission: Permission.NotificationUpdate });
+    const [existing] = await this.notificationRepository.search(auth.user.id, { id });
+    if (existing) {
+      await this.assertNotificationVisible(auth, existing);
+    }
     const item = await this.notificationRepository.update(id, {
       readAt: dto.readAt,
     });
@@ -103,7 +134,7 @@ export class NotificationService extends BaseService {
           description: `Job ${[job.name]} failed with error: ${errorMessage}`,
         });
 
-        this.websocketRepository.clientSend('on_notification', admin.id, mapNotification(item));
+        await this.sendNotification(admin.id, item);
         break;
       }
 
@@ -258,8 +289,11 @@ export class NotificationService extends BaseService {
 
   @OnEvent({ name: 'AlbumUpdate' })
   async onAlbumUpdate({ id, userIds, recipientIds }: ArgOf<'AlbumUpdate'>) {
+    // Fork (R58): per recipient - an album hidden by the recipient's own locks is announced to their elevated sessions.
     for (const userId of userIds) {
-      this.websocketRepository.clientSend('on_album_update', userId, id);
+      for (const room of await this.lockService().getAlbumEventRooms(userId, id)) {
+        this.websocketRepository.clientSend('on_album_update', room, id);
+      }
     }
 
     for (const recipientId of recipientIds) {
@@ -287,7 +321,7 @@ export class NotificationService extends BaseService {
       data: JSON.stringify({ clusterGroupId }),
     });
 
-    this.websocketRepository.clientSend('on_notification', userId, mapNotification(item));
+    await this.sendNotification(userId, item);
   }
 
   @OnEvent({ name: 'SessionDelete' })
@@ -533,6 +567,6 @@ export class NotificationService extends BaseService {
       data: JSON.stringify({ albumId: album.id }),
     });
 
-    this.websocketRepository.clientSend('on_notification', userId, mapNotification(item));
+    await this.sendNotification(userId, item);
   }
 }
