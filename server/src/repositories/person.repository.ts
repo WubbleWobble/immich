@@ -442,9 +442,12 @@ export class PersonRepository {
     return removed !== undefined;
   }
 
-  // FORK-PORT: lock-audit — new upstream query (d6d094738 birthday memories): selects the owner's named people with
-  // a birthday today; the memory job then pulls their assets. Background jobs are never elevated, so people/assets
-  // hidden by the owner's album/folder locks must not seed a birthday memory.
+  /**
+   * Fork (d6d094738 lock audit): only the owner's named, unhidden people with a birthday on the target date. This
+   * selects people, never assets; MemoryService seeds a memory only from birthday assets that pass the owner's locks
+   * (memoryRepository.getPersonAssetsByDate, job context: no reveal, never elevated), so a person whose birthday
+   * assets are all hidden yields no memory.
+   */
   @GenerateSql(
     { params: [DummyValue.UUID, { year: 2025, month: 1, day: 1 }] },
     { name: 'leap day fallback', params: [DummyValue.UUID, { year: 2025, month: 2, day: 28 }] },

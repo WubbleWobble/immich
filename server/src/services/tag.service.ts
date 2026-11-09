@@ -96,8 +96,8 @@ export class TagService extends BaseService {
 
     const assetIds = await this.tagRepository.getAssetIdsByTagId(id);
     await this.tagRepository.delete(id);
-    // FORK-PORT: lock-audit — new upstream path (54987c764): getAssetIdsByTagId + syncAssetTags rewrite exif tags of
-    // every asset carrying the deleted tag (owner-scoped background-style write; confirm no lock-hidden leakage).
+    // Fork lock audit (54987c764): a consistency write over the tag owner's assets, hidden ones included (see
+    // getAssetIdsByTagId); nothing about them is returned.
     await this.syncAssetTags(assetIds);
 
     // FORK-PORT: D12 (Task 7A.3) removes this pruning; dangling tag ids must stay and zero-match.

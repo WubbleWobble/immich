@@ -2,7 +2,7 @@ import { WorkflowStepConfig, WorkflowTrigger } from '@immich/plugin-sdk';
 import { Kysely } from 'kysely';
 import { readFileSync } from 'node:fs';
 import { PluginManifestDto } from 'src/dtos/plugin-manifest.dto.js';
-import { AssetType, AssetVisibility, LogLevel } from 'src/enum.js';
+import { AlbumKind, AssetType, AssetVisibility, LogLevel } from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { AlbumRepository } from 'src/repositories/album.repository.js';
 import { AssetRepository } from 'src/repositories/asset.repository.js';
@@ -108,6 +108,11 @@ const createWorkflow = async (template: WorkflowTemplate) => {
     })),
   );
 };
+
+const albumAssetRows = (albumId: string) =>
+  db.selectFrom('album_asset').select('assetId').where('albumId', '=', albumId).execute();
+
+const addTo = (albumIds: string[]) => ({ method: 'immich-plugin-core#assetAddToAlbums', config: { albumIds } });
 
 let ctx: WorkflowTestContext;
 
@@ -754,6 +759,68 @@ describe('core plugin', () => {
 
       await expect(ctx.sut.handleAssetTrigger({ workflowId: workflow.id, assetId: asset.id })).resolves.toBeUndefined();
       await expect(ctx.get(AssetRepository).getById(asset.id)).resolves.toMatchObject({ isFavorite: false });
+    });
+  });
+
+  describe('fork locks', () => {
+    it('tag-trigger workflows never add assets to smart or locked albums', async () => {
+      const { user } = await ctx.newUser();
+      const albumRepo = ctx.get(AlbumRepository);
+      const { asset } = await ctx.newAsset({ ownerId: user.id });
+      const { album: regular } = await ctx.newAlbum({ ownerId: user.id });
+      const { album: locked } = await ctx.newAlbum({ ownerId: user.id });
+      const { album: smart } = await ctx.newAlbum({ ownerId: user.id, kind: AlbumKind.Smart, filter: { city: 'X' } });
+      await ctx.get(LockRepository).lockAlbum(user.id, locked.id);
+
+      const runTagged = async (steps: WorkflowTemplateStep[], assetId = asset.id) => {
+        const workflow = await createWorkflow({ ownerId: user.id, trigger: WorkflowTrigger.AssetTagged, steps });
+        return ctx.sut.handleAssetTrigger({ workflowId: workflow.id, assetId });
+      };
+
+      // a background workflow never holds elevation: a smart album (read-only) and an album its owner locked
+      // (write-protected outside elevation, spec §15.2) both refuse the asset
+      await expect(runTagged([addTo([smart.id])])).resolves.toBeTruthy();
+      await expect(runTagged([addTo([locked.id])])).resolves.toBeTruthy();
+      // the bulk path silently skips them and files into the visible regular album only
+      await expect(runTagged([addTo([smart.id, locked.id, regular.id])])).resolves.toBeUndefined();
+      await expect(albumAssetRows(smart.id)).resolves.toEqual([]);
+      await expect(albumAssetRows(locked.id)).resolves.toEqual([]);
+      await expect(albumAssetRows(regular.id)).resolves.toEqual([{ assetId: asset.id }]);
+
+      // an asset hidden by its owner's locks (tagged from an elevated session) is not acted on at all: no step may
+      // rewrite it, and filing it into a visible album would un-hide it
+      const { asset: hidden } = await ctx.newAsset({ ownerId: user.id });
+      await ctx.newAlbumAsset({ albumId: locked.id, assetId: hidden.id });
+      const { album: rescue } = await ctx.newAlbum({ ownerId: user.id });
+      await runTagged([{ method: 'immich-plugin-core#assetFavorite' }, addTo([rescue.id])], hidden.id);
+      await expect(ctx.get(AssetRepository).getById(hidden.id)).resolves.toMatchObject({ isFavorite: false });
+      await expect(albumAssetRows(rescue.id)).resolves.toEqual([]);
+      await expect(albumRepo.getAssetIds(locked.id, [hidden.id])).resolves.toContain(hidden.id);
+    });
+
+    it('step changes are never written as elevated: an asset hidden mid-run is write-protected', async () => {
+      const { user } = await ctx.newUser();
+      const { asset } = await ctx.newAsset({ ownerId: user.id });
+      // favoriting files the asset into a smart album its owner locked, hiding it (its only container)
+      const { album: lockedFavorites } = await ctx.newAlbum({
+        ownerId: user.id,
+        kind: AlbumKind.Smart,
+        filter: { isFavorite: true },
+      });
+      await ctx.get(LockRepository).lockAlbum(user.id, lockedFavorites.id);
+
+      const workflow = await createWorkflow({
+        ownerId: user.id,
+        trigger: WorkflowTrigger.AssetTagged,
+        steps: [{ method: 'immich-plugin-core#assetFavorite' }, { method: 'immich-plugin-core#assetArchive' }],
+      });
+      await expect(ctx.sut.handleAssetTrigger({ workflowId: workflow.id, assetId: asset.id })).resolves.toBeTruthy();
+
+      // the first change landed while the asset was visible; nothing after it touched the now-hidden asset
+      await expect(ctx.get(AssetRepository).getById(asset.id)).resolves.toMatchObject({
+        isFavorite: true,
+        visibility: AssetVisibility.Timeline,
+      });
     });
   });
 });

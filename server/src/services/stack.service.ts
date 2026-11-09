@@ -53,6 +53,7 @@ export class StackService extends BaseService {
 
   async create(auth: AuthDto, dto: StackCreateDto): Promise<StackResponseDto> {
     await this.requireAccess({ auth, permission: Permission.AssetUpdate, ids: dto.assetIds });
+    await this.assertExistingStacksMutableForViewer(auth, dto.assetIds);
 
     const stack = await this.stackRepository.create({ ownerId: auth.user.id }, dto.assetIds);
 
@@ -78,10 +79,46 @@ export class StackService extends BaseService {
     if (auth.sharedLink || auth.session?.hasElevatedPermission) {
       return;
     }
-    const lockVisibility = await this.getViewerLockVisibility(auth);
+    const lockVisibility = await this.getMutationLockVisibility(auth);
     if (lockVisibility.length === 0) {
       return;
     }
+    await this.assertStackHasNoHiddenMember(id, lockVisibility);
+  }
+
+  /**
+   * Fork (962ffaacc lock audit): creating a stack merges the existing stacks of the requested assets (as primary) and
+   * moves secondaries out of theirs - e.g. the mobile client stacking a freshly uploaded edit over its original. That
+   * is a mutation of every one of those stacks, so the same guard applies: any stack holding a hidden member refuses,
+   * otherwise its hidden members would be re-stacked and returned in the response. (The requested ids themselves
+   * already passed asset.update, which refuses hidden assets outside elevation.)
+   */
+  private async assertExistingStacksMutableForViewer(auth: AuthDto, assetIds: string[]): Promise<void> {
+    if (auth.sharedLink || auth.session?.hasElevatedPermission) {
+      return;
+    }
+    const lockVisibility = await this.getMutationLockVisibility(auth);
+    if (lockVisibility.length === 0) {
+      return;
+    }
+    const assets = await this.assetRepository.getByIds(assetIds);
+    const stackIds = new Set(assets.map(({ stackId }) => stackId).filter((stackId) => stackId !== null));
+    for (const stackId of stackIds) {
+      await this.assertStackHasNoHiddenMember(stackId, lockVisibility);
+    }
+  }
+
+  /** The viewer's lock entries for a mutation guard: no reveal set - reveal headers never grant writes. */
+  private getMutationLockVisibility(auth: AuthDto) {
+    return this.lockRepository.getOwnerLockVisibility({
+      viewerId: auth.user.id,
+      ownerIds: [auth.user.id],
+      revealed: NO_REVEALED_LOCKS,
+      isElevated: false,
+    });
+  }
+
+  private async assertStackHasNoHiddenMember(id: string, lockVisibility: OwnerLockVisibility[]): Promise<void> {
     const [full, visible] = await Promise.all([
       this.stackRepository.getById(id),
       this.stackRepository.getById(id, lockVisibility),

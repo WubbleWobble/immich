@@ -5,6 +5,7 @@ import { ActivityRepository } from 'src/repositories/activity.repository.js';
 import { AlbumUserRepository } from 'src/repositories/album-user.repository.js';
 import { AlbumRepository } from 'src/repositories/album.repository.js';
 import { AssetRepository } from 'src/repositories/asset.repository.js';
+import { LockRepository } from 'src/repositories/lock.repository.js';
 import { LoggingRepository } from 'src/repositories/logging.repository.js';
 import { UserRepository } from 'src/repositories/user.repository.js';
 import { DB } from 'src/schema/index.js';
@@ -18,7 +19,15 @@ let defaultDatabase: Kysely<DB>;
 const setup = (db?: Kysely<DB>) => {
   return newMediumService(ActivityService, {
     database: db || defaultDatabase,
-    real: [AccessRepository, ActivityRepository, AlbumRepository, AlbumUserRepository, AssetRepository, UserRepository],
+    real: [
+      AccessRepository,
+      ActivityRepository,
+      AlbumRepository,
+      AlbumUserRepository,
+      AssetRepository,
+      LockRepository,
+      UserRepository,
+    ],
     mock: [LoggingRepository],
   });
 };
@@ -305,6 +314,48 @@ describe(ActivityService.name, () => {
         .execute();
 
       await expect(sut.getAll(auth, { albumId: album.id })).resolves.toEqual([]);
+    });
+  });
+
+  describe('fork locks', () => {
+    it("activity on an album hidden for the viewer is unreachable and write-protected; the owner's lock never binds a sharee", async () => {
+      const { sut, ctx } = setup();
+      const { album, owner, sharedWith } = await ctx.newSharedAlbum();
+      const ownerAuth = factory.auth({ user: owner });
+      const sharedWithAuth = factory.auth({ user: sharedWith });
+      const { value } = await sut.create(sharedWithAuth, {
+        albumId: album.id,
+        type: ReactionType.COMMENT,
+        comment: 'hi',
+      });
+
+      await ctx.get(LockRepository).lockAlbum(owner.id, album.id);
+
+      // the locker is refused outside an elevated session (spec §15.4), reveal header or not
+      const ALBUM_ERROR = 'Not found or no album.read access';
+      const revealingUnelevated = { ...ownerAuth, revealedLocks: { albumIds: [album.id], containerIds: [] } };
+      for (const auth of [ownerAuth, revealingUnelevated]) {
+        await expect(sut.getAll(auth, { albumId: album.id })).rejects.toThrow(ALBUM_ERROR);
+        await expect(sut.getStatistics(auth, { albumId: album.id })).rejects.toThrow(ALBUM_ERROR);
+        // activity creation on hidden content is write-protected (spec §15.2)
+        await expect(sut.create(auth, { albumId: album.id, type: ReactionType.LIKE })).rejects.toThrow(ALBUM_ERROR);
+      }
+      await expect(
+        ctx.database.selectFrom('activity').select('id').where('albumId', '=', album.id).execute(),
+      ).resolves.toEqual([{ id: value.id }]);
+
+      // the album owner's lock is personal presentation state: the sharee is unaffected (spec §4)
+      await expect(sut.getAll(sharedWithAuth, { albumId: album.id })).resolves.toEqual([value]);
+      await expect(sut.create(sharedWithAuth, { albumId: album.id, type: ReactionType.LIKE })).resolves.toEqual(
+        expect.objectContaining({ duplicate: false }),
+      );
+
+      // an elevated session bypasses the guard (direct-by-id, spec §15.3)
+      const elevated = factory.auth({ user: owner, session: { hasElevatedPermission: true } });
+      await expect(sut.getAll(elevated, { albumId: album.id })).resolves.toHaveLength(2);
+      await expect(sut.create(elevated, { albumId: album.id, type: ReactionType.LIKE })).resolves.toEqual(
+        expect.objectContaining({ duplicate: false }),
+      );
     });
   });
 });

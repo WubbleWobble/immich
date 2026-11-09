@@ -148,8 +148,9 @@ export class AssetService extends BaseService {
       this.websocketRepository.clientSend('on_asset_update', auth.user.id, mapAsset(asset, { auth }));
     }
 
-    // FORK-PORT: lock-audit — upstream now returns this.get(auth, id) (re-read through the access/lock-checked get path)
-    // instead of mapAsset(asset, { auth }); confirm get() applies the fork's lock visibility for the updater.
+    // Fork lock audit: the response is a re-read through get(), i.e. asset.read with the fork's final lock exclusion
+    // (excludeHiddenForLocker outside an elevated session). update() itself already required asset.update, which
+    // refuses hidden assets the same way, so a non-elevated updater never gets hidden content back.
     return this.get(auth, id) as Promise<AssetResponseDto>;
   }
 
@@ -203,8 +204,8 @@ export class AssetService extends BaseService {
       await this.assetRepository.updateAll(ids, assetDto);
     }
 
-    // FORK-PORT: the fork removed upstream's per-asset Locked branch here (`if (visibility === AssetVisibility.Locked)
-    // await this.albumRepository.removeAssetsFromAll(ids)`); AssetVisibility.Locked is retired (D4), so it stays out.
+    // Fork: no per-asset Locked branch (upstream strips album memberships on visibility=locked). The value is retired
+    // (D4) and rejected above by rejectLegacyLockedVisibility, so locked content is never produced by a visibility write.
     if (shouldWriteSidecar) {
       await this.jobRepository.queueAll(ids.map((id) => ({ name: JobName.SidecarWrite, data: { id } })));
     } else {

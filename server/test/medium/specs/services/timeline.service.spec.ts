@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { Kysely } from 'kysely';
+import { AuthDto } from 'src/dtos/auth.dto.js';
 import { AssetVisibility, SharedLinkType } from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { AlbumRepository } from 'src/repositories/album.repository.js';
@@ -333,6 +334,66 @@ describe(TimelineService.name, () => {
       await expect(
         sut.getTimeBucket(auth, { ...dto, timeBucket: '1970-05-01' }).then((json) => JSON.parse(json).id),
       ).resolves.toEqual([]);
+    });
+  });
+
+  describe('map viewport and locks', () => {
+    it('map-viewport bbox timeline buckets exclude hidden assets', async () => {
+      const { sut, ctx } = setup();
+      const { user: viewer } = await ctx.newUser();
+      const { user: partner } = await ctx.newUser();
+      await ctx.newPartner({ sharedById: partner.id, sharedWithId: viewer.id });
+
+      // everything sits inside the viewport except `outside`
+      const newGeoAsset = async (ownerId: string, localDateTime: string, latitude = 49.43, longitude = 11.09) => {
+        const { asset } = await ctx.newAsset({ ownerId, localDateTime });
+        await ctx.newExif({ assetId: asset.id, latitude, longitude });
+        return asset;
+      };
+      const viewerVisible = await newGeoAsset(viewer.id, '1970-01-15T00:00:00.000Z');
+      const viewerHidden = await newGeoAsset(viewer.id, '1970-02-15T00:00:00.000Z');
+      const partnerVisible = await newGeoAsset(partner.id, '1970-03-15T00:00:00.000Z');
+      const partnerHidden = await newGeoAsset(partner.id, '1970-04-15T00:00:00.000Z');
+      await newGeoAsset(viewer.id, '1970-05-15T00:00:00.000Z', 10, 10);
+      const { album: viewerLocked } = await ctx.newAlbum({ ownerId: viewer.id }, [viewerHidden.id]);
+      const { album: partnerLocked } = await ctx.newAlbum({ ownerId: partner.id }, [partnerHidden.id]);
+      await ctx.get(LockRepository).lockAlbum(viewer.id, viewerLocked.id);
+      await ctx.get(LockRepository).lockAlbum(partner.id, partnerLocked.id);
+
+      const bbox = { west: 11.07, south: 49.41, east: 11.11, north: 49.45 };
+      const dto = { bbox, withPartners: true, visibility: AssetVisibility.Timeline };
+      const buckets = async (auth: AuthDto) => {
+        const items = await sut.getTimeBuckets(auth, dto);
+        return items.map(({ timeBucket }) => timeBucket).toSorted();
+      };
+      const bucketIds = async (auth: AuthDto, timeBucket: string) =>
+        JSON.parse(await sut.getTimeBucket(auth, { ...dto, timeBucket })).id as string[];
+
+      const plain = factory.auth({ user: viewer });
+      const elevated = factory.auth({ user: viewer, session: { hasElevatedPermission: true } });
+      const revealing = {
+        ...elevated,
+        revealedLocks: { albumIds: [viewerLocked.id, partnerLocked.id], containerIds: [] },
+      };
+
+      await expect(buckets(plain)).resolves.toEqual(['1970-01-01', '1970-03-01']);
+      await expect(bucketIds(plain, '1970-01-01')).resolves.toEqual([viewerVisible.id]);
+      await expect(bucketIds(plain, '1970-03-01')).resolves.toEqual([partnerVisible.id]);
+      await expect(bucketIds(plain, '1970-02-01')).resolves.toEqual([]);
+      await expect(bucketIds(plain, '1970-04-01')).resolves.toEqual([]);
+
+      // the map is list-like (spec §15.3): elevation alone reveals nothing
+      await expect(buckets(elevated)).resolves.toEqual(['1970-01-01', '1970-03-01']);
+      await expect(bucketIds(elevated, '1970-02-01')).resolves.toEqual([]);
+
+      // the viewer's reveal covers the viewer's own lock only, never the partner's; without elevation it is ignored
+      await expect(buckets(revealing)).resolves.toEqual(['1970-01-01', '1970-02-01', '1970-03-01']);
+      await expect(bucketIds(revealing, '1970-02-01')).resolves.toEqual([viewerHidden.id]);
+      await expect(bucketIds(revealing, '1970-04-01')).resolves.toEqual([]);
+      await expect(buckets({ ...plain, revealedLocks: revealing.revealedLocks })).resolves.toEqual([
+        '1970-01-01',
+        '1970-03-01',
+      ]);
     });
   });
 });

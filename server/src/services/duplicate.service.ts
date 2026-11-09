@@ -119,7 +119,7 @@ export class DuplicateService extends BaseService {
   private async resolveGroup(auth: AuthDto, group: DuplicateResolveGroupDto): Promise<BulkIdResponseDto> {
     const { duplicateId, keepAssetIds, trashAssetIds } = group;
 
-    const duplicateGroup = await this.duplicateRepository.get(duplicateId);
+    const duplicateGroup = await this.getVisibleDuplicateGroup(auth, duplicateId);
     if (!duplicateGroup) {
       return { id: duplicateId, success: false, error: BulkIdErrorReason.NOT_FOUND };
     }
@@ -177,6 +177,11 @@ export class DuplicateService extends BaseService {
           permission: Permission.AlbumAssetCreate,
           ids: mergedAlbumIds,
         });
+        // Hidden albums are write-protected outside an elevated session (spec §15.2): like the bulk add-to-albums
+        // path, the merge silently skips them.
+        for (const albumId of await this.getWriteProtectedAlbumIds(auth)) {
+          allowedAlbumIds.delete(albumId);
+        }
 
         const allowedShareIds = await this.checkAccess({
           auth,
@@ -241,6 +246,43 @@ export class DuplicateService extends BaseService {
     }
 
     return { id: duplicateId, success: true };
+  }
+
+  /**
+   * Fork lock audit: the group as the viewer's duplicate list presents it (getDuplicates). A member hidden by the
+   * viewer's locks was never shown, so it is out of scope for the resolution - it is neither required in keep/trash,
+   * nor merged into the keeper (its description, tags, rating, favorite and albums would otherwise surface on a
+   * visible asset), nor touched. Same rule as the list: hidden even when elevated unless revealed (spec §15.3).
+   */
+  private async getVisibleDuplicateGroup(auth: AuthDto, duplicateId: string) {
+    const group = await this.duplicateRepository.get(duplicateId);
+    if (!group) {
+      return;
+    }
+    const lockVisibility = await this.lockRepository.getOwnerLockVisibility({
+      viewerId: auth.user.id,
+      ownerIds: [auth.user.id],
+      revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
+      isElevated: !!auth.session?.hasElevatedPermission,
+    });
+    if (lockVisibility.length === 0) {
+      return group;
+    }
+    const assets = [];
+    for (const asset of group.assets) {
+      if (await this.lockRepository.isAssetVisible(asset.id, lockVisibility)) {
+        assets.push(asset);
+      }
+    }
+    return assets.length > 0 ? { ...group, assets } : undefined;
+  }
+
+  /** The viewer's hidden albums, which mutations must not touch outside an elevated session (no reveal for writes). */
+  private async getWriteProtectedAlbumIds(auth: AuthDto): Promise<string[]> {
+    if (auth.session?.hasElevatedPermission || !(await this.lockRepository.hasAnyLocks(auth.user.id))) {
+      return [];
+    }
+    return this.lockRepository.getHiddenAlbumIds(auth.user.id, NO_REVEALED_LOCKS);
   }
 
   private getSyncMergeResult(assets: MapAsset[], assetAlbumMap: Map<string, string[]> = new Map()): ResolveRequest {

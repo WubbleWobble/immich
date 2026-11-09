@@ -65,15 +65,21 @@ export class MemoryService extends BaseService {
     });
   }
 
-  private async createOnThisDayMemories(ownerId: string, target: DateTime) {
-    // Background job: no session, so no reveal - the owner's locked content stays out of
-    // generated memories.
-    const lockVisibility = await this.lockRepository.getOwnerLockVisibility({
+  /**
+   * Memory generation is a background job: it never acts as elevated and never uses a reveal set, so the owner's
+   * locked content stays out of every generated memory.
+   */
+  private getJobLockVisibility(ownerId: string) {
+    return this.lockRepository.getOwnerLockVisibility({
       viewerId: ownerId,
       ownerIds: [ownerId],
       revealed: NO_REVEALED_LOCKS,
       isElevated: false,
     });
+  }
+
+  private async createOnThisDayMemories(ownerId: string, target: DateTime) {
+    const lockVisibility = await this.getJobLockVisibility(ownerId);
     const showAt = target.startOf('day').toISO();
     const hideAt = target.endOf('day').toISO();
     const memories = await this.assetRepository.getByDayOfYear([ownerId], target, lockVisibility);
@@ -94,22 +100,25 @@ export class MemoryService extends BaseService {
     );
   }
 
-  // FORK-PORT: lock-audit — new upstream birthday memories (d6d094738): createBirthdayMemories/getBirthdayAssets
-  // build memories from personRepository.forBirthdayMemories + memoryRepository.getPersonAssetsByDate with no lock
-  // filter. This is a background job (never elevated): pass the owner's lock visibility with NO_REVEALED_LOCKS,
-  // as the fork does for the on-this-day path (getByDayOfYear).
+  /**
+   * Fork (d6d094738 lock audit): a person only seeds a birthday memory when at least one of their birthday assets
+   * passes the owner's locks (job context, see getJobLockVisibility) - so neither a hidden asset nor a name known only
+   * from hidden content ends up in a memory.
+   */
   private async createBirthdayMemories(ownerId: string, target: DateTime) {
     const people = await this.personRepository.forBirthdayMemories(ownerId, target);
     if (people.length === 0) {
       return;
     }
 
+    const lockVisibility = await this.getJobLockVisibility(ownerId);
+
     const showAt = target.minus({ days: DAYS_UNTIL_BIRTHDAY }).startOf('day').toISO();
     const hideAt = target.endOf('day').toISO();
 
     await Promise.all(
       people.map(async ({ personGroupId, name: personName, birthDate }) => {
-        const assets = await this.getBirthdayAssets(ownerId, personGroupId, birthDate, target);
+        const assets = await this.getBirthdayAssets(ownerId, personGroupId, birthDate, target, lockVisibility);
         if (assets.length === 0) {
           return;
         }
@@ -134,8 +143,15 @@ export class MemoryService extends BaseService {
     personGroupId: string,
     birthDate: YearMonthDay,
     until: YearMonthDay,
+    lockVisibility: OwnerLockVisibility[],
   ) {
-    const years = await this.memoryRepository.getPersonBirthdayYears(ownerId, personGroupId, birthDate, until);
+    const years = await this.memoryRepository.getPersonBirthdayYears(
+      ownerId,
+      personGroupId,
+      birthDate,
+      until,
+      lockVisibility,
+    );
     if (years.length === 0) {
       return [];
     }
@@ -153,7 +169,13 @@ export class MemoryService extends BaseService {
 
     const assets = await Promise.all(
       birthdayYears.map((year) =>
-        this.memoryRepository.getPersonAssetsByDate(ownerId, personGroupId, { ...birthDate, year }, assetsPerYear),
+        this.memoryRepository.getPersonAssetsByDate(
+          ownerId,
+          personGroupId,
+          { ...birthDate, year },
+          assetsPerYear,
+          lockVisibility,
+        ),
       ),
     );
 

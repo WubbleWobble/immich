@@ -1,6 +1,6 @@
 import { Kysely } from 'kysely';
 import { AssetEditAction } from 'src/dtos/editing.dto.js';
-import { AssetFileType, AssetMetadataKey, AssetStatus, JobName, SharedLinkType } from 'src/enum.js';
+import { AssetFileType, AssetMetadataKey, AssetStatus, AssetVisibility, JobName, SharedLinkType } from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { AlbumRepository } from 'src/repositories/album.repository.js';
 import { AssetEditRepository } from 'src/repositories/asset-edit.repository.js';
@@ -16,6 +16,7 @@ import { SharedLinkRepository } from 'src/repositories/shared-link.repository.js
 import { StackRepository } from 'src/repositories/stack.repository.js';
 import { StorageRepository } from 'src/repositories/storage.repository.js';
 import { UserRepository } from 'src/repositories/user.repository.js';
+import { WebsocketRepository } from 'src/repositories/websocket.repository.js';
 import { DB } from 'src/schema/index.js';
 import { AssetService } from 'src/services/asset.service.js';
 import { newMediumService } from 'test/medium.factory.js';
@@ -38,7 +39,7 @@ const setup = (db?: Kysely<DB>) => {
       StackRepository,
       UserRepository,
     ],
-    mock: [EventRepository, LoggingRepository, JobRepository, StorageRepository, OcrRepository],
+    mock: [EventRepository, LoggingRepository, JobRepository, StorageRepository, OcrRepository, WebsocketRepository],
   });
 };
 
@@ -444,6 +445,67 @@ describe(AssetService.name, () => {
           exifInfo: expect.objectContaining({ dateTimeOriginal: '2023-11-19T18:11:00+00:00', timeZone: 'UTC' }),
         }),
       );
+    });
+  });
+
+  describe('fork locks', () => {
+    it('update re-reads through the lock-checked get: a hidden asset is refused before any write', async () => {
+      const { sut, ctx } = setup();
+      ctx.getMock(WebsocketRepository).clientSend.mockReturnValue();
+      const { user } = await ctx.newUser();
+      const { asset: visible } = await ctx.newAsset({ ownerId: user.id });
+      const { asset: hidden } = await ctx.newAsset({ ownerId: user.id });
+      await ctx.newExif({ assetId: visible.id, make: 'Canon' });
+      await ctx.newExif({ assetId: hidden.id, make: 'Canon' });
+      const { album: locked } = await ctx.newAlbum({ ownerId: user.id }, [hidden.id]);
+      await ctx.get(LockRepository).lockAlbum(user.id, locked.id);
+      const isFavorite = async (id: string) => {
+        const asset = await ctx.get(AssetRepository).getById(id);
+        return asset?.isFavorite;
+      };
+
+      const auth = factory.auth({ user });
+      await expect(sut.update(auth, visible.id, { isFavorite: true })).resolves.toEqual(
+        expect.objectContaining({
+          id: visible.id,
+          isFavorite: true,
+          exifInfo: expect.objectContaining({ make: 'Canon' }),
+        }),
+      );
+
+      const revealing = { ...auth, revealedLocks: { albumIds: [locked.id], containerIds: [] } };
+      for (const unelevated of [auth, revealing]) {
+        await expect(sut.update(unelevated, hidden.id, { isFavorite: true })).rejects.toThrow(
+          'Not found or no asset.update access',
+        );
+      }
+      await expect(isFavorite(hidden.id)).resolves.toBe(false);
+
+      // direct-by-id: the elevated owner may edit hidden content and gets the full re-read back
+      const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+      await expect(sut.update(elevated, hidden.id, { isFavorite: true })).resolves.toEqual(
+        expect.objectContaining({
+          id: hidden.id,
+          isFavorite: true,
+          exifInfo: expect.objectContaining({ make: 'Canon' }),
+        }),
+      );
+    });
+
+    it('updateAll rejects the retired locked visibility and leaves album memberships alone', async () => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser();
+      const { asset } = await ctx.newAsset({ ownerId: user.id });
+      const { album } = await ctx.newAlbum({ ownerId: user.id }, [asset.id]);
+
+      const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+      await expect(sut.updateAll(elevated, { ids: [asset.id], visibility: AssetVisibility.Locked })).rejects.toThrow(
+        /locked/i,
+      );
+      await expect(ctx.get(AlbumRepository).getAssetIds(album.id, [asset.id])).resolves.toEqual(new Set([asset.id]));
+      await expect(ctx.get(AssetRepository).getById(asset.id)).resolves.toMatchObject({
+        visibility: AssetVisibility.Timeline,
+      });
     });
   });
 

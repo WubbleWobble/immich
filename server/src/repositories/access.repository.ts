@@ -545,6 +545,11 @@ class AssetAccess {
 class AssetFileAccess {
   constructor(private db: Kysely<DB>) {}
 
+  /**
+   * Fork (caea849fe lock audit): asset files (assetFile.read/download/delete) are owner-only, and - like every asset
+   * permission - a file of an asset hidden by the owner's own locks is unreachable by known id outside an elevated
+   * session (no reveal set: direct-by-id access is gated on elevation alone, spec §15.3).
+   */
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID_SET] })
   @ChunkedSet({ paramIndex: 1 })
   async checkOwnerAccess(userId: string, fileIds: Set<string>, hasElevatedPermission: boolean | undefined) {
@@ -552,15 +557,32 @@ class AssetFileAccess {
       return new Set<string>();
     }
 
-    return this.db
-      .selectFrom('asset_file')
-      .select('asset_file.id')
-      .innerJoin('asset', 'asset.id', 'asset_file.assetId')
-      .$if(!hasElevatedPermission, (eb) => eb.where('asset.visibility', '!=', AssetVisibility.Locked))
-      .where('asset.ownerId', '=', userId)
-      .where('asset_file.id', 'in', [...fileIds])
-      .execute()
-      .then((files) => new Set(files.map(({ id }) => id)));
+    const lockVisibility = hasElevatedPermission
+      ? []
+      : await getOwnerLockVisibility(this.db, {
+          viewerId: userId,
+          ownerIds: [userId],
+          revealed: NO_REVEALED_LOCKS,
+          isElevated: false,
+        });
+
+    return (
+      withLockVisibility(
+        this.db
+          .selectFrom('asset_file')
+          .select('asset_file.id')
+          .innerJoin('asset', 'asset.id', 'asset_file.assetId')
+          .$if(!hasElevatedPermission, (eb) => eb.where('asset.visibility', '!=', AssetVisibility.Locked))
+          .where('asset.ownerId', '=', userId)
+          .where('asset_file.id', 'in', [...fileIds]),
+        this.db,
+        lockVisibility,
+      )
+        // Embedded lock-visibility subqueries rely on the root query for join deduplication.
+        .$if(lockVisibility.length > 0, (qb) => qb.withPlugin(joinDeduplicationPlugin))
+        .execute()
+        .then((files) => new Set(files.map(({ id }) => id)))
+    );
   }
 }
 

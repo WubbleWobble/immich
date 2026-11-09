@@ -3,6 +3,7 @@ import { DateTime } from 'luxon';
 import { BulkIdErrorReason } from 'src/dtos/asset-ids.response.dto.js';
 import { AssetFileType, MemoryType } from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
+import { AlbumRepository } from 'src/repositories/album.repository.js';
 import { AssetRepository } from 'src/repositories/asset.repository.js';
 import { DatabaseRepository } from 'src/repositories/database.repository.js';
 import { LockRepository } from 'src/repositories/lock.repository.js';
@@ -26,6 +27,7 @@ const setup = (db?: Kysely<DB>) => {
     real: [
       LockRepository,
       AccessRepository,
+      AlbumRepository,
       AssetRepository,
       DatabaseRepository,
       MemoryRepository,
@@ -64,6 +66,12 @@ const newPersonAsset = async (
   ]);
   return asset;
 };
+
+const memoryAt = (day: number) => DateTime.fromObject({ year: 2024, month: 6, day }, { zone: 'utc' }).toISO()!;
+
+/** Memory ids with their asset ids, in response order */
+const ids = (memories: { id: string; assets: { id: string }[] }[]) =>
+  memories.map(({ id, assets }) => ({ id, assets: assets.map(({ id }) => id) }));
 
 describe(MemoryService.name, () => {
   describe('get', () => {
@@ -740,6 +748,88 @@ describe(MemoryService.name, () => {
 
       const memories = await memoryRepo.search(user.id, { type: MemoryType.Birthday });
       expect(memories.length).toBe(0);
+    });
+  });
+
+  describe('fork locks', () => {
+    it('birthday memories exclude locked-album assets', async () => {
+      const { sut, ctx } = setup();
+      const now = DateTime.fromObject({ year: 2025, month: 6, day: 10 }, { zone: 'utc' }) as DateTime<true>;
+      const { user } = await ctx.newUser();
+      const { person: alice } = await ctx.newPerson({ ownerId: user.id, name: 'Alice', birthDate: '1990-06-13' });
+      const { person: bob } = await ctx.newPerson({ ownerId: user.id, name: 'Bob', birthDate: '1985-06-13' });
+      const visible = await newPersonAsset(ctx, {
+        ownerId: user.id,
+        personGroupId: alice.personGroupId,
+        localDateTime: '2024-06-13T12:00:00.000Z',
+      });
+      const hidden = await newPersonAsset(ctx, {
+        ownerId: user.id,
+        personGroupId: alice.personGroupId,
+        localDateTime: '2023-06-13T12:00:00.000Z',
+      });
+      // Bob's only birthday asset is hidden: no memory may be seeded from it (its data carries his name)
+      const bobHidden = await newPersonAsset(ctx, {
+        ownerId: user.id,
+        personGroupId: bob.personGroupId,
+        localDateTime: '2022-06-13T12:00:00.000Z',
+      });
+      const { album: locked } = await ctx.newAlbum({ ownerId: user.id }, [hidden.id, bobHidden.id]);
+      await ctx.get(LockRepository).lockAlbum(user.id, locked.id);
+
+      // a background job: no session, never elevated, no reveal set
+      vi.setSystemTime(now.toJSDate());
+      await sut.onMemoriesCreate();
+
+      // stored rows, not a lock-filtered read: the job must not have linked the hidden assets at all
+      const memories = await ctx.get(MemoryRepository).search(user.id, { type: MemoryType.Birthday });
+      expect(memories).toEqual([
+        expect.objectContaining({
+          data: { personId: alice.personGroupId, personName: 'Alice', year: 1990 },
+          assets: [expect.objectContaining({ id: visible.id })],
+        }),
+      ]);
+    });
+
+    it('memories page excludes memories whose assets are all hidden', async () => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser();
+      const { asset: visible } = await ctx.newAsset({ ownerId: user.id });
+      const { asset: hidden } = await ctx.newAsset({ ownerId: user.id });
+      const { album: locked } = await ctx.newAlbum({ ownerId: user.id }, [hidden.id]);
+      await ctx.get(LockRepository).lockAlbum(user.id, locked.id);
+
+      // the hidden-only memory sorts first (desc by memoryAt), so it must not consume a page slot
+      const { memory: hiddenOnly } = await ctx.newMemory({ ownerId: user.id, memoryAt: memoryAt(20) });
+      const { memory: mixed } = await ctx.newMemory({ ownerId: user.id, memoryAt: memoryAt(15) });
+      const { memory: plain } = await ctx.newMemory({ ownerId: user.id, memoryAt: memoryAt(10) });
+      await ctx.newMemoryAsset({ memoryId: hiddenOnly.id, assetId: hidden.id });
+      await ctx.newMemoryAsset({ memoryId: mixed.id, assetId: hidden.id });
+      await ctx.newMemoryAsset({ memoryId: mixed.id, assetId: visible.id });
+      await ctx.newMemoryAsset({ memoryId: plain.id, assetId: visible.id });
+
+      const auth = factory.auth({ user });
+      const page = { isUpcoming: false, size: 1 };
+      await expect(sut.search(auth, { ...page, page: 1 }).then(ids)).resolves.toEqual([
+        { id: mixed.id, assets: [visible.id] },
+      ]);
+      await expect(sut.search(auth, { ...page, page: 2 }).then(ids)).resolves.toEqual([
+        { id: plain.id, assets: [visible.id] },
+      ]);
+      await expect(sut.search(auth, { ...page, page: 3 })).resolves.toEqual([]);
+      await expect(sut.search(auth, { id: hiddenOnly.id })).resolves.toEqual([]);
+      await expect(sut.statistics(auth, { isUpcoming: false })).resolves.toEqual({ total: 2 });
+
+      // memories are list-like (spec §15.3): elevation alone reveals nothing, a reveal does
+      const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+      await expect(sut.search(elevated, { ...page, page: 1 }).then(ids)).resolves.toEqual([
+        { id: mixed.id, assets: [visible.id] },
+      ]);
+      const revealing = { ...elevated, revealedLocks: { albumIds: [locked.id], containerIds: [] } };
+      await expect(sut.search(revealing, { ...page, page: 1 }).then(ids)).resolves.toEqual([
+        { id: hiddenOnly.id, assets: [hidden.id] },
+      ]);
+      await expect(sut.statistics(revealing, { isUpcoming: false })).resolves.toEqual({ total: 3 });
     });
   });
 

@@ -31,6 +31,7 @@ import { AlbumService } from 'src/services/album.service.js';
 import { AssetService } from 'src/services/asset.service.js';
 import { BaseService } from 'src/services/base.service.js';
 import { TagService } from 'src/services/tag.service.js';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
 
 const dummy = () => {
   throw new Error(
@@ -336,7 +337,15 @@ export class WorkflowExecutionService extends BaseService {
   }
 
   @OnJob({ name: JobName.WorkflowAssetTrigger, queue: QueueName.Workflow })
-  handleAssetTrigger({ workflowId, assetId }: JobOf<JobName.WorkflowAssetTrigger>) {
+  async handleAssetTrigger({ workflowId, assetId }: JobOf<JobName.WorkflowAssetTrigger>) {
+    // Fork lock audit (a939561e7 tag trigger): a workflow runs as a background job - never elevated, never with a
+    // reveal set - so an asset hidden by its owner's locks (e.g. tagged from an elevated session) is not acted on at
+    // all: no step may read it out (webhooks), rewrite it, or file it into a visible album (which would un-hide it).
+    if (!(await this.isAssetVisibleToJob(assetId))) {
+      this.logger.debug(`Workflow ${workflowId} skipped for asset ${assetId}: hidden by its owner's locks`);
+      return JobStatus.Skipped;
+    }
+
     return this.execute(workflowId, (type) => {
       const assetService = BaseService.create(AssetService, this);
 
@@ -385,6 +394,21 @@ export class WorkflowExecutionService extends BaseService {
         }
       }
     });
+  }
+
+  private async isAssetVisibleToJob(assetId: string): Promise<boolean> {
+    const [asset] = await this.assetRepository.getByIds([assetId]);
+    if (!asset) {
+      // nothing to protect; the run itself fails on the missing asset as before
+      return true;
+    }
+    const lockVisibility = await this.lockRepository.getOwnerLockVisibility({
+      viewerId: asset.ownerId,
+      ownerIds: [asset.ownerId],
+      revealed: NO_REVEALED_LOCKS,
+      isElevated: false,
+    });
+    return lockVisibility.length === 0 || this.lockRepository.isAssetVisible(assetId, lockVisibility);
   }
 
   private async execute<T extends WorkflowType>(
@@ -452,6 +476,8 @@ export class WorkflowExecutionService extends BaseService {
           context,
         );
         if (result?.changes) {
+          // Fork: background jobs never act as elevated - step changes go through the owner's ordinary, lock-aware
+          // permissions (hidden content is write-protected, spec §15.2), like the host functions' auth.
           await write(
             {
               user: {
@@ -459,7 +485,7 @@ export class WorkflowExecutionService extends BaseService {
               },
               session: {
                 id: DummyValue.UUID,
-                hasElevatedPermission: true,
+                hasElevatedPermission: false,
               },
             } as AuthDto,
             result.changes,

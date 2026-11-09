@@ -2,9 +2,11 @@ import { Kysely } from 'kysely';
 import { BulkIdErrorReason } from 'src/dtos/asset-ids.response.dto.js';
 import { JobName, JobStatus } from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
+import { AlbumRepository } from 'src/repositories/album.repository.js';
 import { AssetRepository } from 'src/repositories/asset.repository.js';
 import { EventRepository } from 'src/repositories/event.repository.js';
 import { JobRepository } from 'src/repositories/job.repository.js';
+import { LockRepository } from 'src/repositories/lock.repository.js';
 import { LoggingRepository } from 'src/repositories/logging.repository.js';
 import { TagRepository } from 'src/repositories/tag.repository.js';
 import { DB } from 'src/schema/index.js';
@@ -19,7 +21,7 @@ let defaultDatabase: Kysely<DB>;
 const setup = (db?: Kysely<DB>) => {
   return newMediumService(TagService, {
     database: db || defaultDatabase,
-    real: [AssetRepository, TagRepository, AccessRepository],
+    real: [AlbumRepository, AssetRepository, LockRepository, TagRepository, AccessRepository],
     mock: [EventRepository, JobRepository, LoggingRepository],
   });
 };
@@ -93,6 +95,62 @@ describe(TagService.name, () => {
           { name: JobName.SidecarWrite, data: { id: parentAsset.id } },
           { name: JobName.SidecarWrite, data: { id: childAsset.id } },
         ]),
+      );
+    });
+  });
+
+  describe('fork locks', () => {
+    it("tag rename and delete keep hidden assets' exif tags in sync, within the tag owner's assets only", async () => {
+      const { sut, ctx } = setup();
+      ctx.getMock(JobRepository).queueAll.mockResolvedValue();
+      const { user } = await ctx.newUser();
+      const { user: stranger } = await ctx.newUser();
+      const { asset: visible } = await ctx.newAsset({ ownerId: user.id });
+      const { asset: hidden } = await ctx.newAsset({ ownerId: user.id });
+      const { asset: foreign } = await ctx.newAsset({ ownerId: stranger.id });
+      const { album: locked } = await ctx.newAlbum({ ownerId: user.id }, [hidden.id]);
+      await ctx.get(LockRepository).lockAlbum(user.id, locked.id);
+      const [tag] = await upsertTags(ctx.get(TagRepository), { userId: user.id, tags: ['trip'] });
+      await ctx.newTagAsset({ tagIds: [tag.id], assetIds: [visible.id, hidden.id] });
+      // a stray cross-owner link (no API creates one): the tag owner's rename must never rewrite another user's asset
+      await ctx.newTagAsset({ tagIds: [tag.id], assetIds: [foreign.id] });
+      await ctx.newExif({ assetId: visible.id, tags: ['trip'] });
+      await ctx.newExif({ assetId: hidden.id, tags: ['trip'] });
+      await ctx.newExif({ assetId: foreign.id, tags: ['mine'] });
+      const exifTags = () =>
+        ctx.database
+          .selectFrom('asset_exif')
+          .select(['assetId', 'tags'])
+          .where('assetId', 'in', [visible.id, hidden.id, foreign.id])
+          .execute();
+      const auth = factory.auth({ user });
+
+      // a derived-data consistency write, not a read: hidden assets must follow too, or their stale exif/sidecar
+      // tag would resurrect the old value on the next metadata extraction. Nothing about them is returned.
+      await expect(sut.update(auth, tag.id, { name: 'renamed' })).resolves.toEqual(
+        expect.objectContaining({ id: tag.id, value: 'renamed' }),
+      );
+      await expect(exifTags()).resolves.toEqual(
+        expect.arrayContaining([
+          { assetId: visible.id, tags: ['renamed'] },
+          { assetId: hidden.id, tags: ['renamed'] },
+          { assetId: foreign.id, tags: ['mine'] },
+        ]),
+      );
+      expect(ctx.getMock(JobRepository).queueAll).toHaveBeenLastCalledWith(
+        expect.not.arrayContaining([{ name: JobName.SidecarWrite, data: { id: foreign.id } }]),
+      );
+
+      await expect(sut.remove(auth, tag.id)).resolves.toBeUndefined();
+      await expect(exifTags()).resolves.toEqual(
+        expect.arrayContaining([
+          { assetId: visible.id, tags: [] },
+          { assetId: hidden.id, tags: [] },
+          { assetId: foreign.id, tags: ['mine'] },
+        ]),
+      );
+      expect(ctx.getMock(JobRepository).queueAll).toHaveBeenLastCalledWith(
+        expect.not.arrayContaining([{ name: JobName.SidecarWrite, data: { id: foreign.id } }]),
       );
     });
   });

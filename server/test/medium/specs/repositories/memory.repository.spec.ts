@@ -54,7 +54,7 @@ describe(MemoryRepository.name, () => {
       await newPersonAsset(ctx, { ...args, localDateTime: '2022-06-13T09:00:00.000Z' });
       await newPersonAsset(ctx, { ...args, localDateTime: '2024-06-13T12:00:00.000Z' });
 
-      const years = await sut.getPersonBirthdayYears(user.id, person.personGroupId, birthDate, until);
+      const years = await sut.getPersonBirthdayYears(user.id, person.personGroupId, birthDate, until, []);
 
       expect(years).toEqual([2024, 2022, 2020]);
     });
@@ -68,7 +68,7 @@ describe(MemoryRepository.name, () => {
         localDateTime: '2024-06-14T12:00:00.000Z',
       });
 
-      const years = await sut.getPersonBirthdayYears(user.id, person.personGroupId, birthDate, until);
+      const years = await sut.getPersonBirthdayYears(user.id, person.personGroupId, birthDate, until, []);
 
       expect(years).toEqual([]);
     });
@@ -83,7 +83,7 @@ describe(MemoryRepository.name, () => {
         localDateTime: '2024-06-13T12:00:00.000Z',
       });
 
-      const years = await sut.getPersonBirthdayYears(user.id, person.personGroupId, birthDate, until);
+      const years = await sut.getPersonBirthdayYears(user.id, person.personGroupId, birthDate, until, []);
 
       expect(years).toEqual([]);
     });
@@ -94,7 +94,7 @@ describe(MemoryRepository.name, () => {
       const { asset } = await ctx.newAsset({ ownerId: user.id, localDateTime: '2024-06-13T12:00:00.000Z' });
       await ctx.newAssetFace({ assetId: asset.id, personGroupId: person.personGroupId });
 
-      const years = await sut.getPersonBirthdayYears(user.id, person.personGroupId, birthDate, until);
+      const years = await sut.getPersonBirthdayYears(user.id, person.personGroupId, birthDate, until, []);
 
       expect(years).toEqual([]);
     });
@@ -109,7 +109,7 @@ describe(MemoryRepository.name, () => {
       });
       await ctx.softDeleteAsset(asset.id);
 
-      const years = await sut.getPersonBirthdayYears(user.id, person.personGroupId, birthDate, until);
+      const years = await sut.getPersonBirthdayYears(user.id, person.personGroupId, birthDate, until, []);
 
       expect(years).toEqual([]);
     });
@@ -125,7 +125,7 @@ describe(MemoryRepository.name, () => {
       await ctx.newAssetFace({ assetId: asset.id, personGroupId: person.personGroupId });
       await ctx.newAssetFile({ assetId: asset.id, type: AssetFileType.Preview, path: `/preview/${asset.id}.jpg` });
 
-      const years = await sut.getPersonBirthdayYears(user.id, person.personGroupId, birthDate, until);
+      const years = await sut.getPersonBirthdayYears(user.id, person.personGroupId, birthDate, until, []);
 
       expect(years).toEqual([]);
     });
@@ -137,7 +137,7 @@ describe(MemoryRepository.name, () => {
       await ctx.newAssetFace({ assetId: asset.id, personGroupId: person.personGroupId, deletedAt: new Date() });
       await ctx.newAssetFile({ assetId: asset.id, type: AssetFileType.Preview, path: `/preview/${asset.id}.jpg` });
 
-      const years = await sut.getPersonBirthdayYears(user.id, person.personGroupId, birthDate, until);
+      const years = await sut.getPersonBirthdayYears(user.id, person.personGroupId, birthDate, until, []);
 
       expect(years).toEqual([]);
     });
@@ -149,7 +149,7 @@ describe(MemoryRepository.name, () => {
       await ctx.newAssetFace({ assetId: asset.id, personGroupId: person.personGroupId, isVisible: false });
       await ctx.newAssetFile({ assetId: asset.id, type: AssetFileType.Preview, path: `/preview/${asset.id}.jpg` });
 
-      const years = await sut.getPersonBirthdayYears(user.id, person.personGroupId, birthDate, until);
+      const years = await sut.getPersonBirthdayYears(user.id, person.personGroupId, birthDate, until, []);
 
       expect(years).toEqual([]);
     });
@@ -163,7 +163,7 @@ describe(MemoryRepository.name, () => {
         localDateTime: '1985-06-13T12:00:00.000Z',
       });
 
-      const years = await sut.getPersonBirthdayYears(user.id, person.personGroupId, birthDate, until);
+      const years = await sut.getPersonBirthdayYears(user.id, person.personGroupId, birthDate, until, []);
 
       expect(years).toEqual([]);
     });
@@ -177,7 +177,7 @@ describe(MemoryRepository.name, () => {
         localDateTime: '1990-06-13T12:00:00.000Z',
       });
 
-      const years = await sut.getPersonBirthdayYears(user.id, person.personGroupId, birthDate, until);
+      const years = await sut.getPersonBirthdayYears(user.id, person.personGroupId, birthDate, until, []);
 
       expect(years).toEqual([1990]);
     });
@@ -189,7 +189,7 @@ describe(MemoryRepository.name, () => {
       await newPersonAsset(ctx, { ...args, localDateTime: '2024-06-13T12:00:00.000Z' });
       await newPersonAsset(ctx, { ...args, localDateTime: '2025-06-13T12:00:00.000Z' });
 
-      const years = await sut.getPersonBirthdayYears(user.id, person.personGroupId, birthDate, until);
+      const years = await sut.getPersonBirthdayYears(user.id, person.personGroupId, birthDate, until, []);
 
       expect(years).toEqual([2024]);
     });
@@ -210,6 +210,7 @@ describe(MemoryRepository.name, () => {
         person.personGroupId,
         { year: 2024, month: 6, day: 13 },
         2,
+        [],
       );
 
       expect(assets.map(({ id }) => id)).toEqual([newest2024.id, nextNewest2024.id]);
@@ -227,6 +228,7 @@ describe(MemoryRepository.name, () => {
         person.personGroupId,
         { year: 2024, month: 6, day: 13 },
         1,
+        [],
       );
 
       expect(assets.map(({ id }) => id)).toEqual([newest2024.id]);

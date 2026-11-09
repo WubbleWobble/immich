@@ -33,11 +33,22 @@ export class TagRepository {
       .executeTakeFirst();
   }
 
+  /**
+   * Fork lock audit (54987c764): the assets whose denormalized exif tags must be rewritten after the tag (or an
+   * ancestor) is renamed or deleted. Deliberately NOT lock-filtered: this is an internal consistency write, never a
+   * read surface - skipping a hidden asset would leave a stale tag in its exif/sidecar that the next metadata
+   * extraction would resurrect. Never return its result to a client. Scoped to the tag owner's own assets, so a
+   * rename can only ever rewrite the owner's library.
+   */
   @GenerateSql({ params: [DummyValue.UUID] })
   async getAssetIdsByTagId(tagId: string): Promise<string[]> {
     const rows = await this.db
       .selectFrom('tag_closure')
+      .innerJoin('tag', 'tag.id', 'tag_closure.id_ancestor')
       .innerJoin('tag_asset', 'tag_asset.tagId', 'tag_closure.id_descendant')
+      .innerJoin('asset', (join) =>
+        join.onRef('asset.id', '=', 'tag_asset.assetId').onRef('asset.ownerId', '=', 'tag.userId'),
+      )
       .select('tag_asset.assetId')
       .distinct()
       .where('tag_closure.id_ancestor', '=', tagId)

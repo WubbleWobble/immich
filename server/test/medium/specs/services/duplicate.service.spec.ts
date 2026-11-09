@@ -8,6 +8,7 @@ import { ConfigRepository } from 'src/repositories/config.repository.js';
 import { DuplicateRepository } from 'src/repositories/duplicate.repository.js';
 import { EventRepository } from 'src/repositories/event.repository.js';
 import { JobRepository } from 'src/repositories/job.repository.js';
+import { LockRepository } from 'src/repositories/lock.repository.js';
 import { LoggingRepository } from 'src/repositories/logging.repository.js';
 import { SystemMetadataRepository } from 'src/repositories/system-metadata.repository.js';
 import { TagRepository } from 'src/repositories/tag.repository.js';
@@ -29,6 +30,7 @@ const setup = (db?: Kysely<DB>) => {
       AssetRepository,
       ConfigRepository,
       DuplicateRepository,
+      LockRepository,
       SystemMetadataRepository,
       TagRepository,
     ],
@@ -615,6 +617,55 @@ describe(DuplicateService.name, () => {
         expect(ctx.getMock(EventRepository).emit).toHaveBeenCalledWith('AssetDeleteAll', {
           assetIds: [trashed.id],
           userId: user.id,
+        });
+      });
+    });
+
+    describe('fork locks', () => {
+      it('resolving a duplicate group never merges from or into hidden content', async () => {
+        const { sut, ctx } = setup();
+        const { user } = await ctx.newUser();
+        const duplicateId = factory.uuid();
+
+        const keeper = await newDuplicateAsset(ctx, { ownerId: user.id, duplicateId });
+        const trashed = await newDuplicateAsset(ctx, { ownerId: user.id, duplicateId }, { description: 'visible' });
+        const hidden = await newDuplicateAsset(
+          ctx,
+          { ownerId: user.id, duplicateId, isFavorite: true },
+          { description: 'secret', rating: 5 },
+        );
+        const secretTag = await newTag(ctx, user.id, 'secret');
+        await ctx.newTagAsset({ tagIds: [secretTag.id], assetIds: [hidden.id] });
+        // `trashed` stays visible through `shared`, but is also in the locked album; `hidden` is only in the locked one
+        const { album: locked } = await ctx.newAlbum({ ownerId: user.id }, [hidden.id, trashed.id]);
+        const { album: shared } = await ctx.newAlbum({ ownerId: user.id }, [trashed.id]);
+        await ctx.get(LockRepository).lockAlbum(user.id, locked.id);
+
+        const auth = factory.auth({ user: { id: user.id } });
+        // the list never showed the hidden member, so the client can only resolve what it saw
+        const [group] = await sut.getDuplicates(auth);
+        expect(group.assets.map(({ id }) => id).toSorted()).toEqual([keeper.id, trashed.id].toSorted());
+        expectSuccess(
+          await sut.resolve(auth, {
+            groups: [{ duplicateId, keepAssetIds: [keeper.id], trashAssetIds: [trashed.id] }],
+          }),
+          duplicateId,
+        );
+
+        // nothing of the hidden member was merged into the visible keeper
+        const result = await ctx.get(AssetRepository).getById(keeper.id, { tags: true, exifInfo: true });
+        expect(result).toMatchObject({ isFavorite: false, duplicateId: null });
+        expect(result?.exifInfo).toMatchObject({ description: 'visible', rating: null });
+        expect(result?.tags).toEqual([]);
+        // the keeper joined the visible album, never the hidden one (hidden albums are write-protected, spec §15.2)
+        const albumRepo = ctx.get(AlbumRepository);
+        await expect(albumRepo.getAssetIds(shared.id, [keeper.id])).resolves.toEqual(new Set([keeper.id]));
+        await expect(albumRepo.getAssetIds(locked.id, [keeper.id])).resolves.toEqual(new Set());
+        // and the hidden member itself is untouched
+        await expect(ctx.get(AssetRepository).getById(hidden.id)).resolves.toMatchObject({
+          duplicateId,
+          deletedAt: null,
+          isFavorite: true,
         });
       });
     });
