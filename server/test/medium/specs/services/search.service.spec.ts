@@ -142,10 +142,15 @@ describe(SearchService.name, () => {
 
       await ctx.newPartner({ sharedById: partner.id, sharedWithId: user.id });
 
-      await ctx.newAsset({ ownerId: partner.id, visibility: AssetVisibility.Locked });
+      // Fork: per-asset locked visibility is retired (the database refuses it, R40); locking is by album
+      const { asset } = await ctx.newAsset({ ownerId: partner.id });
+      const { album } = await ctx.newAlbum({ ownerId: partner.id }, [asset.id]);
+      await ctx.get(LockRepository).lockAlbum(partner.id, album.id);
 
       const auth = factory.auth({ user: { id: user.id }, session: { hasElevatedPermission: true } });
+      const revealing = { ...auth, revealedLocks: { albumIds: [album.id], containerIds: [] } };
 
+      await expect(sut.searchStatistics(revealing, {})).resolves.toEqual({ total: 0 });
       const result = await sut.searchStatistics(auth, { visibility: AssetVisibility.Locked });
 
       expect(result).toEqual({ total: 0 });
@@ -172,11 +177,14 @@ describe(SearchService.name, () => {
     });
 
     describe('visibility', () => {
+      // Fork: per-asset locked visibility is retired (the database refuses it, R40); locking is by album
       it('should filter out locked assets in a default session', async () => {
         const { sut, ctx } = setup();
         const { user } = await ctx.newUser();
 
-        await ctx.newAsset({ ownerId: user.id, visibility: AssetVisibility.Locked });
+        const { asset } = await ctx.newAsset({ ownerId: user.id });
+        const { album } = await ctx.newAlbum({ ownerId: user.id }, [asset.id]);
+        await ctx.get(LockRepository).lockAlbum(user.id, album.id);
 
         const auth = factory.auth({ user: { id: user.id } });
 
@@ -185,15 +193,18 @@ describe(SearchService.name, () => {
         expect(response.assets.items.length).toBe(0);
       });
 
-      it('should return locked assets in an elevated session', async () => {
+      it('should return locked assets in an elevated session once revealed', async () => {
         const { sut, ctx } = setup();
         const { user } = await ctx.newUser();
 
-        await ctx.newAsset({ ownerId: user.id, visibility: AssetVisibility.Locked });
+        const { asset } = await ctx.newAsset({ ownerId: user.id });
+        const { album } = await ctx.newAlbum({ ownerId: user.id }, [asset.id]);
+        await ctx.get(LockRepository).lockAlbum(user.id, album.id);
 
         const auth = factory.auth({ user: { id: user.id }, session: { hasElevatedPermission: true } });
+        const revealing = { ...auth, revealedLocks: { albumIds: [album.id], containerIds: [] } };
 
-        const response = await sut.searchMetadata(auth, { size: 250, withStacked: false });
+        const response = await sut.searchMetadata(revealing, { size: 250, withStacked: false });
 
         expect(response.assets.items.length).toBe(1);
       });
@@ -263,7 +274,10 @@ describe(SearchService.name, () => {
       const { sut, ctx } = setup();
       const { user } = await ctx.newUser();
 
-      await ctx.newAsset({ ownerId: user.id, visibility: AssetVisibility.Locked });
+      // Fork: per-asset locked visibility is retired (the database refuses it, R40); locking is by album
+      const { asset } = await ctx.newAsset({ ownerId: user.id });
+      const { album } = await ctx.newAlbum({ ownerId: user.id }, [asset.id]);
+      await ctx.get(LockRepository).lockAlbum(user.id, album.id);
 
       const auth = factory.auth({ user: { id: user.id } });
 

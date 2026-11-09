@@ -1,6 +1,7 @@
 import {
   AfterDeleteTrigger,
   AfterUpdateTrigger,
+  Check,
   Column,
   CreateDateColumn,
   DeleteDateColumn,
@@ -34,6 +35,9 @@ import { ASSET_CHECKSUM_CONSTRAINT } from 'src/utils/database.js';
   function: asset_face_update_asset_state,
   when: '(OLD."ownerId", OLD."visibility", OLD."deletedAt") IS DISTINCT FROM (NEW."ownerId", NEW."visibility", NEW."deletedAt")',
 })
+// Fork (R40): per-asset locked visibility is retired in favour of locked albums; the enum keeps the value (spec §13).
+// ::text so the expression never parses the 'locked' enum literal (see 1792300000002-AddAssetVisibilityNotLockedCheck).
+@Check({ name: 'asset_visibility_not_locked_chk', expression: `"visibility"::text <> 'locked'` })
 // Checksums must be unique per user and library
 @Index({
   name: ASSET_CHECKSUM_CONSTRAINT,

@@ -292,6 +292,30 @@ describe(AssetRepository.name, () => {
     });
   });
 
+  describe('visibility', () => {
+    it('the database refuses the retired per-asset locked visibility (R40)', async () => {
+      const { ctx } = setup();
+      const { user } = await ctx.newUser();
+      const { asset } = await ctx.newAsset({ ownerId: user.id });
+
+      await expect(
+        ctx.database
+          .updateTable('asset')
+          .set({ visibility: AssetVisibility.Locked })
+          .where('id', '=', asset.id)
+          .execute(),
+      ).rejects.toThrow('asset_visibility_not_locked_chk');
+      await expect(ctx.newAsset({ ownerId: user.id, visibility: AssetVisibility.Locked })).rejects.toThrow(
+        'asset_visibility_not_locked_chk',
+      );
+      for (const visibility of [AssetVisibility.Archive, AssetVisibility.Hidden, AssetVisibility.Timeline]) {
+        await expect(
+          ctx.database.updateTable('asset').set({ visibility }).where('id', '=', asset.id).execute(),
+        ).resolves.toBeDefined();
+      }
+    });
+  });
+
   describe('upsertExif', () => {
     it('should replace stored audio metadata on a second extraction', async () => {
       const { ctx, sut } = setup();
