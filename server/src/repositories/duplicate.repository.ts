@@ -3,7 +3,7 @@ import { type Kysely, type NotNull, type Selectable, type ShallowDehydrateObject
 import { jsonArrayFrom } from 'kysely/helpers/postgres';
 import { InjectKysely } from 'nestjs-kysely';
 import { columns } from 'src/database.js';
-import { Chunked, DummyValue, GenerateSql } from 'src/decorators.js';
+import { Chunked, ChunkedArray, DummyValue, GenerateSql } from 'src/decorators.js';
 import { MapAsset } from 'src/dtos/asset-response.dto.js';
 import { AssetType, VectorIndex } from 'src/enum.js';
 import { probes } from 'src/repositories/database.repository.js';
@@ -186,6 +186,39 @@ export class DuplicateRepository {
       .set({ duplicateId: null })
       .where('ownerId', '=', userId)
       .where('duplicateId', 'in', ids)
+      .execute();
+  }
+
+  /** Every member of the given groups owned by `userId` (the rows delete/deleteAll would clear). */
+  @GenerateSql({ params: [DummyValue.UUID, [DummyValue.UUID]] })
+  @ChunkedArray({ paramIndex: 1 })
+  async getMembers(userId: string, ids: string[]): Promise<{ id: string; duplicateId: string }[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+
+    return this.db
+      .selectFrom('asset')
+      .select(['id', 'duplicateId'])
+      .where('ownerId', '=', userId)
+      .where('duplicateId', 'in', ids)
+      .$narrowType<{ duplicateId: NotNull }>()
+      .execute();
+  }
+
+  /** Remove the given assets of `userId` from their duplicate groups. */
+  @GenerateSql({ params: [DummyValue.UUID, [DummyValue.UUID]] })
+  @Chunked({ paramIndex: 1 })
+  async deleteAssets(userId: string, assetIds: string[]): Promise<void> {
+    if (assetIds.length === 0) {
+      return;
+    }
+
+    await this.db
+      .updateTable('asset')
+      .set({ duplicateId: null })
+      .where('ownerId', '=', userId)
+      .where('id', 'in', assetIds)
       .execute();
   }
 

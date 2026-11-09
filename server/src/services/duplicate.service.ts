@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import type { JobOf } from 'src/types.js';
 import { OnJob } from 'src/decorators.js';
 import { BulkIdErrorReason, BulkIdResponseDto, BulkIdsDto } from 'src/dtos/asset-ids.response.dto.js';
@@ -8,6 +8,7 @@ import { DuplicateResolveDto, DuplicateResolveGroupDto, DuplicateResponseDto } f
 import { AssetStatus, AssetVisibility, JobName, JobStatus, Permission, QueueName } from 'src/enum.js';
 import { AssetDuplicateResult } from 'src/repositories/search.repository.js';
 import { BaseService } from 'src/services/base.service.js';
+import { OwnerLockVisibility } from 'src/utils/database.js';
 import { suggestDuplicateKeepAssetIds } from 'src/utils/duplicate.js';
 import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
 import { batched, isDuplicateDetectionEnabled } from 'src/utils/misc.js';
@@ -70,12 +71,7 @@ export class DuplicateService extends BaseService {
     // Clean up singleton groups (assets that are the only member of their duplicate group)
     await this.duplicateRepository.cleanupSingletonGroups(auth.user.id);
 
-    const lockVisibility = await this.lockRepository.getOwnerLockVisibility({
-      viewerId: auth.user.id,
-      ownerIds: [auth.user.id],
-      revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
-      isElevated: !!auth.session?.hasElevatedPermission,
-    });
+    const lockVisibility = await this.getViewerLockVisibility(auth);
     const duplicates = await this.duplicateRepository.getAll(auth.user.id, lockVisibility);
     return duplicates.map(({ duplicateId, assets }) => {
       const mappedAssets = assets.map((asset) => mapAsset(asset, { auth }));
@@ -89,12 +85,50 @@ export class DuplicateService extends BaseService {
 
   async delete(auth: AuthDto, id: string): Promise<void> {
     await this.requireAccess({ auth, permission: Permission.DuplicateDelete, ids: [id] });
-    await this.duplicateRepository.delete(auth.user.id, id);
+    const lockVisibility = await this.getViewerLockVisibility(auth);
+    if (lockVisibility.length === 0) {
+      await this.duplicateRepository.delete(auth.user.id, id);
+      return;
+    }
+    await this.dismissVisibleMembers(auth, [id], lockVisibility);
   }
 
   async deleteAll(auth: AuthDto, dto: BulkIdsDto) {
     await this.requireAccess({ auth, permission: Permission.DuplicateDelete, ids: dto.ids });
-    await this.duplicateRepository.deleteAll(auth.user.id, dto.ids);
+    const lockVisibility = await this.getViewerLockVisibility(auth);
+    if (lockVisibility.length === 0) {
+      await this.duplicateRepository.deleteAll(auth.user.id, dto.ids);
+      return;
+    }
+    await this.dismissVisibleMembers(auth, dto.ids, lockVisibility);
+  }
+
+  /**
+   * Fork (7A.8d): dismissing a group only clears the members the viewer's duplicate list shows - same rule as
+   * getVisibleDuplicateGroup (hidden even when elevated unless revealed). A hidden member keeps its group, and a group
+   * with no visible member is refused with the missing-group error (ruling R32).
+   */
+  private async dismissVisibleMembers(auth: AuthDto, duplicateIds: string[], lockVisibility: OwnerLockVisibility[]) {
+    const members = await this.duplicateRepository.getMembers(auth.user.id, duplicateIds);
+    const visible = await this.lockRepository.getVisibleAssetIds(
+      members.map(({ id }) => id),
+      lockVisibility,
+    );
+    const visibleGroups = new Set(members.filter(({ id }) => visible.has(id)).map(({ duplicateId }) => duplicateId));
+    if (duplicateIds.some((id) => !visibleGroups.has(id))) {
+      throw new BadRequestException(`Not found or no ${Permission.DuplicateDelete} access`);
+    }
+    await this.duplicateRepository.deleteAssets(auth.user.id, [...visible]);
+  }
+
+  /** The viewer's list-surface lock entries (the duplicate list's rule: reveal applies only when elevated). */
+  private getViewerLockVisibility(auth: AuthDto) {
+    return this.lockRepository.getOwnerLockVisibility({
+      viewerId: auth.user.id,
+      ownerIds: [auth.user.id],
+      revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
+      isElevated: !!auth.session?.hasElevatedPermission,
+    });
   }
 
   async resolve(auth: AuthDto, dto: DuplicateResolveDto) {
@@ -259,12 +293,7 @@ export class DuplicateService extends BaseService {
     if (!group) {
       return;
     }
-    const lockVisibility = await this.lockRepository.getOwnerLockVisibility({
-      viewerId: auth.user.id,
-      ownerIds: [auth.user.id],
-      revealed: auth.revealedLocks ?? NO_REVEALED_LOCKS,
-      isElevated: !!auth.session?.hasElevatedPermission,
-    });
+    const lockVisibility = await this.getViewerLockVisibility(auth);
     if (lockVisibility.length === 0) {
       return group;
     }

@@ -143,6 +143,24 @@ where
   "ownerId" = $2
   and "duplicateId" in ($3)
 
+-- DuplicateRepository.getMembers
+select
+  "id",
+  "duplicateId"
+from
+  "asset"
+where
+  "ownerId" = $1
+  and "duplicateId" in ($2)
+
+-- DuplicateRepository.deleteAssets
+update "asset"
+set
+  "duplicateId" = $1
+where
+  "ownerId" = $2
+  and "id" in ($3)
+
 -- DuplicateRepository.search
 begin
 set

@@ -670,4 +670,57 @@ describe(DuplicateService.name, () => {
       });
     });
   });
+
+  describe('fork locks', () => {
+    it('dismissing a duplicate group leaves hidden members untouched', async () => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser();
+      const [single, bulk, allHidden] = [factory.uuid(), factory.uuid(), factory.uuid()];
+      const newMember = (duplicateId: string) => newDuplicateAsset(ctx, { ownerId: user.id, duplicateId });
+      const singleVisible = [await newMember(single), await newMember(single)];
+      const singleHidden = await newMember(single);
+      const bulkVisible = [await newMember(bulk), await newMember(bulk)];
+      const bulkHidden = await newMember(bulk);
+      const allHiddenMembers = [await newMember(allHidden), await newMember(allHidden)];
+      const { album: locked } = await ctx.newAlbum({ ownerId: user.id }, [
+        singleHidden.id,
+        bulkHidden.id,
+        ...allHiddenMembers.map(({ id }) => id),
+      ]);
+      await ctx.get(LockRepository).lockAlbum(user.id, locked.id);
+      const duplicateIdOf = async (id: string) => {
+        const asset = await ctx.get(AssetRepository).getById(id);
+        return asset?.duplicateId;
+      };
+
+      const auth = factory.auth({ user: { id: user.id } });
+      await sut.delete(auth, single);
+      await sut.deleteAll(auth, { ids: [bulk] });
+      for (const { id } of [...singleVisible, ...bulkVisible]) {
+        await expect(duplicateIdOf(id)).resolves.toBeNull();
+      }
+      await expect(duplicateIdOf(singleHidden.id)).resolves.toBe(single);
+      await expect(duplicateIdOf(bulkHidden.id)).resolves.toBe(bulk);
+
+      // a group with no visible member is refused like a missing one (ruling R32), also when elevated but not revealed
+      // (same rule as the duplicate list, spec §15.3)
+      const MISSING_ERROR = 'Not found or no duplicate.delete access';
+      await expect(sut.delete(auth, factory.uuid())).rejects.toThrow(MISSING_ERROR);
+      const elevated = factory.auth({ user: { id: user.id }, session: { hasElevatedPermission: true } });
+      for (const viewer of [auth, elevated]) {
+        await expect(sut.delete(viewer, allHidden)).rejects.toThrow(MISSING_ERROR);
+        await expect(sut.deleteAll(viewer, { ids: [allHidden] })).rejects.toThrow(MISSING_ERROR);
+      }
+      for (const { id } of allHiddenMembers) {
+        await expect(duplicateIdOf(id)).resolves.toBe(allHidden);
+      }
+
+      // revealed in an elevated session, the group is visible and dismissable as a whole
+      const revealed = { ...elevated, revealedLocks: { albumIds: [locked.id], containerIds: [] } };
+      await sut.delete(revealed, allHidden);
+      for (const { id } of allHiddenMembers) {
+        await expect(duplicateIdOf(id)).resolves.toBeNull();
+      }
+    });
+  });
 });
