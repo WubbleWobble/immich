@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { DanglingSmartAlbumReferences } from '$lib/utils/smart-album-references';
-  import { Button, Icon } from '@immich/ui';
+  import { Button, Icon, modalManager } from '@immich/ui';
   import { mdiAlertOutline, mdiClose } from '@mdi/js';
   import { t } from 'svelte-i18n';
 
@@ -11,6 +11,18 @@
   };
 
   const { references, onRemove }: Props = $props();
+
+  // Rewriting the album's filter is not undoable from here, so it is confirmed first (as the locks page does).
+  const confirmRemove = async (chipReferences: DanglingSmartAlbumReferences) => {
+    const confirmed = await modalManager.showDialog({
+      title: $t('smart_album_dangling_remove_title'),
+      prompt: $t('smart_album_dangling_remove_prompt'),
+      confirmText: $t('remove'),
+    });
+    if (confirmed) {
+      await onRemove?.(chipReferences);
+    }
+  };
 
   const chips = $derived(
     [
@@ -46,7 +58,7 @@
             variant="ghost"
             color="warning"
             trailingIcon={mdiClose}
-            onclick={() => onRemove(chip.references)}
+            onclick={() => confirmRemove(chip.references)}
           >
             {$t('remove')}
           </Button>

@@ -2146,6 +2146,8 @@
   "smart_album": "Smart album",
   "smart_album_create": "Create smart album",
   "smart_album_dangling_person": "References a deleted person; this condition matches nothing",
+  "smart_album_dangling_remove_prompt": "This removes the deleted references from the album's filter. The other conditions stay as they are. Continue?",
+  "smart_album_dangling_remove_title": "Remove deleted references",
   "smart_album_dangling_tag": "References a deleted tag; this condition matches nothing",
   "smart_album_edit_filter": "Edit filter",
   "smart_album_edit_filter_title": "Edit smart album filter",
