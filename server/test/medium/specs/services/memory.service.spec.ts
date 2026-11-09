@@ -70,6 +70,8 @@ const newPersonAsset = async (
 const memoryAt = (day: number) => DateTime.fromObject({ year: 2024, month: 6, day }, { zone: 'utc' }).toISO()!;
 
 /** Memory ids with their asset ids, in response order */
+const assetIds = (memory: { assets: { id: string }[] }) => memory.assets.map(({ id }) => id);
+
 const ids = (memories: { id: string; assets: { id: string }[] }[]) =>
   memories.map(({ id, assets }) => ({ id, assets: assets.map(({ id }) => id) }));
 
@@ -830,6 +832,40 @@ describe(MemoryService.name, () => {
         { id: hiddenOnly.id, assets: [hidden.id] },
       ]);
       await expect(sut.statistics(revealing, { isUpcoming: false })).resolves.toEqual({ total: 3 });
+    });
+
+    it('get of an all-hidden memory is not found outside elevation', async () => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser();
+      const { asset: visible } = await ctx.newAsset({ ownerId: user.id });
+      const { asset: hidden } = await ctx.newAsset({ ownerId: user.id });
+      const { album: locked } = await ctx.newAlbum({ ownerId: user.id }, [hidden.id]);
+      await ctx.get(LockRepository).lockAlbum(user.id, locked.id);
+
+      const { memory: hiddenOnly } = await ctx.newMemory({ ownerId: user.id });
+      const { memory: mixed } = await ctx.newMemory({ ownerId: user.id });
+      const { memory: empty } = await ctx.newMemory({ ownerId: user.id });
+      await ctx.newMemoryAsset({ memoryId: hiddenOnly.id, assetId: hidden.id });
+      await ctx.newMemoryAsset({ memoryId: mixed.id, assetId: hidden.id });
+      await ctx.newMemoryAsset({ memoryId: mixed.id, assetId: visible.id });
+
+      // matching search({ id }) (the memories-page rule), refused like a missing memory (ruling R32), reveal or not
+      const auth = factory.auth({ user });
+      const revealingUnelevated = { ...auth, revealedLocks: { albumIds: [locked.id], containerIds: [] } };
+      for (const viewer of [auth, revealingUnelevated]) {
+        await expect(sut.search(viewer, { id: hiddenOnly.id })).resolves.toEqual([]);
+        await expect(sut.get(viewer, hiddenOnly.id)).rejects.toThrow('Not found or no memory.read access');
+        await expect(sut.get(viewer, mixed.id).then(assetIds)).resolves.toEqual([visible.id]);
+        // a memory that never had an asset is unaffected by locks, so not-found is no lock-state oracle
+        await expect(sut.get(viewer, empty.id).then(assetIds)).resolves.toEqual([]);
+      }
+      await expect(sut.get(auth, factory.uuid())).rejects.toThrow('Not found or no memory.read access');
+
+      // elevated: the memory is reachable by id; its assets stay list-like (shown once revealed, spec §15.3)
+      const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+      await expect(sut.get(elevated, hiddenOnly.id).then(assetIds)).resolves.toEqual([]);
+      const revealing = { ...elevated, revealedLocks: { albumIds: [locked.id], containerIds: [] } };
+      await expect(sut.get(revealing, hiddenOnly.id).then(assetIds)).resolves.toEqual([hidden.id]);
     });
   });
 

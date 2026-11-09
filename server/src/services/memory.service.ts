@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { shuffle } from 'lodash-es';
 import { DateTime } from 'luxon';
 import { Memory } from 'src/database.js';
@@ -210,7 +210,16 @@ export class MemoryService extends BaseService {
 
   async get(auth: AuthDto, id: string): Promise<MemoryResponseDto> {
     await this.requireAccess({ auth, permission: Permission.MemoryRead, ids: [id] });
-    const memory = await this.findOrFail(id, await this.getViewerLockVisibility(auth));
+    const lockVisibility = await this.getViewerLockVisibility(auth);
+    const memory = await this.findOrFail(id, lockVisibility);
+    // Fork (7A.8e): outside elevation, a memory whose every asset is hidden is not found, matching search({ id }) (the
+    // memories-page rule) and refused like a missing memory (ruling R32). A memory that never had an asset is unaffected.
+    if (!auth.session?.hasElevatedPermission && lockVisibility.length > 0 && memory.assets.length === 0) {
+      const unfiltered = await this.memoryRepository.get(id);
+      if (unfiltered && unfiltered.assets.length > 0) {
+        throw new BadRequestException(`Not found or no ${Permission.MemoryRead} access`);
+      }
+    }
     return mapMemory(memory, auth);
   }
 
