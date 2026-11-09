@@ -224,6 +224,21 @@ where
 
 -- AccessRepository.assetFile.checkOwnerAccess
 select
+  1 as "one"
+from
+  "locked_album"
+where
+  "userId" = $1
+union
+select
+  1 as "one"
+from
+  "locked_container"
+where
+  "userId" = $2
+limit
+  $3
+select
   "asset_file"."id"
 from
   "asset_file"

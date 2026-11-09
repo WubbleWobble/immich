@@ -32,7 +32,10 @@ select distinct
   "tag_asset"."assetId"
 from
   "tag_closure"
+  inner join "tag" on "tag"."id" = "tag_closure"."id_ancestor"
   inner join "tag_asset" on "tag_asset"."tagId" = "tag_closure"."id_descendant"
+  inner join "asset" on "asset"."id" = "tag_asset"."assetId"
+  and "asset"."ownerId" = "tag"."userId"
 where
   "tag_closure"."id_ancestor" = $1
 
