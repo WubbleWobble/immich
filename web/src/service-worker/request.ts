@@ -176,6 +176,10 @@ export const handleFetch = async (request: URL | Request, clientId = ''): Promis
     joiners: 1,
     promise: undefined as unknown as Promise<Response[]>,
   };
+  // A ranged request is not registered for sharing, but it is still tracked (activeRequests) under its URL and the
+  // sending tab, and handleCancel releases one reference in every tracked request for the URL: one
+  // handleCancel(url, tab) therefore aborts EVERY concurrent ranged request for that URL from that tab. Only image
+  // consumers send cancels today (ImageRequestLedger); nothing cancels video range requests.
   if (shared) {
     pendingRequests.set(pendingKey, record);
   }
