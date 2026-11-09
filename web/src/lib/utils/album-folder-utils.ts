@@ -17,12 +17,40 @@ export const collectDescendantFolderIds = (containers: AlbumContainerResponseDto
   return result;
 };
 
-/** Containers whose parentId === parentId, sorted alphabetically by name. */
+/**
+ * The parent the viewer sees for a folder (`parentId`) or album (`containerId`). The server can grant
+ * a folder or album without its ancestors (a direct share from inside a private folder). Such an item
+ * is shown at the viewer's root: its real parent is outside `accessibleFolderIds` (the viewer's
+ * container list) and is never fetched or named. The owner can access all their own folders, so
+ * their structure is unchanged.
+ */
+export const getDisplayedParentId = (
+  parentId: string | null | undefined,
+  accessibleFolderIds: ReadonlySet<string>,
+): string | null => (parentId && accessibleFolderIds.has(parentId) ? parentId : null);
+
+const folderIds = (containers: AlbumContainerResponseDto[]) => new Set(containers.map(({ id }) => id));
+
+/** Folders displayed directly under `parentId` (null = the viewer's root), sorted alphabetically by name. */
 export const getDirectChildFolders = (
   containers: AlbumContainerResponseDto[],
   parentId: string | null,
-): AlbumContainerResponseDto[] =>
-  containers.filter((c) => (c.parentId ?? null) === parentId).sort((a, b) => a.name.localeCompare(b.name));
+): AlbumContainerResponseDto[] => {
+  const accessible = folderIds(containers);
+  return containers
+    .filter((c) => getDisplayedParentId(c.parentId, accessible) === parentId)
+    .sort((a, b) => a.name.localeCompare(b.name));
+};
+
+/** Albums displayed directly in `folderId` (null = the viewer's root); see `getDisplayedParentId`. */
+export const getDirectChildAlbums = (
+  albums: AlbumResponseDto[],
+  containers: AlbumContainerResponseDto[],
+  folderId: string | null,
+): AlbumResponseDto[] => {
+  const accessible = folderIds(containers);
+  return albums.filter((a) => getDisplayedParentId(a.containerId, accessible) === folderId);
+};
 
 /** Count of direct children (sub-folders + albums) for `folderId`. Albums may come from multiple
  * sources (owned vs shared); pass them all to get a correct total. */

@@ -2,6 +2,7 @@
   import { Route } from '$lib/route';
   import { userInteraction } from '$lib/stores/user.svelte';
   import { getAssetMediaUrl } from '$lib/utils';
+  import { getDirectChildAlbums, getDirectChildFolders } from '$lib/utils/album-folder-utils';
   import { handleError } from '$lib/utils/handle-error';
   import {
     getAllAlbumContainers,
@@ -23,9 +24,10 @@
     try {
       const [allAlbums, allContainers] = await Promise.all([getAllAlbums({}), getAllAlbumContainers()]);
       // Sidebar only surfaces root-level items. Albums/folders nested inside a folder are reachable
-      // via that folder; bubbling them up would be redundant and confusing in a 3-item list.
-      const rootAlbums = allAlbums.filter((a) => !a.containerId);
-      const rootContainers = allContainers.filter((c) => !c.parentId);
+      // via that folder; bubbling them up would be redundant and confusing in a 3-item list. An item
+      // shared from inside a folder the viewer cannot access is at the viewer's root (T3).
+      const rootAlbums = getDirectChildAlbums(allAlbums, allContainers, null);
+      const rootContainers = getDirectChildFolders(allContainers, null);
       const mixed: Entry[] = [
         ...rootAlbums.map((a): AlbumEntry => ({ kind: 'album', data: a })),
         ...rootContainers.map((c): FolderEntry => ({ kind: 'folder', data: c })),

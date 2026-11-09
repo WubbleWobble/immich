@@ -38,6 +38,28 @@ describe('RecentAlbums component', () => {
     expect(links[2]).toHaveAttribute('href', `/albums/${albums[3].id}`);
   });
 
+  it('lists items shared from inside a private folder as root items (T3)', async () => {
+    const sharedAlbum = albumFactory.build({ containerId: 'private-folder', updatedAt: '2024-01-03T00:00:00Z' });
+    const nestedAlbum = albumFactory.build({ containerId: 'shared-child', updatedAt: '2024-01-04T00:00:00Z' });
+    const sharedChild = {
+      id: 'shared-child',
+      name: 'Shared child',
+      parentId: 'private-folder',
+      ownerId: 'someone-else',
+      updatedAt: '2024-01-02T00:00:00Z',
+    };
+    sdkMock.getAllAlbums.mockResolvedValueOnce([sharedAlbum, nestedAlbum]);
+    sdkMock.getAllAlbumContainers.mockResolvedValueOnce([sharedChild as never]);
+    render(RecentAlbums);
+    await tick();
+    await tick();
+
+    const hrefs = screen.getAllByRole('link').map((link) => link.getAttribute('href'));
+    expect(hrefs).toHaveLength(2);
+    expect(hrefs[0]).toBe(`/albums/${sharedAlbum.id}`);
+    expect(hrefs[1]).toContain('shared-child');
+  });
+
   it('refreshes whenever the recent-albums cache is invalidated', async () => {
     const lockedLater = albumFactory.build({ updatedAt: '2024-01-10T00:00:00Z' });
     const other = albumFactory.build({ updatedAt: '2024-01-01T00:00:00Z' });

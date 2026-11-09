@@ -12,7 +12,7 @@
   import { authManager } from '$lib/managers/auth-manager.svelte';
   import { Route } from '$lib/route';
   import { AlbumFilter, albumViewSettings } from '$lib/stores/preferences.store';
-  import { getDirectChildCount, getDirectChildFolders } from '$lib/utils/album-folder-utils';
+  import { getDirectChildAlbums, getDirectChildCount, getDirectChildFolders } from '$lib/utils/album-folder-utils';
   import { createAlbumAndRedirect } from '$lib/utils/album-utils';
   import { lockManager } from '$lib/managers/lock-manager.svelte';
   import { getAlbumFolderActions } from '$lib/services/album.service';
@@ -41,7 +41,8 @@
   // The user can modify the current folder only when at root, or when they own it.
   let canModifyCurrentFolder = $derived(folderId === null || data.currentFolder?.ownerId === currentUserId);
 
-  // Folders that live directly under the current folder (or root if none).
+  // Folders that live directly under the current folder (or root if none). A folder whose parent the
+  // viewer cannot access is shown at the viewer's root (T3).
   let visibleFolders = $derived(getDirectChildFolders(containers, folderId));
 
   let normalizedQuery = $derived(normalizeSearchString(searchQuery));
@@ -51,9 +52,10 @@
       : visibleFolders,
   );
 
-  // Filter albums by current folder context (containerId).
-  let scopedOwnedAlbums = $derived((data.albums ?? []).filter((a) => (a.containerId ?? null) === folderId));
-  let scopedSharedAlbums = $derived((data.sharedAlbums ?? []).filter((a) => (a.containerId ?? null) === folderId));
+  // Filter albums by current folder context (containerId). An album shared from inside a folder the
+  // viewer cannot access is shown at the viewer's root (T3).
+  let scopedOwnedAlbums = $derived(getDirectChildAlbums(data.albums ?? [], containers, folderId));
+  let scopedSharedAlbums = $derived(getDirectChildAlbums(data.sharedAlbums ?? [], containers, folderId));
 
   // Direct child count for a folder (sub-folders + albums in that folder). Includes albums
   // reached via cascade share so recipients of a shared folder see correct counts.
