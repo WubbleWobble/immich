@@ -50,7 +50,7 @@ describe('RecentAlbums component', () => {
     expect(sdkMock.getAllAlbums).toHaveBeenCalledTimes(1);
 
     // locking an album invalidates the cache, so the just-locked (now hidden) album drops out of the sidebar
-    sdkMock.lockAlbum.mockResolvedValue();
+    sdkMock.lockAlbum.mockResolvedValue(undefined as never);
     sdkMock.getAllAlbums.mockResolvedValue([other]);
     await lockManager.lockAlbum(lockedLater.id);
     await tick();
@@ -75,10 +75,10 @@ describe('RecentAlbums component', () => {
     ['endElevatedSession', () => lockManager.endElevatedSession()],
     ['resetLocal', () => Promise.resolve(lockManager.resetLocal())],
   ])('%s invalidates the recent-albums cache', async (_, action) => {
-    sdkMock.unlockAlbum.mockResolvedValue();
-    sdkMock.lockAlbumContainer.mockResolvedValue();
-    sdkMock.unlockAlbumContainer.mockResolvedValue();
-    sdkMock.lockAuthSession.mockResolvedValue();
+    sdkMock.unlockAlbum.mockResolvedValue(undefined as never);
+    sdkMock.lockAlbumContainer.mockResolvedValue(undefined as never);
+    sdkMock.unlockAlbumContainer.mockResolvedValue(undefined as never);
+    sdkMock.lockAuthSession.mockResolvedValue(undefined as never);
     userInteraction.recentAlbums = [albumFactory.build()];
 
     await action();
