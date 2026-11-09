@@ -152,6 +152,13 @@ const updatesSent = (ctx: ReturnType<typeof setup>['ctx']) =>
       livePhotoVideoId: (asset as any).livePhotoVideoId,
     }));
 
+/** Fork (R56 follow-up): whether the still is found by isMotion, in search v1 and v3. */
+const found = async (auth: AuthDto, stillId: string, isMotion: boolean) => {
+  const v1 = await search().searchMetadata(auth, { size: 250, isMotion });
+  const v3 = await search().searchMetadata(auth, { size: 250, filter: { isMotion: { eq: isMotion } } });
+  return [v1, v3].map(({ assets }) => assets.items.some(({ id }) => id === stillId));
+};
+
 beforeAll(async () => {
   defaultDatabase = await getKyselyDB();
 });
@@ -1348,6 +1355,12 @@ describe(AssetService.name, () => {
       await expect(
         motionIds({ or: [{ albumIds: { any: [album.id] } }, { isFavorite: { eq: false } }] }),
       ).resolves.toEqual([motion.id]);
+
+      // isMotion follows the same reachability (the album arm included)
+      await expect(motionIds({ isMotion: { eq: true } })).resolves.toEqual([]);
+      await expect(
+        motionIds({ or: [{ albumIds: { any: [album.id] } }, { isFavorite: { eq: false } }], isMotion: { eq: true } }),
+      ).resolves.toEqual([motion.id]);
     });
 
     it('stacks, memories, duplicates and download info apply the same rules', async () => {
@@ -1423,6 +1436,32 @@ describe(AssetService.name, () => {
         ...lists(motion.id),
         download: [still.id, motion.id].toSorted(),
       });
+    });
+
+    it('isMotion filters on the same reachability: a still whose motion part is hidden is no Live Photo', async () => {
+      const { ctx } = setup();
+      const { user: owner, still, album } = await newLivePhoto(ctx);
+      const { user: partner } = await ctx.newUser();
+      await ctx.newPartner({ sharedById: owner.id, sharedWithId: partner.id });
+      const { still: plainStill, user: lockless } = await newLivePhoto(ctx, { lock: false });
+      const elevated = factory.auth({ user: owner, session: { hasElevatedPermission: true } });
+      const revealing = { ...elevated, revealedLocks: { albumIds: [album.id], containerIds: [] } };
+
+      for (const auth of [
+        factory.auth({ user: owner }),
+        elevated,
+        factory.auth({ user: partner }),
+        factory.auth({ user: partner, session: { hasElevatedPermission: true } }),
+      ]) {
+        await expect(found(auth, still.id, true)).resolves.toEqual([false, false]);
+        await expect(found(auth, still.id, false)).resolves.toEqual([true, true]);
+      }
+      // revealed, the list rule reaches the motion part again
+      await expect(found(revealing, still.id, true)).resolves.toEqual([true, true]);
+      await expect(found(revealing, still.id, false)).resolves.toEqual([false, false]);
+      // no locks: unchanged
+      await expect(found(factory.auth({ user: lockless }), plainStill.id, true)).resolves.toEqual([true, true]);
+      await expect(found(factory.auth({ user: lockless }), plainStill.id, false)).resolves.toEqual([false, false]);
     });
 
     it('a user without locks sees the motion id unchanged', async () => {

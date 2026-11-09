@@ -672,6 +672,17 @@ export function lockVisibleLivePhotoVideoId(
 export const getViewerHiddenAlbumIds = (viewerId: string, entries: OwnerLockVisibility[] | undefined) =>
   entries?.find(({ ownerId }) => ownerId === viewerId)?.hiddenAlbumIds ?? [];
 
+/**
+ * Fork (R56 follow-up): with lock entries, "is a Live Photo" means the same as the output column - a still whose motion
+ * part is hidden counts as no Live Photo, so `isMotion` is no existence oracle for the hidden motion part.
+ */
+const isLivePhotoPredicate = (
+  eb: ExpressionBuilder<DB, 'asset'>,
+  kysely: Kysely<DB>,
+  entries: OwnerLockVisibility[],
+  isMotion: boolean,
+) => eb(lockVisibleLivePhotoVideoId(eb, kysely, entries), isMotion ? 'is not' : 'is', null);
+
 export function searchAssetBuilderLegacy(kysely: Kysely<DB>, options: AssetSearchBuilderOptions) {
   options.withDeleted ||= !!(options.trashedAfter || options.trashedBefore || options.isOffline);
 
@@ -781,7 +792,7 @@ export function searchAssetBuilderLegacy(kysely: Kysely<DB>, options: AssetSearc
       }),
     )
     .$if(options.isMotion !== undefined, (qb) =>
-      qb.where('asset.livePhotoVideoId', options.isMotion ? 'is not' : 'is', null),
+      qb.where((eb) => isLivePhotoPredicate(eb, kysely, options.lockVisibility ?? [], options.isMotion!)),
     )
     .$if(!!options.isNotInAlbum && (!options.albumIds || options.albumIds.length === 0), (qb) =>
       qb.where((eb) => eb.not(eb.exists((eb) => eb.selectFrom('album_asset').whereRef('assetId', '=', 'asset.id')))),
@@ -985,7 +996,12 @@ function existsPredicates(
 
 // predicates are collected as expressions rather than chained `where` calls so the same
 // helpers can build each `or` branch, which must compose into eb.and/eb.or
-function branchPredicates(eb: AssetExpressionBuilder, branch: SearchFilterBranch) {
+/** `motion` is the still's reachable motion id (see searchMotionColumn); it decides `isMotion`. */
+function branchPredicates(
+  eb: AssetExpressionBuilder,
+  branch: SearchFilterBranch,
+  motion: Expression<string | null> = eb.ref('asset.livePhotoVideoId'),
+) {
   const { encodedVideoPath } = branch;
   return [
     ...comparisonPredicates(eb, 'asset.id', branch.id),
@@ -994,7 +1010,7 @@ function branchPredicates(eb: AssetExpressionBuilder, branch: SearchFilterBranch
     ...comparisonPredicates(eb, 'asset.visibility', branch.visibility),
     ...(branch.isFavorite ? [eb('asset.isFavorite', '=', branch.isFavorite.eq)] : []),
     ...(branch.isOffline ? [eb('asset.isOffline', '=', branch.isOffline.eq)] : []),
-    ...(branch.isMotion ? [eb('asset.livePhotoVideoId', branch.isMotion.eq ? 'is not' : 'is', null)] : []),
+    ...(branch.isMotion ? [eb(motion, branch.isMotion.eq ? 'is not' : 'is', null)] : []),
     ...existsPredicates(eb, branch.isEncoded, () => encodedVideoFiles(eb)),
     ...existsPredicates(eb, branch.hasAlbums, () => albumAssets(eb)),
     ...existsPredicates(eb, branch.hasPeople, () => visibleFaces(eb)),
@@ -1060,7 +1076,21 @@ function searchUniversePredicates(eb: AssetExpressionBuilder, kysely: Kysely<DB>
     scope.grantedAlbumIds.length > 0
       ? eb.exists(albumAssets(eb).where('album_asset.albumId', '=', anyUuid(scope.grantedAlbumIds)))
       : undefined;
-  return { ownerArm, universe: albumArm ? eb.or([ownerArm, albumArm]) : ownerArm };
+  return { ownerArm, albumArm, universe: albumArm ? eb.or([ownerArm, albumArm]) : ownerArm };
+}
+
+/**
+ * Fork (R56 follow-up): the V3 search's reachable motion id - the column the response presents (withheld under the
+ * owner-arm lock entries unless the album arm grants the still) - so `isMotion` filters on the same reachability and
+ * a still whose motion part is hidden counts as no Live Photo. Untouched without lock entries.
+ */
+function searchMotionColumn(eb: AssetExpressionBuilder, kysely: Kysely<DB>, scope: AssetSearchScope) {
+  return lockVisibleLivePhotoVideoId(
+    eb,
+    kysely,
+    scope.lockVisibility ?? [],
+    searchUniversePredicates(eb, kysely, scope).albumArm,
+  );
 }
 
 // ordering is deliberately left to the caller so aggregate-only consumers (counts, stats)
@@ -1087,14 +1117,15 @@ export function searchAssetBuilder(kysely: Kysely<DB>, options: AssetSearchBuild
       )
       .$if(options.withStacked === false, (qb) => qb.where('asset.stackId', 'is', null))
       .where((eb) => {
-        const predicates = branchPredicates(eb, filter);
+        const motion = searchMotionColumn(eb, kysely, scope);
+        const predicates = branchPredicates(eb, filter, motion);
         if (branches.length > 0) {
           const { ownerArm } = searchUniversePredicates(eb, kysely, scope);
           predicates.push(
             eb.or(
               branches.map((branch) =>
                 eb.and([
-                  ...branchPredicates(eb, branch),
+                  ...branchPredicates(eb, branch, motion),
                   ...(scopePerBranch && !isAlbumConfined(branch) ? [ownerArm] : []),
                 ]),
               ),
