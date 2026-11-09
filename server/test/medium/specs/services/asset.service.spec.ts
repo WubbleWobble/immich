@@ -1464,6 +1464,31 @@ describe(AssetService.name, () => {
       await expect(found(factory.auth({ user: lockless }), plainStill.id, false)).resolves.toEqual([false, false]);
     });
 
+    it('the post-query album arm counts only live albums and a live still', async () => {
+      const { ctx } = setup();
+      const { user: owner, still, motion } = await newLivePhoto(ctx);
+      const { user: viewer } = await ctx.newUser();
+      const { album: granted } = await ctx.newAlbum({ ownerId: viewer.id }, [still.id]);
+      const lockRepository = ctx.get(LockRepository);
+      const entries = await lockRepository.getOwnerLockVisibility({
+        viewerId: viewer.id,
+        ownerIds: [owner.id],
+        revealed: { albumIds: [], containerIds: [] },
+        isElevated: false,
+      });
+      const reachable = () => lockRepository.getVisibleMotionIds([motion.id], entries, [granted.id]);
+
+      await expect(lockRepository.getVisibleMotionIds([motion.id], entries)).resolves.toEqual(new Set());
+      await expect(reachable()).resolves.toEqual(new Set([motion.id]));
+
+      await ctx.database.updateTable('asset').set({ deletedAt: new Date() }).where('id', '=', still.id).execute();
+      await expect(reachable()).resolves.toEqual(new Set());
+
+      await ctx.database.updateTable('asset').set({ deletedAt: null }).where('id', '=', still.id).execute();
+      await ctx.database.updateTable('album').set({ deletedAt: new Date() }).where('id', '=', granted.id).execute();
+      await expect(reachable()).resolves.toEqual(new Set());
+    });
+
     it('a user without locks sees the motion id unchanged', async () => {
       const { sut, ctx } = setup();
       const { user, still, motion } = await newLivePhoto(ctx, { lock: false });

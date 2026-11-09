@@ -164,8 +164,12 @@ export class LockRepository {
                   eb
                     .selectFrom('asset as still')
                     .innerJoin('album_asset', 'album_asset.assetId', 'still.id')
+                    .innerJoin('album', (join) =>
+                      join.onRef('album.id', '=', 'album_asset.albumId').on('album.deletedAt', 'is', null),
+                    )
                     .select('still.id')
                     .whereRef('still.livePhotoVideoId', '=', 'asset.id')
+                    .where('still.deletedAt', 'is', null)
                     .where('album_asset.albumId', '=', anyUuid(grantedAlbumIds)),
                 ),
               ]
