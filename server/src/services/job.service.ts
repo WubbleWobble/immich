@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
+import type { AssetRepository } from 'src/repositories/asset.repository.js';
 import type { JobItem } from 'src/types.js';
 import { OnEvent } from 'src/decorators.js';
 import { mapAsset } from 'src/dtos/asset-response.dto.js';
@@ -7,7 +8,10 @@ import { AssetType, AssetVisibility, IntegrityReport, JobName, JobStatus, Manual
 import { ArgsOf } from 'src/repositories/event.repository.js';
 import { AlbumService } from 'src/services/album.service.js';
 import { BaseService } from 'src/services/base.service.js';
+import { LockService } from 'src/services/lock.service.js';
 import { hexOrBufferToBase64 } from 'src/utils/bytes.js';
+
+type UploadReadyAsset = Awaited<ReturnType<AssetRepository['getByIdsWithAllRelationsButStacks']>>[number];
 
 const asJobItem = (dto: JobCreateDto): JobItem => {
   switch (dto.name) {
@@ -131,35 +135,39 @@ export class JobService extends BaseService {
       }
 
       case JobName.AssetEditThumbnailGeneration: {
-        const asset = await this.assetRepository.getById(item.data.id);
+        const edited = await this.assetRepository.getById(item.data.id);
         const edits = await this.assetEditRepository.getWithSyncInfo(item.data.id);
 
-        if (asset) {
-          this.websocketRepository.clientSend('AssetEditReadyV2', asset.ownerId, {
-            asset: {
-              id: asset.id,
-              ownerId: asset.ownerId,
-              originalFileName: asset.originalFileName,
-              thumbhash: asset.thumbhash ? hexOrBufferToBase64(asset.thumbhash) : null,
-              checksum: hexOrBufferToBase64(asset.checksum),
-              fileCreatedAt: asset.fileCreatedAt,
-              fileModifiedAt: asset.fileModifiedAt,
-              createdAt: asset.createdAt,
-              localDateTime: asset.localDateTime,
-              duration: asset.duration,
-              type: asset.type,
-              deletedAt: asset.deletedAt,
-              isFavorite: asset.isFavorite,
-              visibility: asset.visibility,
-              livePhotoVideoId: asset.livePhotoVideoId,
-              stackId: asset.stackId,
-              libraryId: asset.libraryId,
-              width: asset.width,
-              height: asset.height,
-              isEdited: asset.isEdited,
-            },
-            edit: edits,
-          });
+        // Fork (R58): judged under the owner's non-elevated direct rule (see LockService.getOwnerEventDeliveries).
+        const deliveries = edited ? await this.lockService().getOwnerEventDeliveries([edited]) : [];
+        for (const { asset, rooms } of deliveries) {
+          for (const room of rooms) {
+            this.websocketRepository.clientSend('AssetEditReadyV2', room, {
+              asset: {
+                id: asset.id,
+                ownerId: asset.ownerId,
+                originalFileName: asset.originalFileName,
+                thumbhash: asset.thumbhash ? hexOrBufferToBase64(asset.thumbhash) : null,
+                checksum: hexOrBufferToBase64(asset.checksum),
+                fileCreatedAt: asset.fileCreatedAt,
+                fileModifiedAt: asset.fileModifiedAt,
+                createdAt: asset.createdAt,
+                localDateTime: asset.localDateTime,
+                duration: asset.duration,
+                type: asset.type,
+                deletedAt: asset.deletedAt,
+                isFavorite: asset.isFavorite,
+                visibility: asset.visibility,
+                livePhotoVideoId: asset.livePhotoVideoId,
+                stackId: asset.stackId,
+                libraryId: asset.libraryId,
+                width: asset.width,
+                height: asset.height,
+                isEdited: asset.isEdited,
+              },
+              edit: edits,
+            });
+          }
         }
 
         break;
@@ -193,64 +201,12 @@ export class JobService extends BaseService {
         await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetsSafe(asset.ownerId, [asset.id]);
 
         if (asset.visibility === AssetVisibility.Timeline || asset.visibility === AssetVisibility.Archive) {
-          this.websocketRepository.clientSend('on_upload_success', asset.ownerId, mapAsset(asset));
-          if (asset.exifInfo) {
-            const exif = asset.exifInfo;
-            this.websocketRepository.clientSend('AssetUploadReadyV2', asset.ownerId, {
-              // TODO remove `on_upload_success` and then modify the query to select only the required fields)
-              asset: {
-                id: asset.id,
-                ownerId: asset.ownerId,
-                originalFileName: asset.originalFileName,
-                thumbhash: asset.thumbhash ? hexOrBufferToBase64(asset.thumbhash) : null,
-                checksum: hexOrBufferToBase64(asset.checksum),
-                fileCreatedAt: asset.fileCreatedAt,
-                fileModifiedAt: asset.fileModifiedAt,
-                createdAt: asset.createdAt,
-                localDateTime: asset.localDateTime,
-                duration: asset.duration,
-                type: asset.type,
-                deletedAt: asset.deletedAt,
-                isFavorite: asset.isFavorite,
-                visibility: asset.visibility,
-                livePhotoVideoId: asset.livePhotoVideoId,
-                stackId: asset.stackId,
-                libraryId: asset.libraryId,
-                width: asset.width,
-                height: asset.height,
-                isEdited: asset.isEdited,
-              },
-              exif: {
-                assetId: exif.assetId,
-                description: exif.description,
-                exifImageWidth: exif.exifImageWidth,
-                exifImageHeight: exif.exifImageHeight,
-                fileSizeInByte: exif.fileSizeInByte,
-                orientation: exif.orientation,
-                dateTimeOriginal: exif.dateTimeOriginal ? new Date(exif.dateTimeOriginal) : null,
-                modifyDate: exif.modifyDate ? new Date(exif.modifyDate) : null,
-                timeZone: exif.timeZone,
-                latitude: exif.latitude,
-                longitude: exif.longitude,
-                projectionType: exif.projectionType,
-                city: exif.city,
-                state: exif.state,
-                country: exif.country,
-                make: exif.make,
-                model: exif.model,
-                lensModel: exif.lensModel,
-                fNumber: exif.fNumber,
-                focalLength: exif.focalLength,
-                iso: exif.iso,
-                exposureTime: exif.exposureTime,
-                profileDescription: exif.profileDescription,
-                rating: exif.rating,
-                fps: exif.fps,
-              },
-            });
+          // Fork (R58): judged under the owner's non-elevated direct rule (see LockService.getOwnerEventDeliveries).
+          const [delivery] = await this.lockService().getOwnerEventDeliveries([asset]);
+          for (const room of delivery.rooms) {
+            this.sendUploadReady(room, delivery.asset);
           }
         }
-
         break;
       }
 
@@ -263,5 +219,71 @@ export class JobService extends BaseService {
 
       // no default
     }
+  }
+
+  private lockService() {
+    return BaseService.create(LockService, this);
+  }
+
+  /** `on_upload_success` and, with exif, `AssetUploadReadyV2` for one asset to one room. */
+  private sendUploadReady(room: string, asset: UploadReadyAsset) {
+    this.websocketRepository.clientSend('on_upload_success', room, mapAsset(asset));
+    if (!asset.exifInfo) {
+      return;
+    }
+
+    const exif = asset.exifInfo;
+    this.websocketRepository.clientSend('AssetUploadReadyV2', room, {
+      // TODO remove `on_upload_success` and then modify the query to select only the required fields)
+      asset: {
+        id: asset.id,
+        ownerId: asset.ownerId,
+        originalFileName: asset.originalFileName,
+        thumbhash: asset.thumbhash ? hexOrBufferToBase64(asset.thumbhash) : null,
+        checksum: hexOrBufferToBase64(asset.checksum),
+        fileCreatedAt: asset.fileCreatedAt,
+        fileModifiedAt: asset.fileModifiedAt,
+        createdAt: asset.createdAt,
+        localDateTime: asset.localDateTime,
+        duration: asset.duration,
+        type: asset.type,
+        deletedAt: asset.deletedAt,
+        isFavorite: asset.isFavorite,
+        visibility: asset.visibility,
+        livePhotoVideoId: asset.livePhotoVideoId,
+        stackId: asset.stackId,
+        libraryId: asset.libraryId,
+        width: asset.width,
+        height: asset.height,
+        isEdited: asset.isEdited,
+      },
+      exif: {
+        assetId: exif.assetId,
+        description: exif.description,
+        exifImageWidth: exif.exifImageWidth,
+        exifImageHeight: exif.exifImageHeight,
+        fileSizeInByte: exif.fileSizeInByte,
+        orientation: exif.orientation,
+        dateTimeOriginal: exif.dateTimeOriginal ? new Date(exif.dateTimeOriginal) : null,
+        modifyDate: exif.modifyDate ? new Date(exif.modifyDate) : null,
+        timeZone: exif.timeZone,
+        latitude: exif.latitude,
+        longitude: exif.longitude,
+        projectionType: exif.projectionType,
+        city: exif.city,
+        state: exif.state,
+        country: exif.country,
+        make: exif.make,
+        model: exif.model,
+        lensModel: exif.lensModel,
+        fNumber: exif.fNumber,
+        focalLength: exif.focalLength,
+        iso: exif.iso,
+        exposureTime: exif.exposureTime,
+        profileDescription: exif.profileDescription,
+        rating: exif.rating,
+        fps: exif.fps,
+      },
+    });
   }
 }

@@ -123,8 +123,8 @@ describe(NotificationService.name, () => {
   });
 
   describe('onAssetHide', () => {
-    it('should send connected clients an event', () => {
-      sut.onAssetHide({ assetId: 'asset-id', userId: 'user-id' });
+    it('should send connected clients an event', async () => {
+      await sut.onAssetHide({ assetId: 'asset-id', userId: 'user-id' });
       expect(mocks.websocket.clientSend).toHaveBeenCalledWith('on_asset_hidden', 'user-id', 'asset-id');
     });
   });

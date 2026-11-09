@@ -12,6 +12,8 @@ import {
   AssetType,
   AssetVisibility,
   JobName,
+  JobStatus,
+  QueueName,
   SharedLinkType,
 } from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
@@ -30,6 +32,7 @@ import { OcrRepository } from 'src/repositories/ocr.repository.js';
 import { PartnerRepository } from 'src/repositories/partner.repository.js';
 import { PersonRepository } from 'src/repositories/person.repository.js';
 import { SearchRepository } from 'src/repositories/search.repository.js';
+import { SessionRepository } from 'src/repositories/session.repository.js';
 import { SharedLinkAssetRepository } from 'src/repositories/shared-link-asset.repository.js';
 import { SharedLinkRepository } from 'src/repositories/shared-link.repository.js';
 import { StackRepository } from 'src/repositories/stack.repository.js';
@@ -40,6 +43,7 @@ import { DB } from 'src/schema/index.js';
 import { AssetService } from 'src/services/asset.service.js';
 import { DownloadService } from 'src/services/download.service.js';
 import { DuplicateService } from 'src/services/duplicate.service.js';
+import { JobService } from 'src/services/job.service.js';
 import { MemoryService } from 'src/services/memory.service.js';
 import { SearchService } from 'src/services/search.service.js';
 import { StackService } from 'src/services/stack.service.js';
@@ -61,6 +65,7 @@ const setup = (db?: Kysely<DB>) => {
       AlbumRepository,
       AccessRepository,
       SharedLinkAssetRepository,
+      SessionRepository,
       StackRepository,
       UserRepository,
     ],
@@ -135,6 +140,17 @@ const lists = (value: string | null) => ({
   memories: value,
   duplicates: value,
 });
+
+/** Fork (R58): the `on_asset_update` events the owner-room websocket mock received. */
+const updatesSent = (ctx: ReturnType<typeof setup>['ctx']) =>
+  ctx
+    .getMock(WebsocketRepository)
+    .clientSend.mock.calls.filter(([event]) => event === 'on_asset_update')
+    .map(([, room, asset]) => ({
+      room,
+      id: (asset as { id: string }).id,
+      livePhotoVideoId: (asset as any).livePhotoVideoId,
+    }));
 
 beforeAll(async () => {
   defaultDatabase = await getKyselyDB();
@@ -1416,6 +1432,115 @@ describe(AssetService.name, () => {
 
       await expect(sut.get(auth, still.id)).resolves.toMatchObject({ livePhotoVideoId: motion.id });
       await expect(listed(auth, still.id)).resolves.toEqual(everywhere(motion.id));
+    });
+  });
+
+  /**
+   * Fork (ruling R58): asset-level websocket events go to the owner's room, which every session of the owner joins -
+   * elevated or not - so they follow the owner's non-elevated direct rule.
+   */
+  describe('owner-room websocket events (R58)', () => {
+    it("an update of a visible still sends the event without the hidden motion part's id", async () => {
+      const { sut, ctx } = setup();
+      ctx.getMock(WebsocketRepository).clientSend.mockReturnValue();
+      ctx.getMock(JobRepository).queue.mockResolvedValue();
+      const { user, still } = await newLivePhoto(ctx);
+
+      await sut.update(factory.auth({ user }), still.id, { isFavorite: true });
+      await sut.updateAll(factory.auth({ user }), { ids: [still.id], isFavorite: false });
+
+      expect(updatesSent(ctx)).toEqual([
+        { room: user.id, id: still.id, livePhotoVideoId: null },
+        { room: user.id, id: still.id, livePhotoVideoId: null },
+      ]);
+    });
+
+    it("an update of a hidden asset reaches only the owner's elevated sessions, never the user room", async () => {
+      const { sut, ctx } = setup();
+      ctx.getMock(WebsocketRepository).clientSend.mockReturnValue();
+      ctx.getMock(JobRepository).queue.mockResolvedValue();
+      const { user, motion } = await newLivePhoto(ctx);
+      const { asset: hidden } = await ctx.newAsset({ ownerId: user.id });
+      const { album } = await ctx.newAlbum({ ownerId: user.id }, [hidden.id]);
+      await ctx.get(LockRepository).lockAlbum(user.id, album.id);
+      const { session: elevatedSession } = await ctx.newSession({
+        userId: user.id,
+        pinExpiresAt: new Date(Date.now() + 60_000),
+      });
+      await ctx.newSession({ userId: user.id });
+      await ctx.newSession({ userId: user.id, pinExpiresAt: new Date(Date.now() - 60_000) });
+      const elevated = factory.auth({ user, session: { id: elevatedSession.id, hasElevatedPermission: true } });
+
+      await sut.update(elevated, hidden.id, { isFavorite: true });
+      await sut.updateAll(elevated, { ids: [hidden.id, motion.id], isFavorite: false });
+
+      // getByIds does not order the bulk update's events
+      const sent = updatesSent(ctx).map(({ room, id }) => `${room}/${id}`);
+      expect(sent.toSorted()).toEqual(
+        [hidden.id, hidden.id, motion.id].map((id) => `${elevatedSession.id}/${id}`).toSorted(),
+      );
+    });
+
+    it('a user without locks gets the events unchanged in the user room', async () => {
+      const { sut, ctx } = setup();
+      ctx.getMock(WebsocketRepository).clientSend.mockReturnValue();
+      ctx.getMock(JobRepository).queue.mockResolvedValue();
+      const { user, still, motion } = await newLivePhoto(ctx, { lock: false });
+
+      await sut.update(factory.auth({ user }), still.id, { isFavorite: true });
+
+      expect(updatesSent(ctx)).toEqual([{ room: user.id, id: still.id, livePhotoVideoId: motion.id }]);
+    });
+
+    it("upload-ready and edit-ready payloads withhold the hidden motion part's id; a hidden asset's go to elevated sessions", async () => {
+      const { ctx } = setup();
+      const { sut: jobs, ctx: jobCtx } = newMediumService(JobService, {
+        database: defaultDatabase,
+        real: [
+          AccessRepository,
+          AlbumRepository,
+          AssetEditRepository,
+          AssetRepository,
+          LockRepository,
+          SessionRepository,
+        ],
+        mock: [EventRepository, JobRepository, LoggingRepository, WebsocketRepository],
+      });
+      jobCtx.getMock(EventRepository).emit.mockResolvedValue();
+      jobCtx.getMock(JobRepository).run.mockResolvedValue(JobStatus.Success);
+      jobCtx.getMock(JobRepository).queueAll.mockResolvedValue();
+      jobCtx.getMock(WebsocketRepository).clientSend.mockReturnValue();
+      const { user, still, album } = await newLivePhoto(ctx);
+      const { asset: hidden } = await ctx.newAsset({ ownerId: user.id });
+      await ctx.newExif({ assetId: hidden.id, make: 'Canon' });
+      await ctx.newAlbumAsset({ albumId: album.id, assetId: hidden.id });
+      const { session } = await ctx.newSession({ userId: user.id, pinExpiresAt: new Date(Date.now() + 60_000) });
+
+      for (const id of [still.id, hidden.id]) {
+        await jobs.onJobRun(QueueName.ThumbnailGeneration, {
+          name: JobName.AssetGenerateThumbnails,
+          data: { id, source: 'upload' },
+        });
+        await jobs.onJobRun(QueueName.ThumbnailGeneration, {
+          name: JobName.AssetEditThumbnailGeneration,
+          data: { id },
+        });
+      }
+
+      const sent = jobCtx.getMock(WebsocketRepository).clientSend.mock.calls.map(([event, room, payload]) => {
+        const asset = ((payload as { asset?: unknown }).asset ?? payload) as { id: string; livePhotoVideoId: unknown };
+        return { event, room, id: asset.id, livePhotoVideoId: asset.livePhotoVideoId };
+      });
+      const ofStill = { room: user.id, id: still.id, livePhotoVideoId: null };
+      const ofHidden = { room: session.id, id: hidden.id, livePhotoVideoId: null };
+      expect(sent).toEqual([
+        { event: 'on_upload_success', ...ofStill },
+        { event: 'AssetUploadReadyV2', ...ofStill },
+        { event: 'AssetEditReadyV2', ...ofStill },
+        { event: 'on_upload_success', ...ofHidden },
+        { event: 'AssetUploadReadyV2', ...ofHidden },
+        { event: 'AssetEditReadyV2', ...ofHidden },
+      ]);
     });
   });
 });

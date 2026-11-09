@@ -251,7 +251,7 @@ describe(AssetService.name, () => {
     });
 
     it('should update the asset', async () => {
-      const asset = AssetFactory.create();
+      const asset = AssetFactory.create({ ownerId: authStub.admin.user.id });
       mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set([asset.id]));
       mocks.asset.getById.mockResolvedValue(getForAsset(asset));
       mocks.asset.update.mockResolvedValue(getForAsset(asset));

@@ -125,6 +125,11 @@ State these plainly to users.
   both unlinked and untouched.
 - **API clients may see `livePhotoVideoId: null` on a visible still (R56)**
   when its motion part is hidden from them; the still then plays as a photo.
+- **Live updates for hidden assets reach only elevated tabs (R58).** Asset
+  websocket events (update, upload/edit ready, hide, sidecar refresh) about
+  an asset hidden by your locks go only to sessions that are elevated at that
+  moment; other tabs pick the change up on navigation. Events about visible
+  stills withhold a hidden motion part's id the same way.
 - **CLI and API-key uploads re-send hidden files every run (R49).** API-key
   sessions are never elevated. So `immich-cli` and `immich-go` see an
   already-hidden file as new each time, upload it again and get a phantom

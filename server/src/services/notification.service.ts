@@ -25,6 +25,7 @@ import {
 } from 'src/enum.js';
 import { EmailTemplate } from 'src/repositories/email.repository.js';
 import { BaseService } from 'src/services/base.service.js';
+import { LockService } from 'src/services/lock.service.js';
 import { getFilenameExtension } from 'src/utils/file.js';
 import { getExternalDomain } from 'src/utils/misc.js';
 import { isEqualObject } from 'src/utils/object.js';
@@ -32,6 +33,10 @@ import { getPreferences } from 'src/utils/preferences.js';
 
 @Injectable()
 export class NotificationService extends BaseService {
+  private lockService() {
+    return BaseService.create(LockService, this);
+  }
+
   private static albumUpdateEmailDelayMs = 300_000;
 
   async search(auth: AuthDto, dto: NotificationSearchDto): Promise<NotificationDto[]> {
@@ -139,8 +144,14 @@ export class NotificationService extends BaseService {
   }
 
   @OnEvent({ name: 'AssetHide' })
-  onAssetHide({ assetId, userId }: ArgOf<'AssetHide'>) {
-    this.websocketRepository.clientSend('on_asset_hidden', userId, assetId);
+  async onAssetHide({ assetId, userId }: ArgOf<'AssetHide'>) {
+    // Fork (R58): the id of a lock-hidden asset reaches only the owner's elevated sessions.
+    const [{ rooms }] = await this.lockService().getOwnerEventDeliveries([
+      { id: assetId, ownerId: userId, livePhotoVideoId: null },
+    ]);
+    for (const room of rooms) {
+      this.websocketRepository.clientSend('on_asset_hidden', room, assetId);
+    }
   }
 
   @OnEvent({ name: 'AssetShow' })
@@ -170,11 +181,17 @@ export class NotificationService extends BaseService {
     }
 
     const [asset] = await this.assetRepository.getByIdsWithAllRelationsButStacks([assetId], userId);
-    if (asset) {
+    if (!asset) {
+      return;
+    }
+
+    // Fork (R58): judged under the owner's non-elevated direct rule (see LockService.getOwnerEventDeliveries).
+    const [delivery] = await this.lockService().getOwnerEventDeliveries([asset]);
+    for (const room of delivery.rooms) {
       this.websocketRepository.clientSend(
         'on_asset_update',
-        userId,
-        mapAsset(asset, { auth: { user: { id: userId } } as AuthDto }),
+        room,
+        mapAsset(delivery.asset, { auth: { user: { id: userId } } as AuthDto }),
       );
     }
   }

@@ -196,13 +196,26 @@ export class AssetService extends BaseService {
     await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetsSafe(asset.ownerId, [asset.id]);
 
     if (!wroteMetadata) {
-      this.websocketRepository.clientSend('on_asset_update', auth.user.id, mapAsset(asset, { auth }));
+      await this.sendAssetUpdates(auth, [asset]);
     }
 
     // Fork lock audit: the response is a re-read through get(), i.e. asset.read with the fork's final lock exclusion
     // (excludeHiddenForLocker outside an elevated session). update() itself already required asset.update, which
     // refuses hidden assets the same way, so a non-elevated updater never gets hidden content back.
     return this.get(auth, id) as Promise<AssetResponseDto>;
+  }
+
+  /**
+   * Fork (R58): `on_asset_update` goes to the owner's room, i.e. every session of the owner: a hidden asset reaches only
+   * the elevated sessions, and a visible still never carries an unreachable motion part's id.
+   */
+  private async sendAssetUpdates(auth: AuthDto, assets: Parameters<typeof mapAsset>[0][]) {
+    const deliveries = await BaseService.create(LockService, this).getOwnerEventDeliveries(assets);
+    for (const { asset, rooms } of deliveries) {
+      for (const room of rooms) {
+        this.websocketRepository.clientSend('on_asset_update', room, mapAsset(asset, { auth }));
+      }
+    }
   }
 
   async updateAll(auth: AuthDto, dto: AssetBulkUpdateDto): Promise<void> {
@@ -260,10 +273,7 @@ export class AssetService extends BaseService {
     if (shouldWriteSidecar) {
       await this.jobRepository.queueAll(ids.map((id) => ({ name: JobName.SidecarWrite, data: { id } })));
     } else {
-      const assets = await this.assetRepository.getByIds(ids);
-      for (const asset of assets) {
-        this.websocketRepository.clientSend('on_asset_update', auth.user.id, mapAsset(asset, { auth }));
-      }
+      await this.sendAssetUpdates(auth, await this.assetRepository.getByIds(ids));
     }
 
     // Bulk updates touch fields (favorite, visibility, rating, dateTime, description) that

@@ -270,9 +270,65 @@ export class LockService extends BaseService {
       return assets;
     }
 
-    const motionIds = [...new Set(stills.map(({ livePhotoVideoId }) => livePhotoVideoId!))];
+    return this.withholdMotionIdsByAccess(auth, assets);
+  }
+
+  /** The direct rule of {@link withholdUnreachableMotionIds} without its fast path: one batched asset.read check. */
+  private async withholdMotionIdsByAccess<T extends { livePhotoVideoId: string | null }>(
+    auth: AuthDto,
+    assets: T[],
+  ): Promise<T[]> {
+    const motionIds = [
+      ...new Set(assets.flatMap(({ livePhotoVideoId }) => (livePhotoVideoId ? [livePhotoVideoId] : []))),
+    ];
+    if (motionIds.length === 0) {
+      return assets;
+    }
     const reachable = await this.checkAccess({ auth, permission: Permission.AssetRead, ids: motionIds });
     return withheldMotionIds(assets, reachable);
+  }
+
+  /**
+   * Ruling R58, asset-level websocket events: the owner's user room reaches EVERY session of the owner, elevated or
+   * not, so each asset is judged under the owner's non-elevated direct rule before it is sent:
+   * - an asset hidden by the owner's own locks is delivered only to the owner's currently elevated sessions (every
+   *   socket also joins its session's room), never to the user room - other tabs refresh it on navigation;
+   * - any other asset goes to the user room, with `livePhotoVideoId` withheld where the motion part is unreachable.
+   * Owners without lock rows pay one indexed probe and get every asset, unchanged, in their user room.
+   */
+  async getOwnerEventDeliveries<T extends { id: string; ownerId: string; livePhotoVideoId: string | null }>(
+    assets: T[],
+  ): Promise<{ asset: T; rooms: string[] }[]> {
+    const ownerIds = [...new Set(assets.map(({ ownerId }) => ownerId))];
+    if (ownerIds.length === 0 || !(await this.lockRepository.anyHasLocks(ownerIds))) {
+      return assets.map((asset) => ({ asset, rooms: [asset.ownerId] }));
+    }
+
+    const deliveries = new Map<T, { asset: T; rooms: string[] }>();
+    for (const ownerId of ownerIds) {
+      const owned = assets.filter((asset) => asset.ownerId === ownerId);
+      const ownerAuth = { user: { id: ownerId } } as AuthDto;
+      const hidden = await this.getOwnHiddenAssetIdsForUpload(ownerAuth, [...new Set(owned.map(({ id }) => id))]);
+      const elevatedRooms = hidden.size > 0 ? await this.getElevatedSessionIds(ownerId) : [];
+      const visible = owned.filter(({ id }) => !hidden.has(id));
+      const withheld = await this.withholdMotionIdsByAccess(ownerAuth, visible);
+      for (const [index, asset] of visible.entries()) {
+        deliveries.set(asset, { asset: withheld[index], rooms: [ownerId] });
+      }
+      for (const asset of owned) {
+        if (hidden.has(asset.id)) {
+          deliveries.set(asset, { asset, rooms: elevatedRooms });
+        }
+      }
+    }
+    return assets.map((asset) => deliveries.get(asset)!);
+  }
+
+  /** The owner's sessions that are elevated right now (the PIN window of AuthService.validateSession). */
+  private async getElevatedSessionIds(userId: string): Promise<string[]> {
+    const now = new Date();
+    const sessions = await this.sessionRepository.getByUserId(userId);
+    return sessions.filter(({ pinExpiresAt }) => !!pinExpiresAt && pinExpiresAt > now).map(({ id }) => id);
   }
 
   /**
