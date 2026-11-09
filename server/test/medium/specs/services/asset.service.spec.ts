@@ -1,6 +1,14 @@
 import { Kysely } from 'kysely';
 import { AssetEditAction } from 'src/dtos/editing.dto.js';
-import { AssetFileType, AssetMetadataKey, AssetStatus, AssetVisibility, JobName, SharedLinkType } from 'src/enum.js';
+import {
+  AssetFileType,
+  AssetMetadataKey,
+  AssetStatus,
+  AssetType,
+  AssetVisibility,
+  JobName,
+  SharedLinkType,
+} from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { AlbumRepository } from 'src/repositories/album.repository.js';
 import { AssetEditRepository } from 'src/repositories/asset-edit.repository.js';
@@ -350,6 +358,54 @@ describe(AssetService.name, () => {
   });
 
   describe('update', () => {
+    it('refuses to link a hidden motion asset outside elevation like an unknown id (R51)', async () => {
+      const { sut, ctx } = setup();
+      ctx.getMock(WebsocketRepository).clientSend.mockReturnValue();
+      ctx.getMock(JobRepository).queue.mockResolvedValue();
+      ctx.getMock(EventRepository).emit.mockResolvedValue();
+      const { user } = await ctx.newUser();
+      const { asset: still } = await ctx.newAsset({ ownerId: user.id });
+      const { asset: motion } = await ctx.newAsset({ ownerId: user.id, type: AssetType.Video });
+      const { album } = await ctx.newAlbum({ ownerId: user.id }, [motion.id]);
+      await ctx.get(LockRepository).lockAlbum(user.id, album.id);
+      const ordinary = factory.auth({ user, session: { hasElevatedPermission: false } });
+      const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+      const refusal = async (livePhotoVideoId: string) => {
+        try {
+          await sut.update(ordinary, still.id, { livePhotoVideoId });
+        } catch (error: any) {
+          return { type: error.constructor.name, status: error.getStatus(), response: error.getResponse() };
+        }
+        return 'resolved';
+      };
+
+      const unknown = await refusal(factory.uuid());
+      expect(unknown).toMatchObject({ status: 400, response: { message: 'Live photo video not found' } });
+      await expect(refusal(motion.id)).resolves.toEqual(unknown);
+      await expect(
+        ctx.database
+          .selectFrom('asset')
+          .select(['id', 'visibility', 'livePhotoVideoId'])
+          .where('id', 'in', [still.id, motion.id])
+          .orderBy('createdAt')
+          .execute(),
+      ).resolves.toEqual(
+        expect.arrayContaining([
+          { id: still.id, visibility: AssetVisibility.Timeline, livePhotoVideoId: null },
+          { id: motion.id, visibility: AssetVisibility.Timeline, livePhotoVideoId: null },
+        ]),
+      );
+
+      await sut.update(elevated, still.id, { livePhotoVideoId: motion.id });
+      await expect(
+        ctx.database
+          .selectFrom('asset')
+          .select('livePhotoVideoId')
+          .where('id', '=', still.id)
+          .executeTakeFirstOrThrow(),
+      ).resolves.toEqual({ livePhotoVideoId: motion.id });
+    });
+
     it('should not update an asset of another user', async () => {
       const { sut, ctx } = setup();
       const { user } = await ctx.newUser();

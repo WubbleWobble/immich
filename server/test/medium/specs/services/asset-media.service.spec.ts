@@ -10,7 +10,7 @@ import request from 'supertest';
 import { AssetMediaStatus, AssetRejectReason, AssetUploadAction } from 'src/dtos/asset-media-response.dto.js';
 import { AssetMediaSize } from 'src/dtos/asset-media.dto.js';
 import { AuthDto } from 'src/dtos/auth.dto.js';
-import { AlbumKind, AssetFileType, AssetType, ImmichHeader, SharedLinkType } from 'src/enum.js';
+import { AlbumKind, AssetFileType, AssetType, AssetVisibility, ImmichHeader, SharedLinkType } from 'src/enum.js';
 import { AssetUploadInterceptor } from 'src/middleware/asset-upload.interceptor.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { AlbumRepository } from 'src/repositories/album.repository.js';
@@ -78,6 +78,16 @@ const setupLocked = async () => {
     return rows.length;
   };
   return { sut, ctx, user, hidden, hiddenTrashed, visible, ordinary, elevated, countAssets };
+};
+
+/** What a client sees of a refusal: exception type, HTTP status and body. */
+const refusalOf = async (pending: Promise<unknown>) => {
+  try {
+    await pending;
+  } catch (error: any) {
+    return { type: error?.constructor?.name, status: error?.getStatus?.(), response: error?.getResponse?.() };
+  }
+  throw new Error('expected a refusal');
 };
 
 const intercept = async (sut: AssetMediaService, auth: AuthDto, checksum: Buffer) => {
@@ -760,6 +770,83 @@ describe(AssetService.name, () => {
       const resultEdited = await sut.viewThumbnail(auth, asset.id, { size: AssetMediaSize.THUMBNAIL, edited: true });
       expect(resultEdited).toBeInstanceOf(ImmichFileResponse);
       expect((resultEdited as ImmichFileResponse).path).toBe('/edited/thumbnail.jpg');
+    });
+  });
+
+  describe('livePhotoVideoId lock guard (R51)', () => {
+    it('a non-elevated upload naming a hidden motion asset is refused like an unknown id and touches nothing', async () => {
+      const { sut, ctx } = setup();
+      ctx.getMock(StorageRepository).utimes.mockResolvedValue();
+      ctx.getMock(EventRepository).emit.mockResolvedValue();
+      ctx.getMock(JobRepository).queue.mockResolvedValue();
+
+      const { user } = await ctx.newUser();
+      const { asset: motion } = await ctx.newAsset({
+        ownerId: user.id,
+        type: AssetType.Video,
+        visibility: AssetVisibility.Timeline,
+      });
+      // a hidden non-video must not get upstream's "must be a video" either
+      const { asset: image } = await ctx.newAsset({ ownerId: user.id, type: AssetType.Image });
+      const { album } = await ctx.newAlbum({ ownerId: user.id }, [motion.id, image.id]);
+      await ctx.get(LockRepository).lockAlbum(user.id, album.id);
+      const ordinary = factory.auth({ user: { id: user.id }, session: { hasElevatedPermission: false } });
+      const elevated = factory.auth({ user: { id: user.id }, session: { hasElevatedPermission: true } });
+      const upload = (auth: AuthDto, livePhotoVideoId: string) =>
+        sut.uploadAsset(auth, { ...lockUploadDto(), livePhotoVideoId }, mediumFactory.uploadFile());
+      const countAssets = async () => {
+        const rows = await ctx.database.selectFrom('asset').select('id').where('ownerId', '=', user.id).execute();
+        return rows.length;
+      };
+
+      const unknown = await refusalOf(upload(ordinary, randomUUID()));
+      expect(unknown).toEqual({
+        type: 'BadRequestException',
+        status: 400,
+        response: { message: 'Live photo video not found', error: 'Bad Request', statusCode: 400 },
+      });
+      const before = await countAssets();
+      for (const id of [motion.id, image.id]) {
+        await expect(refusalOf(upload(ordinary, id))).resolves.toEqual(unknown);
+      }
+
+      // untouched: still Timeline, nothing linked or created, no hide event
+      await expect(
+        ctx.database.selectFrom('asset').select('visibility').where('id', '=', motion.id).executeTakeFirstOrThrow(),
+      ).resolves.toEqual({ visibility: AssetVisibility.Timeline });
+      await expect(
+        ctx.database.selectFrom('asset').select('id').where('livePhotoVideoId', '=', motion.id).execute(),
+      ).resolves.toEqual([]);
+      expect(await countAssets()).toBe(before);
+      expect(ctx.getMock(EventRepository).emit).not.toHaveBeenCalledWith('AssetHide', expect.anything());
+
+      // elevated: the link works as upstream
+      const response = await upload(elevated, motion.id);
+      expect(response).toEqual({ id: expect.any(String), status: AssetMediaStatus.CREATED });
+      await expect(
+        ctx.database.selectFrom('asset').select('visibility').where('id', '=', motion.id).executeTakeFirstOrThrow(),
+      ).resolves.toEqual({ visibility: AssetVisibility.Hidden });
+      await expect(
+        ctx.database
+          .selectFrom('asset')
+          .select('livePhotoVideoId')
+          .where('id', '=', response.id)
+          .executeTakeFirstOrThrow(),
+      ).resolves.toEqual({ livePhotoVideoId: motion.id });
+    });
+
+    it('a visible motion asset links in an ordinary session', async () => {
+      const { sut, ctx } = setup();
+      ctx.getMock(StorageRepository).utimes.mockResolvedValue();
+      ctx.getMock(EventRepository).emit.mockResolvedValue();
+      ctx.getMock(JobRepository).queue.mockResolvedValue();
+      const { user } = await ctx.newUser();
+      const { asset: motion } = await ctx.newAsset({ ownerId: user.id, type: AssetType.Video });
+      const ordinary = factory.auth({ user: { id: user.id }, session: { hasElevatedPermission: false } });
+
+      await expect(
+        sut.uploadAsset(ordinary, { ...lockUploadDto(), livePhotoVideoId: motion.id }, mediumFactory.uploadFile()),
+      ).resolves.toEqual({ id: expect.any(String), status: AssetMediaStatus.CREATED });
     });
   });
 

@@ -144,10 +144,21 @@ export type AssetHookRepositories = { asset: AssetRepository; event: EventReposi
 
 export const onBeforeLink = async (
   { asset: assetRepository, event: eventRepository }: AssetHookRepositories,
-  { userId, livePhotoVideoId }: { userId: string; livePhotoVideoId: string },
+  {
+    userId,
+    livePhotoVideoId,
+    isHidden,
+  }: {
+    userId: string;
+    livePhotoVideoId: string;
+    /** Fork (R51): whether the caller's own asset is hidden for the caller under the direct-access write rule. */
+    isHidden: (assetId: string) => Promise<boolean>;
+  },
 ) => {
   const motionAsset = await assetRepository.getById(livePhotoVideoId);
-  if (!motionAsset) {
+  // Fork (R51, R32): linking writes the motion asset (visibility), so a hidden one is refused exactly like a missing
+  // one - before the type and owner checks, whose different messages would otherwise confirm it exists.
+  if (!motionAsset || (motionAsset.ownerId === userId && (await isHidden(motionAsset.id)))) {
     throw new BadRequestException('Live photo video not found');
   }
   if (motionAsset.type !== AssetType.Video) {

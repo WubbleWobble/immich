@@ -214,6 +214,17 @@ export class LockService extends BaseService {
   }
 
   /**
+   * Write guard for an existing asset an upload or update references by id (ruling R51: `livePhotoVideoId`): whether
+   * the caller's own asset is hidden for them under the direct-access rule - bypassed only by elevation, never
+   * revealed. A shared-link visitor is judged as the link owner without a session (the owner's locks apply in full).
+   */
+  async isOwnAssetHiddenForWrite(auth: AuthDto, assetId: string): Promise<boolean> {
+    const viewer = auth.sharedLink ? { user: auth.user } : auth;
+    const hidden = await this.getOwnHiddenAssetIdsForUpload(viewer, [assetId]);
+    return hidden.has(assetId);
+  }
+
+  /**
    * Direct-by-id read filter (7A.8c, the stack summary of asset detail): the subset of `assetIds` hidden for the
    * viewer - the viewer's own locks are bypassed in an elevated session, another owner's always apply.
    */

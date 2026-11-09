@@ -146,7 +146,11 @@ export class AssetMediaService extends BaseService {
       if (dto.livePhotoVideoId) {
         await onBeforeLink(
           { asset: this.assetRepository, event: this.eventRepository },
-          { userId: auth.user.id, livePhotoVideoId: dto.livePhotoVideoId },
+          {
+            userId: auth.user.id,
+            livePhotoVideoId: dto.livePhotoVideoId,
+            isHidden: (assetId) => BaseService.create(LockService, this).isOwnAssetHiddenForWrite(auth, assetId),
+          },
         );
       }
 

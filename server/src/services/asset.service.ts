@@ -152,7 +152,11 @@ export class AssetService extends BaseService {
 
     let previousMotion: { id: string } | null = null;
     if (rest.livePhotoVideoId) {
-      await onBeforeLink(repos, { userId: auth.user.id, livePhotoVideoId: rest.livePhotoVideoId });
+      await onBeforeLink(repos, {
+        userId: auth.user.id,
+        livePhotoVideoId: rest.livePhotoVideoId,
+        isHidden: (assetId) => BaseService.create(LockService, this).isOwnAssetHiddenForWrite(auth, assetId),
+      });
     } else if (rest.livePhotoVideoId === null) {
       const asset = await this.findOrFail(id);
       if (asset.livePhotoVideoId) {
