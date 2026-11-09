@@ -1,9 +1,5 @@
 import type { AlbumContainerResponseDto } from '@immich/sdk';
-import {
-  buildFolderBreadcrumbPath,
-  getDirectChildAlbums,
-  getDirectChildFolders,
-} from '$lib/utils/album-folder-utils';
+import { buildFolderBreadcrumbPath, getDirectChildAlbums, getDirectChildFolders } from '$lib/utils/album-folder-utils';
 import { albumFactory } from '@test-data/factories/album-factory';
 
 const folder = (id: string, parentId: string | null, ownerId = 'owner'): AlbumContainerResponseDto =>
@@ -68,7 +64,7 @@ describe('album folder tree for the viewer', () => {
       expect(getDirectChildAlbums([shared], [], 'private')).toEqual([]);
     });
 
-    it("promotes the album when only an unrelated folder is accessible", () => {
+    it('promotes the album when only an unrelated folder is accessible', () => {
       const other = folder('other', null, 'someone-else');
       const shared = albumFactory.build({ id: 'shared-album', containerId: 'private' });
       expect(getDirectChildAlbums([shared], [other], null)).toEqual([shared]);
