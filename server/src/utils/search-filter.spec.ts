@@ -17,6 +17,20 @@ describe(collectFilterIds.name, () => {
     expect(collectFilterIds({}, 'albumIds')).toEqual([]);
   });
 
+  it('should only collect ids of the requested operators', () => {
+    const [albumA, albumB, albumC] = [
+      '00000000-0000-4000-8000-00000000000a',
+      '00000000-0000-4000-8000-00000000000b',
+      '00000000-0000-4000-8000-00000000000c',
+    ];
+    const filter: SearchFilter = {
+      albumIds: { any: [albumA], none: [albumB] },
+      or: [{ albumIds: { all: [albumC] } }, { albumIds: { none: [albumA] } }],
+    };
+    expect(collectFilterIds(filter, 'albumIds', ['any', 'all']).toSorted()).toEqual([albumA, albumC]);
+    expect(collectFilterIds(filter, 'albumIds', ['none']).toSorted()).toEqual([albumA, albumB]);
+  });
+
   it('should only collect ids of the requested field', () => {
     const albumId = '00000000-0000-4000-8000-00000000000a';
     const personId = '00000000-0000-4000-8000-00000000000b';

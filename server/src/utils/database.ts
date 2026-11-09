@@ -981,22 +981,37 @@ function branchPredicates(eb: AssetExpressionBuilder, branch: SearchFilterBranch
   ];
 }
 
-// FORK-PORT: lock-audit — new upstream v3 search builder (8b3d6b320). It has no withLockVisibility (the legacy builder
-// above applies options.lockVisibility) and still filters on the retired per-asset AssetVisibility.Locked via
-// scope.lockedOwnerId (D4). Lock enforcement must be applied server-side outside the user filter tree and stay
-// grant-aware per branch (D5, Task 5).
+/**
+ * Fork (D5): the lock-aware search universe, composed by the server outside the user's filter tree. An asset passes
+ * when it is reachable through
+ * - the timeline/partner arm: owned by a `userIds` owner and visible under that owner's locks, or
+ * - the album arm: a member of a validated album grant (album-grant rules: the album owner's locks never affect it).
+ * Upstream's per-branch ownership narrowing still applies inside the tree, using the same lock-aware arm, so no `or`
+ * branch can widen past this predicate.
+ */
+function searchUniversePredicates(eb: AssetExpressionBuilder, kysely: Kysely<DB>, scope: AssetSearchScope) {
+  const owned = eb('asset.ownerId', '=', anyUuid(scope.userIds));
+  const ownerArm =
+    scope.lockVisibility && scope.lockVisibility.length > 0
+      ? eb.and([owned, lockVisibilityExpression(eb, kysely, scope.lockVisibility)])
+      : owned;
+  const albumArm =
+    scope.grantedAlbumIds.length > 0
+      ? eb.exists(albumAssets(eb).where('album_asset.albumId', '=', anyUuid(scope.grantedAlbumIds)))
+      : undefined;
+  return { ownerArm, universe: albumArm ? eb.or([ownerArm, albumArm]) : ownerArm };
+}
+
 // ordering is deliberately left to the caller so aggregate-only consumers (counts, stats)
 // can compose the same filters without stripping an order by
 export function searchAssetBuilder(kysely: Kysely<DB>, options: AssetSearchBuilderV3Options, scope: AssetSearchScope) {
   const filter = options.filter ?? {};
   const branches = filter.or ?? [];
-  const ownershipPredicate = (eb: AssetExpressionBuilder) => eb('asset.ownerId', '=', anyUuid(scope.userIds));
   // search universe: own+partner assets unless album-confined, which searches the albums instead;
-  // ownership lands nowhere (top level confined), per unconfined branch, or hoisted globally
+  // ownership lands nowhere (top level confined), per unconfined branch, or globally (the universe predicate)
   const topConfined = isAlbumConfined(filter);
   const anyBranchConfined = branches.some((branch) => isAlbumConfined(branch));
   const scopePerBranch = !topConfined && anyBranchConfined;
-  const scopeGlobally = !topConfined && !anyBranchConfined;
 
   return (
     kysely
@@ -1005,10 +1020,7 @@ export function searchAssetBuilder(kysely: Kysely<DB>, options: AssetSearchBuild
       // postgres eliminates the left join when no exif column is referenced, so unused joins are free
       .leftJoin('asset_exif', 'asset.id', 'asset_exif.assetId')
       .$if(!!options.withExif, (qb) => qb.select(selectExifInfo))
-      .$if(scopeGlobally, (qb) => qb.where(ownershipPredicate))
-      .where((eb) =>
-        eb.or([eb('asset.visibility', '!=', AssetVisibility.Locked), eb('asset.ownerId', '=', scope.lockedOwnerId)]),
-      )
+      .where((eb) => searchUniversePredicates(eb, kysely, scope).universe)
       .$if(!!(options.withFaces || options.withPeople), (qb) =>
         qb.select(withFacesAndPeople({ viewingUserId: scope.viewingUserId! })),
       )
@@ -1016,12 +1028,13 @@ export function searchAssetBuilder(kysely: Kysely<DB>, options: AssetSearchBuild
       .where((eb) => {
         const predicates = branchPredicates(eb, filter);
         if (branches.length > 0) {
+          const { ownerArm } = searchUniversePredicates(eb, kysely, scope);
           predicates.push(
             eb.or(
               branches.map((branch) =>
                 eb.and([
                   ...branchPredicates(eb, branch),
-                  ...(scopePerBranch && !isAlbumConfined(branch) ? [ownershipPredicate(eb)] : []),
+                  ...(scopePerBranch && !isAlbumConfined(branch) ? [ownerArm] : []),
                 ]),
               ),
             ),
@@ -1054,7 +1067,7 @@ export function withSearchOrder(qb: ReturnType<typeof searchAssetBuilder>, order
   );
 }
 
-const scopeExample: AssetSearchScope = { userIds: [DummyValue.UUID], lockedOwnerId: DummyValue.UUID };
+const scopeExample: AssetSearchScope = { userIds: [DummyValue.UUID], grantedAlbumIds: [] };
 
 export const searchMetadataV3Examples: GenerateSqlQueries[] = [
   { name: 'baseline', params: [{ take: 100 }, {}, scopeExample] },

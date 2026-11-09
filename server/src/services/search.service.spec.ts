@@ -5,8 +5,9 @@ import { SearchSuggestionType } from 'src/dtos/search.dto.js';
 import { SearchService } from 'src/services/search.service.js';
 import { AssetFactory } from 'test/factories/asset.factory.js';
 import { AuthFactory } from 'test/factories/auth.factory.js';
+import { PartnerFactory } from 'test/factories/partner.factory.js';
 import { authStub } from 'test/fixtures/auth.stub.js';
-import { getForAsset } from 'test/mappers.js';
+import { getForAsset, getForPartner } from 'test/mappers.js';
 import { newUuid } from 'test/small.factory.js';
 import { ServiceMocks, newTestService } from 'test/utils.js';
 
@@ -272,6 +273,7 @@ describe(SearchService.name, () => {
 
     it('should route statistics, random, and smart filter requests to their V3 search', async () => {
       const auth = AuthFactory.create();
+      mocks.lock.getOwnerLockVisibility.mockResolvedValue([]);
 
       mocks.search.searchStatisticsV3.mockResolvedValue({ total: 0 });
       await expect(sut.searchStatistics(auth, { filter: {} })).resolves.toEqual({ total: 0 });
@@ -285,8 +287,87 @@ describe(SearchService.name, () => {
       expect(mocks.search.searchSmartV3).toHaveBeenCalledWith(
         { take: 100 },
         expect.objectContaining({ embedding: '[1, 2, 3]' }),
-        expect.objectContaining({ lockedOwnerId: expect.any(String) }),
+        { userIds: [auth.user.id], lockVisibility: undefined, grantedAlbumIds: [], viewingUserId: auth.user.id },
       );
+    });
+
+    it("should scope the timeline/partner arm by each owner's locks and the album arm by the validated grants", async () => {
+      const auth = AuthFactory.create();
+      const partner = PartnerFactory.create({ sharedWithId: auth.user.id, inTimeline: true });
+      const [grantedId, excludedId] = [newUuid(), newUuid()];
+      const lockVisibility = [
+        { ownerId: partner.sharedById, hiddenAlbumIds: [newUuid()], hiddenSmartFilters: [], visibleSmartFilters: [] },
+      ];
+      mocks.partner.getAll.mockResolvedValue([getForPartner(partner)]);
+      mocks.lock.getOwnerLockVisibility.mockResolvedValue(lockVisibility);
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([grantedId, excludedId]));
+      mocks.lock.isAlbumHiddenForViewer.mockResolvedValue(false);
+      mocks.album.getSmartAlbumIds.mockResolvedValue([]);
+      mocks.search.searchMetadataV3.mockResolvedValue({ hasNextPage: false, items: [] });
+
+      await sut.searchMetadata(auth, {
+        size: 250,
+        filter: { or: [{ albumIds: { any: [grantedId], none: [excludedId] } }, { isFavorite: { eq: true } }] },
+      });
+
+      expect(mocks.lock.getOwnerLockVisibility).toHaveBeenCalledWith({
+        viewerId: auth.user.id,
+        ownerIds: [auth.user.id, partner.sharedById],
+        revealed: { albumIds: [], containerIds: [] },
+        isElevated: false,
+      });
+      expect(mocks.search.searchMetadataV3).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
+        userIds: [auth.user.id, partner.sharedById],
+        lockVisibility,
+        grantedAlbumIds: [grantedId],
+        viewingUserId: auth.user.id,
+      });
+    });
+
+    it('should search a fully album-confined filter through its album grants only', async () => {
+      const auth = AuthFactory.create();
+      const albumId = newUuid();
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([albumId]));
+      mocks.lock.isAlbumHiddenForViewer.mockResolvedValue(false);
+      mocks.album.getSmartAlbumIds.mockResolvedValue([]);
+      mocks.search.searchStatisticsV3.mockResolvedValue({ total: 0 });
+
+      await sut.searchStatistics(auth, { filter: { albumIds: { all: [albumId] } } });
+
+      expect(mocks.lock.getOwnerLockVisibility).not.toHaveBeenCalled();
+      expect(mocks.search.searchStatisticsV3).toHaveBeenCalledWith(expect.anything(), {
+        userIds: [],
+        lockVisibility: undefined,
+        grantedAlbumIds: [albumId],
+        viewingUserId: auth.user.id,
+      });
+    });
+
+    it('should validate album ids in order: access, then viewer visibility, then smart albums', async () => {
+      const auth = AuthFactory.create();
+      const albumId = newUuid();
+      const filter = { or: [{ albumIds: { none: [albumId] } }] };
+
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set());
+      mocks.album.getSmartAlbumIds.mockResolvedValue([albumId]);
+      await expect(sut.searchMetadata(auth, { size: 250, filter })).rejects.toThrowError(
+        new BadRequestException('Not found or no album.read access'),
+      );
+      expect(mocks.lock.isAlbumHiddenForViewer).not.toHaveBeenCalled();
+      expect(mocks.album.getSmartAlbumIds).not.toHaveBeenCalled();
+
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([albumId]));
+      mocks.lock.isAlbumHiddenForViewer.mockResolvedValue(true);
+      await expect(sut.searchMetadata(auth, { size: 250, filter })).rejects.toThrowError(
+        new BadRequestException('Not found or no album.read access'),
+      );
+      expect(mocks.album.getSmartAlbumIds).not.toHaveBeenCalled();
+
+      mocks.lock.isAlbumHiddenForViewer.mockResolvedValue(false);
+      await expect(sut.searchMetadata(auth, { size: 250, filter })).rejects.toThrowError(
+        new BadRequestException('Smart albums cannot be used as a search album filter'),
+      );
+      expect(mocks.search.searchMetadataV3).not.toHaveBeenCalled();
     });
 
     it('should reject an invalid cursor', async () => {
@@ -318,6 +399,7 @@ describe(SearchService.name, () => {
       const albumId = newUuid();
 
       mocks.access.album.checkSharedLinkAccess.mockResolvedValue(new Set([albumId]));
+      mocks.album.getSmartAlbumIds.mockResolvedValue([]);
       mocks.search.searchMetadataV3.mockResolvedValue({ hasNextPage: false, items: [] });
 
       await expect(

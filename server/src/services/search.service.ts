@@ -111,13 +111,7 @@ export class SearchService extends BaseService {
     let userIds: string[] | undefined;
 
     if (dto.albumIds && dto.albumIds.length > 0) {
-      await this.requireAccess({ auth, ids: dto.albumIds, permission: Permission.AlbumRead });
-      // Album-scoped search follows the album-scoped timeline rule: a hidden album is
-      // unreachable by known id outside an elevated session.
-      const lockService = BaseService.create(LockService, this);
-      for (const albumId of dto.albumIds) {
-        await lockService.assertAlbumVisibleForViewer(auth, albumId);
-      }
+      await this.requireSearchableAlbums(auth, dto.albumIds);
     } else if (auth.sharedLink) {
       throw new BadRequestException('Shared link access is only allowed in combination with an albumIds filter');
     } else {
@@ -147,6 +141,8 @@ export class SearchService extends BaseService {
       return this.searchStatisticsV3(auth, dto);
     }
 
+    await this.requireSearchableAlbums(auth, dto.albumIds ?? []);
+
     const userIds = await this.getUserIdsToSearch(auth, dto.visibility);
     if (dto.visibility === AssetVisibility.Locked) {
       requireElevatedPermission(auth);
@@ -166,6 +162,8 @@ export class SearchService extends BaseService {
       return this.searchRandomV3(auth, dto);
     }
 
+    await this.requireSearchableAlbums(auth, dto.albumIds ?? []);
+
     if (dto.visibility === AssetVisibility.Locked) {
       requireElevatedPermission(auth);
     }
@@ -182,6 +180,8 @@ export class SearchService extends BaseService {
   }
 
   async searchLargeAssets(auth: AuthDto, dto: LargeAssetSearchDto): Promise<AssetResponseDto[]> {
+    await this.requireSearchableAlbums(auth, dto.albumIds ?? []);
+
     if (dto.visibility === AssetVisibility.Locked) {
       requireElevatedPermission(auth);
     }
@@ -201,6 +201,8 @@ export class SearchService extends BaseService {
     if (isNewShapeRequest(dto)) {
       return this.searchSmartV3(auth, dto);
     }
+
+    await this.requireSearchableAlbums(auth, dto.albumIds ?? []);
 
     if (dto.visibility === AssetVisibility.Locked) {
       requireElevatedPermission(auth);
@@ -277,11 +279,7 @@ export class SearchService extends BaseService {
     }
   }
 
-  // FORK-PORT: lock-audit — new upstream v3 search paths (8b3d6b320): searchMetadataV3/StatisticsV3/RandomV3/SmartV3
-  // build AssetSearchScope via resolveSearchScopeV3 with no lockVisibility (fork's getLockVisibility(auth, userIds) is
-  // not threaded), lockedOwnerId relies on the retired AssetVisibility.Locked (D4; Task 2 deleted
-  // applyLockedVisibilityPolicy and SearchFilterSchema now rejects `locked`), and album ids in the filter are not
-  // rejected when smart (D6). Re-apply grant-aware lock enforcement per branch (D5, Task 5).
+  // Fork: the V3 search paths take their lock-aware universe from resolveSearchScopeV3 (D5) - see AssetSearchScope.
   private async searchMetadataV3(auth: AuthDto, dto: MetadataSearchDto): Promise<SearchResponseDto> {
     const { filter, scope } = await this.resolveSearchScopeV3(auth, dto);
 
@@ -347,7 +345,8 @@ export class SearchService extends BaseService {
     auth: AuthDto,
     dto: { filter?: SearchFilter },
   ): Promise<{ filter: SearchFilter; scope: AssetSearchScope }> {
-    // `locked` visibility is rejected by SearchFilterSchema validation (D4), so no locked-visibility policy applies.
+    // `locked` visibility is rejected by SearchFilterSchema validation (D4); locks are album/folder based and applied
+    // through the scope below, outside the user's filter tree (D5).
     const filter = dto.filter ?? {};
 
     const fullyConfined = isFullyAlbumConfined(filter);
@@ -356,14 +355,40 @@ export class SearchService extends BaseService {
       throw new BadRequestException('Shared link access is only allowed in combination with an albumIds filter');
     }
 
-    const albumIds = collectFilterIds(filter, 'albumIds');
-    const [userIds] = await Promise.all([
-      // a fully confined filter searches albums only, so the unused universe can skip the partner lookup
-      fullyConfined ? [auth.user.id] : this.getUserIdsToSearch(auth),
-      albumIds.length > 0 ? this.requireAccess({ auth, ids: albumIds, permission: Permission.AlbumRead }) : undefined,
-    ]);
+    // every album the filter names (any/all/none, root and `or` branches) is validated before the query runs
+    await this.requireSearchableAlbums(auth, collectFilterIds(filter, 'albumIds'));
 
-    return { filter, scope: { userIds, lockedOwnerId: auth.user.id, viewingUserId: auth.user.id } };
+    // album arm: the positive album conditions are the album grants (album-grant rules, spec §4/§15.1)
+    const grantedAlbumIds = collectFilterIds(filter, 'albumIds', ['any', 'all']);
+    // timeline/partner arm: a fully confined filter searches its albums only, so it has none
+    const userIds = fullyConfined ? [] : await this.getUserIdsToSearch(auth);
+    const lockVisibility = userIds.length > 0 ? await this.getLockVisibility(auth, userIds) : undefined;
+
+    return { filter, scope: { userIds, lockVisibility, grantedAlbumIds, viewingUserId: auth.user.id } };
+  }
+
+  /**
+   * Album ids named by a search (v1 `albumIds`, or any v3 album operator) are validated before the query runs, in
+   * this order: album.read access; then that no album is hidden for the viewer (an elevated session bypasses, as for
+   * album-scoped timelines - spec §15.3 direct-by-id); then smart albums are refused (D6). Authorization runs first,
+   * so an album the caller cannot read never reveals that it is smart.
+   */
+  private async requireSearchableAlbums(auth: AuthDto, albumIds: string[]): Promise<void> {
+    if (albumIds.length === 0) {
+      return;
+    }
+
+    await this.requireAccess({ auth, ids: albumIds, permission: Permission.AlbumRead });
+
+    const lockService = BaseService.create(LockService, this);
+    for (const albumId of albumIds) {
+      await lockService.assertAlbumVisibleForViewer(auth, albumId);
+    }
+
+    const smartAlbumIds = await this.albumRepository.getSmartAlbumIds(albumIds);
+    if (smartAlbumIds.length > 0) {
+      throw new BadRequestException('Smart albums cannot be used as a search album filter');
+    }
   }
 
   private async resolveEmbedding(

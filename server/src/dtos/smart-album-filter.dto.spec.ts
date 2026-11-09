@@ -1,3 +1,5 @@
+import z from 'zod';
+import { MetadataSearchFlatSchema } from 'src/dtos/search-base.dto.js';
 import {
   SmartAlbumFilterSchema,
   isEmptySmartAlbumFilter,
@@ -28,6 +30,42 @@ describe('SmartAlbumFilterSchema', () => {
     expect(SmartAlbumFilterSchema.safeParse({ trashedBefore: '2024-01-01T00:00:00Z' }).success).toBe(false);
     expect(SmartAlbumFilterSchema.safeParse({ trashedAfter: '2024-01-01T00:00:00Z' }).success).toBe(false);
     expect(SmartAlbumFilterSchema.safeParse({ isOffline: true }).success).toBe(false);
+  });
+
+  it('derives every field from the v1 (flat) metadata search', () => {
+    const v1 = MetadataSearchFlatSchema.shape as Record<string, z.ZodType>;
+    for (const [key, field] of Object.entries(SmartAlbumFilterSchema.shape)) {
+      expect(v1[key], key).toBeDefined();
+      if (key === 'visibility') {
+        continue;
+      }
+      // same validator as v1 search: compare the JSON schemas without metadata
+      const strip = (schema: z.ZodType) => {
+        const {
+          description: _d,
+          deprecated: _p,
+          'x-immich-history': _h,
+          'x-immich-state': _s,
+          ...rest
+        } = z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' }) as Record<string, unknown>;
+        return rest;
+      };
+      expect(strip(field as z.ZodType), key).toEqual(strip(v1[key]));
+      expect((field as z.ZodType).description, key).toEqual(v1[key].description);
+    }
+  });
+
+  it('applies the v1 search validators', () => {
+    expect(SmartAlbumFilterSchema.safeParse({ rating: 0 }).success).toBe(false);
+    expect(SmartAlbumFilterSchema.safeParse({ rating: null }).success).toBe(true);
+    expect(SmartAlbumFilterSchema.safeParse({ albumIds: ['not-a-uuid'] }).success).toBe(false);
+    expect(SmartAlbumFilterSchema.parse({ description: '  sunset  ' })).toEqual({ description: 'sunset' });
+  });
+
+  it('does not carry the search API deprecation of the flat fields', () => {
+    for (const [key, field] of Object.entries(SmartAlbumFilterSchema.shape)) {
+      expect((field as z.ZodType).meta()?.deprecated, key).toBeUndefined();
+    }
   });
 });
 

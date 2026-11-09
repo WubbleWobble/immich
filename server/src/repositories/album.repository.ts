@@ -573,6 +573,24 @@ export class AlbumRepository {
   }
 
   /**
+   * Fork (D6): which of `albumIds` are smart albums. Search refuses smart albums as album filters (their membership
+   * is computed, not stored in `album_asset`); callers check access first so the answer is never an oracle.
+   */
+  @GenerateSql({ params: [[DummyValue.UUID]] })
+  async getSmartAlbumIds(albumIds: string[]): Promise<string[]> {
+    if (albumIds.length === 0) {
+      return [];
+    }
+    const rows = await this.db
+      .selectFrom('album')
+      .select('album.id')
+      .where('album.id', 'in', albumIds)
+      .where('album.kind', '=', sql.lit(AlbumKind.Smart))
+      .execute();
+    return rows.map(({ id }) => id);
+  }
+
+  /**
    * Returns smart albums owned by `ownerId` (with their stored filter).
    * Used by smart-album cache invalidation.
    */

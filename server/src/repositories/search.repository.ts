@@ -150,9 +150,20 @@ export type AssetSearchOptions = Omit<BaseAssetSearchOptions, 'visibility'> &
 
 export type AssetSearchBuilderOptions = Omit<AssetSearchOptions, 'orderDirection'>;
 
+/**
+ * Fork (D5): the server-side universe of a new-shape search, composed outside the user's filter tree.
+ * - Timeline/partner arm: assets of `userIds` (viewer and timeline partners), each owner's locks applied through
+ *   `lockVisibility` (the viewer's reveal only for the viewer's own locks, when elevated).
+ * - Album arm: assets in `grantedAlbumIds`, the albums the filter's positive album conditions name. The service has
+ *   checked album.read access and that none is hidden for the viewer (outside an elevated session), so the grant
+ *   follows album-grant rules: the album owner's locks never affect it (spec §4, §15.1).
+ */
 export interface AssetSearchScope {
   userIds: string[];
-  lockedOwnerId: string;
+  /** Per-owner lock entries for the `userIds` owners; omitted when no owner hides anything. */
+  lockVisibility?: OwnerLockVisibility[];
+  /** Validated album grants (`any`/`all` album ids of the root and `or` branches). */
+  grantedAlbumIds: string[];
   /** whose version of the people to select, required when selecting faces or people */
   viewingUserId?: string;
 }
@@ -599,8 +610,7 @@ export class SearchRepository {
   }
 
   // TODO(v4): drop the V3 suffix once the legacy methods are removed
-  // FORK-PORT: lock-audit — new upstream v3 search queries (searchMetadataV3/searchStatisticsV3/searchRandomV3/
-  // searchSmartV3) run searchAssetBuilder with AssetSearchScope only; no lockVisibility is applied (D5, Task 5).
+  // Fork: every V3 query goes through searchAssetBuilder, which applies the scope's lock-aware universe (D5).
   @GenerateSql(...searchMetadataV3Examples)
   async searchMetadataV3(pagination: PaginationOptions, options: AssetSearchBuilderV3Options, scope: AssetSearchScope) {
     const items = await withSearchOrder(searchAssetBuilder(this.db, options, scope), options.order)

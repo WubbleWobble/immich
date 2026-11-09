@@ -1,9 +1,26 @@
 import { createZodDto } from 'nestjs-zod';
 import z from 'zod';
-import { MetadataSearchSchema } from 'src/dtos/search-base.dto.js';
+import { MetadataSearchFlatSchema } from 'src/dtos/search-base.dto.js';
 import { AssetVisibility } from 'src/enum.js';
 
-// Stored filter for smart albums - subset of MetadataSearchSchema with request-shaping
+/**
+ * Upstream deprecated the v1 flat search fields in v3.2.0 in favour of the structured `filter` tree. Stored smart-album
+ * filters keep the flat shape as their own, current contract (D11), so their fields carry the v1 validators and
+ * descriptions but not the search API's deprecation metadata. A def-only clone drops the inherited metadata.
+ */
+const withoutDeprecation = <T extends z.ZodRawShape>(shape: T): T =>
+  Object.fromEntries(
+    Object.entries(shape).map(([key, field]) => {
+      const schema = field as z.ZodType;
+      if (!schema.meta()?.deprecated) {
+        return [key, schema];
+      }
+      const fresh = schema.clone(schema.def);
+      return [key, schema.description ? fresh.describe(schema.description) : fresh];
+    }),
+  ) as unknown as T;
+
+// Stored filter for smart albums - subset of the v1 (flat) metadata search with request-shaping
 // and asset-lookup fields stripped. See ../immich-specs/2026-05-22-smart-albums-design.md §5.4.
 //
 // Visibility is restricted to timeline/archive: smart-album filters are evaluated against the
@@ -13,7 +30,7 @@ import { AssetVisibility } from 'src/enum.js';
 // Trash-adjacent fields (trashedBefore/trashedAfter/isOffline) are excluded because any of
 // them flips the search builder's withDeleted flag, which would surface the owner's trashed
 // assets to sharees - regular shared albums never expose trashed assets.
-export const SmartAlbumFilterSchema = MetadataSearchSchema.omit({
+const SmartAlbumFilterBaseSchema = MetadataSearchFlatSchema.omit({
   // Asset-lookup fields (useless for a stored album filter)
   id: true,
   checksum: true,
@@ -34,7 +51,10 @@ export const SmartAlbumFilterSchema = MetadataSearchSchema.omit({
   trashedBefore: true,
   trashedAfter: true,
   isOffline: true,
-})
+});
+
+export const SmartAlbumFilterSchema = z
+  .object(withoutDeprecation(SmartAlbumFilterBaseSchema.shape))
   .extend({
     visibility: z.enum([AssetVisibility.Timeline, AssetVisibility.Archive]).optional(),
   })
