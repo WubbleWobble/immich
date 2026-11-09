@@ -19,6 +19,7 @@ import { SessionSyncCheckpointTable } from 'src/schema/tables/sync-checkpoint.ta
 import { BaseService } from 'src/services/base.service.js';
 import { hexOrBufferToBase64 } from 'src/utils/bytes.js';
 import { ClientDisconnectedError, waitForDrain } from 'src/utils/response.js';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
 import { SerializeOptions, fromAck, serialize, toAck } from 'src/utils/sync.js';
 
 type CheckpointMap = Partial<Record<SyncEntityType, SyncAck>>;
@@ -345,6 +346,24 @@ export class SyncService extends BaseService {
     }
   }
 
+  /**
+   * Fork (lock spec §7, R43 revised): lock entries for the partners' assets in the PARTNER streams. Each partner's own
+   * locks hide their content from this device; never elevated and never revealed (the viewer's elevation does not
+   * bypass another owner's locks). The user's own streams are deliberately unfiltered (spec §13).
+   */
+  private async getPartnerLockVisibility(userId: string) {
+    const ownerIds = await this.syncRepository.partner.getSharedByIds(userId);
+    if (ownerIds.length === 0) {
+      return [];
+    }
+    return this.lockRepository.getOwnerLockVisibility({
+      viewerId: userId,
+      ownerIds,
+      revealed: NO_REVEALED_LOCKS,
+      isElevated: false,
+    });
+  }
+
   private syncPartnerAssetsV1(): Promise<void> {
     throw new BadRequestException(
       'SyncRequestType.PartnerAssetsV1 is deprecated, use SyncRequestType.PartnerAssetsV2 instead',
@@ -363,6 +382,7 @@ export class SyncService extends BaseService {
       await send(response, { type: deleteType, ids: [id], data });
     }
 
+    const lockVisibility = await this.getPartnerLockVisibility(options.userId);
     const backfillType = SyncEntityType.PartnerAssetBackfillV2;
     const backfillCheckpoint = checkpointMap[backfillType];
     const partners = await this.syncRepository.partner.getCreatedAfter({
@@ -384,6 +404,7 @@ export class SyncService extends BaseService {
         const backfill = this.syncRepository.partnerAsset.getBackfill(
           { ...options, afterUpdateId: startId, beforeUpdateId: endId },
           partner.sharedById,
+          lockVisibility,
         );
 
         for await (const { updateId, ...data } of backfill) {
@@ -404,7 +425,10 @@ export class SyncService extends BaseService {
       });
     }
 
-    const upserts = this.syncRepository.partnerAsset.getUpserts({ ...options, ack: checkpointMap[upsertType] });
+    const upserts = this.syncRepository.partnerAsset.getUpserts(
+      { ...options, ack: checkpointMap[upsertType] },
+      lockVisibility,
+    );
     for await (const { updateId, ...data } of upserts) {
       await send(response, { type: upsertType, ids: [updateId], data: mapSyncAssetV2(data) });
     }
@@ -439,6 +463,7 @@ export class SyncService extends BaseService {
     checkpointMap: CheckpointMap,
     sessionId: string,
   ) {
+    const lockVisibility = await this.getPartnerLockVisibility(options.userId);
     const backfillType = SyncEntityType.PartnerAssetExifBackfillV1;
     const backfillCheckpoint = checkpointMap[backfillType];
     const partners = await this.syncRepository.partner.getCreatedAfter({
@@ -461,6 +486,7 @@ export class SyncService extends BaseService {
         const backfill = this.syncRepository.partnerAssetExif.getBackfill(
           { ...options, afterUpdateId: startId, beforeUpdateId: endId },
           partner.sharedById,
+          lockVisibility,
         );
 
         for await (const { updateId, ...data } of backfill) {
@@ -477,7 +503,10 @@ export class SyncService extends BaseService {
       });
     }
 
-    const upserts = this.syncRepository.partnerAssetExif.getUpserts({ ...options, ack: checkpointMap[upsertType] });
+    const upserts = this.syncRepository.partnerAssetExif.getUpserts(
+      { ...options, ack: checkpointMap[upsertType] },
+      lockVisibility,
+    );
     for await (const { updateId, ...data } of upserts) {
       await send(response, { type: upsertType, ids: [updateId], data });
     }
@@ -865,6 +894,7 @@ export class SyncService extends BaseService {
       await send(response, { type: deleteType, ids: [id], data });
     }
 
+    const lockVisibility = await this.getPartnerLockVisibility(options.userId);
     const backfillType = SyncEntityType.PartnerStackBackfillV1;
     const backfillCheckpoint = checkpointMap[backfillType];
     const partners = await this.syncRepository.partner.getCreatedAfter({
@@ -886,6 +916,7 @@ export class SyncService extends BaseService {
         const backfill = this.syncRepository.partnerStack.getBackfill(
           { ...options, afterUpdateId: startId, beforeUpdateId: endId },
           partner.sharedById,
+          lockVisibility,
         );
 
         for await (const { updateId, ...data } of backfill) {
@@ -906,7 +937,10 @@ export class SyncService extends BaseService {
       });
     }
 
-    const upserts = this.syncRepository.partnerStack.getUpserts({ ...options, ack: checkpointMap[upsertType] });
+    const upserts = this.syncRepository.partnerStack.getUpserts(
+      { ...options, ack: checkpointMap[upsertType] },
+      lockVisibility,
+    );
     for await (const { updateId, ...data } of upserts) {
       await send(response, { type: upsertType, ids: [updateId], data });
     }

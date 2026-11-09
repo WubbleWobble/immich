@@ -1,11 +1,12 @@
 import { Injectable } from '@nestjs/common';
-import { type Kysely, sql } from 'kysely';
+import { type ExpressionBuilder, type Kysely, sql } from 'kysely';
 import { InjectKysely } from 'nestjs-kysely';
 import type { SyncAck } from 'src/types.js';
 import { columns } from 'src/database.js';
 import { DummyValue, GenerateSql } from 'src/decorators.js';
 import { MemoryType } from 'src/enum.js';
 import { DB } from 'src/schema/index.js';
+import { OwnerLockVisibility, joinDeduplicationPlugin, lockVisibilityExpression } from 'src/utils/database.js';
 
 export type SyncBackfillOptions = {
   nowId: string;
@@ -656,16 +657,34 @@ class PartnerSync extends BaseSync {
       .where((eb) => eb.or([eb('sharedById', '=', userId), eb('sharedWithId', '=', userId)]))
       .stream();
   }
+
+  /** Fork: every user sharing their library with `userId` - the owners whose locks govern the partner streams. */
+  @GenerateSql({ params: [DummyValue.UUID] })
+  async getSharedByIds(userId: string): Promise<string[]> {
+    const rows = await this.db.selectFrom('partner').select('sharedById').where('sharedWithId', '=', userId).execute();
+    return rows.map(({ sharedById }) => sharedById);
+  }
 }
 
+/*
+ * Fork (lock spec §7): the partner streams (assets, exif, stacks) take `lockVisibility` - getOwnerLockVisibility over
+ * the partners with no reveal and no elevation, since the viewer's elevation never bypasses another owner's locks. A
+ * partner's row streams iff its asset passes ITS OWNER's locks; an empty list (no partner hides anything) leaves the
+ * query untouched. The user's own streams stay unfiltered (spec §13: own-device mobile UI is out of scope).
+ */
 class PartnerAssetsSync extends BaseSync {
   @GenerateSql({ params: [dummyBackfillOptions, DummyValue.UUID], stream: true })
-  getBackfill(options: SyncBackfillOptions, partnerId: string) {
+  getBackfill(options: SyncBackfillOptions, partnerId: string, lockVisibility: OwnerLockVisibility[] = []) {
     return this.backfillQuery('asset', options)
       .select(columns.syncPartnerAsset)
       .select(sql.val(false).as('isFavorite'))
       .select('asset.updateId')
       .where('ownerId', '=', partnerId)
+      .$if(lockVisibility.length > 0, (qb) =>
+        qb
+          .where((eb) => lockVisibilityExpression(eb as ExpressionBuilder<DB, 'asset'>, this.db, lockVisibility))
+          .withPlugin(joinDeduplicationPlugin),
+      )
       .stream();
   }
 
@@ -680,7 +699,7 @@ class PartnerAssetsSync extends BaseSync {
   }
 
   @GenerateSql({ params: [dummyQueryOptions], stream: true })
-  getUpserts(options: SyncQueryOptions) {
+  getUpserts(options: SyncQueryOptions, lockVisibility: OwnerLockVisibility[] = []) {
     return this.upsertQuery('asset', options)
       .select(columns.syncPartnerAsset)
       .select(sql.val(false).as('isFavorite'))
@@ -688,23 +707,33 @@ class PartnerAssetsSync extends BaseSync {
       .where('ownerId', 'in', (eb) =>
         eb.selectFrom('partner').select(['sharedById']).where('sharedWithId', '=', options.userId),
       )
+      .$if(lockVisibility.length > 0, (qb) =>
+        qb
+          .where((eb) => lockVisibilityExpression(eb as ExpressionBuilder<DB, 'asset'>, this.db, lockVisibility))
+          .withPlugin(joinDeduplicationPlugin),
+      )
       .stream();
   }
 }
 
 class PartnerAssetExifsSync extends BaseSync {
   @GenerateSql({ params: [dummyBackfillOptions, DummyValue.UUID], stream: true })
-  getBackfill(options: SyncBackfillOptions, partnerId: string) {
+  getBackfill(options: SyncBackfillOptions, partnerId: string, lockVisibility: OwnerLockVisibility[] = []) {
     return this.backfillQuery('asset_exif', options)
       .select(columns.syncAssetExif)
       .select('asset_exif.updateId')
       .innerJoin('asset', 'asset.id', 'asset_exif.assetId')
       .where('asset.ownerId', '=', partnerId)
+      .$if(lockVisibility.length > 0, (qb) =>
+        qb
+          .where((eb) => lockVisibilityExpression(eb as ExpressionBuilder<DB, 'asset'>, this.db, lockVisibility))
+          .withPlugin(joinDeduplicationPlugin),
+      )
       .stream();
   }
 
   @GenerateSql({ params: [dummyQueryOptions], stream: true })
-  getUpserts(options: SyncQueryOptions) {
+  getUpserts(options: SyncQueryOptions, lockVisibility: OwnerLockVisibility[] = []) {
     return this.upsertQuery('asset_exif', options)
       .select(columns.syncAssetExif)
       .select('asset_exif.updateId')
@@ -714,8 +743,12 @@ class PartnerAssetExifsSync extends BaseSync {
           .select('id')
           .where('ownerId', 'in', (eb) =>
             eb.selectFrom('partner').select(['sharedById']).where('sharedWithId', '=', options.userId),
+          )
+          .$if(lockVisibility.length > 0, (qb) =>
+            qb.where((eb) => lockVisibilityExpression(eb, this.db, lockVisibility)),
           ),
       )
+      .$if(lockVisibility.length > 0, (qb) => qb.withPlugin(joinDeduplicationPlugin))
       .stream();
   }
 }
@@ -755,23 +788,49 @@ class PartnerStackSync extends BaseSync {
   }
 
   @GenerateSql({ params: [dummyBackfillOptions, DummyValue.UUID], stream: true })
-  getBackfill(options: SyncBackfillOptions, partnerId: string) {
+  getBackfill(options: SyncBackfillOptions, partnerId: string, lockVisibility: OwnerLockVisibility[] = []) {
     return this.backfillQuery('stack', options)
       .select(columns.syncStack)
       .select('updateId')
       .where('ownerId', '=', partnerId)
+      .$if(lockVisibility.length > 0, (qb) =>
+        qb
+          .where((eb) => this.noHiddenMember(eb as ExpressionBuilder<DB, 'stack'>, lockVisibility))
+          .withPlugin(joinDeduplicationPlugin),
+      )
       .stream();
   }
 
   @GenerateSql({ params: [dummyQueryOptions], stream: true })
-  getUpserts(options: SyncQueryOptions) {
+  getUpserts(options: SyncQueryOptions, lockVisibility: OwnerLockVisibility[] = []) {
     return this.upsertQuery('stack', options)
       .select(columns.syncStack)
       .select('updateId')
       .where('ownerId', 'in', (eb) =>
         eb.selectFrom('partner').select(['sharedById']).where('sharedWithId', '=', options.userId),
       )
+      .$if(lockVisibility.length > 0, (qb) =>
+        qb
+          .where((eb) => this.noHiddenMember(eb as ExpressionBuilder<DB, 'stack'>, lockVisibility))
+          .withPlugin(joinDeduplicationPlugin),
+      )
       .stream();
+  }
+
+  /**
+   * Fork: a partner stack streams only when no member is hidden for its owner (§15.11/§15.12 - any hidden member makes
+   * the stack hidden content, and a hidden primary would leak a hidden asset id through `primaryAssetId`).
+   */
+  private noHiddenMember(eb: ExpressionBuilder<DB, 'stack'>, lockVisibility: OwnerLockVisibility[]) {
+    return eb.not(
+      eb.exists(
+        eb
+          .selectFrom('asset')
+          .select('asset.id')
+          .whereRef('asset.stackId', '=', 'stack.id')
+          .where((eb2) => eb2.not(lockVisibilityExpression(eb2, this.db, lockVisibility))),
+      ),
+    );
   }
 }
 
