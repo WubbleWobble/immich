@@ -1,7 +1,7 @@
 import { Kysely } from 'kysely';
 import { randomBytes } from 'node:crypto';
 import { AuthDto } from 'src/dtos/auth.dto.js';
-import { AlbumKind, AlbumUserRole, Permission, SharedLinkType } from 'src/enum.js';
+import { AlbumKind, AlbumUserRole, AssetType, AssetVisibility, Permission, SharedLinkType } from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { AlbumContainerRepository } from 'src/repositories/album-container.repository.js';
 import { CryptoRepository } from 'src/repositories/crypto.repository.js';
@@ -1047,6 +1047,49 @@ describe(SharedLinkService.name, () => {
       await expect(sut.getAll({ ...plain, revealedLocks: revealAll } as AuthDto, {}).then(idsOf)).resolves.toEqual(
         idsOf(visibleLinks),
       );
+    });
+
+    it('an individual link containing the motion asset of a locked still is hidden for the manager (7A.1 x 7A.2)', async () => {
+      const { sut, ctx } = setup();
+      const locks = ctx.get(LockRepository);
+      const { user } = await ctx.newUser();
+      const plain = factory.auth({ user });
+      const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+
+      const { asset: motion } = await ctx.newAsset({
+        ownerId: user.id,
+        type: AssetType.Video,
+        visibility: AssetVisibility.Hidden,
+      });
+      await ctx.newExif({ assetId: motion.id, make: 'Canon' });
+      const still = await newLinkAsset(ctx, user.id);
+      await ctx.database.updateTable('asset').set({ livePhotoVideoId: motion.id }).where('id', '=', still.id).execute();
+      const { album } = await ctx.newAlbum({ ownerId: user.id }, [still.id]);
+
+      // minted while the Live Photo was visible; the still's album is locked afterwards
+      const link = await newLink(ctx, user.id, { assetIds: [motion.id] });
+      await locks.lockAlbum(user.id, album.id);
+
+      await expect(sut.getAll(plain, {}).then(idsOf)).resolves.toEqual([]);
+      await expect(sut.get(plain, link.id)).rejects.toThrow(ALBUM_READ_ERROR);
+      await expect(sut.update(plain, link.id, { allowDownload: true })).rejects.toThrow(ALBUM_READ_ERROR);
+      await expect(sut.create(plain, { type: SharedLinkType.Individual, assetIds: [motion.id] })).rejects.toThrow(
+        ASSET_ERROR,
+      );
+
+      // the manager's own lock: elevation bypasses it for direct-by-id management, the list needs the reveal set
+      await expect(sut.get(elevated, link.id)).resolves.toEqual(expect.objectContaining({ id: link.id }));
+      await expect(sut.getAll(elevated, {}).then(idsOf)).resolves.toEqual([]);
+      const revealing = { ...elevated, revealedLocks: { albumIds: [album.id], containerIds: [] } } as AuthDto;
+      await expect(sut.getAll(revealing, {}).then(idsOf)).resolves.toEqual([link.id]);
+
+      // the same holds for a partner's motion asset in B's link - and there elevation never helps
+      const { user: managerB } = await ctx.newUser();
+      await ctx.newPartner({ sharedById: user.id, sharedWithId: managerB.id });
+      const partnerLink = await newLink(ctx, managerB.id, { assetIds: [motion.id] });
+      const bElevated = factory.auth({ user: managerB, session: { hasElevatedPermission: true } });
+      await expect(sut.getAll(bElevated, {}).then(idsOf)).resolves.toEqual([]);
+      await expect(sut.get(bElevated, partnerLink.id)).rejects.toThrow(ALBUM_READ_ERROR);
     });
 
     it('public visitor access through an existing key is unchanged', async () => {

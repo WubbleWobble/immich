@@ -516,6 +516,28 @@ export function lockVisibilityExpression(
     return union;
   };
 
+  // Fork (7A.2, audit 2): a Live Photo motion part M (visibility=hidden, referenced by still.livePhotoVideoId) usually
+  // has no container of its own, so judged alone it passed the zero-container clause and escaped its still's lock.
+  // M is therefore judged together with the stills referencing it, as one unit: visible iff some member of the unit
+  // has a visible container, or no member has any container. So a container-less M is hidden iff every still is
+  // hidden, an independent visible container of M itself still grants, and a visible Live Photo keeps its motion
+  // part (M is never rejected merely for being hidden). M's own memberships count too, so an M filed only into a
+  // locked album stays hidden even beside an uncontained still. Stills share M's owner (live photos are only linked
+  // within one library), so the unit is judged under that owner's entry. Rows that are not hidden-visibility skip the
+  // still lookup (one-time filter); every other asset's unit is just itself, which reproduces the plain rule.
+  const motionStills = () =>
+    eb
+      .selectFrom('asset as still')
+      .select('still.id')
+      .whereRef('still.livePhotoVideoId', '=', 'asset.id')
+      .where('asset.visibility', '=', sql.lit(AssetVisibility.Hidden));
+  const unit = () => sql<{ id: string }>`(select ${eb.ref('asset.id')} as id union all ${motionStills()})`.as('unit');
+  const inSmart = (filters: AssetSearchBuilderOptions[]) =>
+    eb.or([
+      eb('asset.id', 'in', unionSmart(filters)),
+      eb.exists(motionStills().where('still.id', 'in', unionSmart(filters))),
+    ]);
+
   // Container memberships only count when the lock owner can see the album - via their
   // own album_user row (owner or sharee) OR via a folder share on an ancestor container
   // (album_container_user + closure), mirroring checkAlbumAccess. A membership in a
@@ -524,14 +546,22 @@ export function lockVisibilityExpression(
   // cannot see or control. The cascade branch matters for lockable folder shares: an
   // asset whose only lock-owner-visible container is a cascade-shared album must count
   // that album (and hide when the folder is locked), not read as zero-container.
-  const liveMembership = (assetRef: 'asset.id', lockOwnerId: string) =>
+  //
+  // One aggregate decides the regular-album side: NULL when the unit has no such membership (zero-container), true
+  // when some membership is in a non-hidden album, false when all are hidden. Folding the visible and zero-container
+  // probes into one subquery keeps the per-row cost (and so the planner's estimate) at a single membership lookup.
+  const regularVerdict = (entry: OwnerLockVisibility) =>
     eb
-      .selectFrom('album_asset')
+      .selectFrom(unit())
+      .innerJoin('album_asset', 'album_asset.assetId', 'unit.id')
       .innerJoin('album', (join) =>
         join.onRef('album.id', '=', 'album_asset.albumId').on('album.deletedAt', 'is', null),
       )
-      .select('album_asset.assetId')
-      .whereRef('album_asset.assetId', '=', assetRef)
+      .select((eb2) =>
+        eb2.fn
+          .agg<boolean>('bool_or', [eb2.not(eb2('album_asset.albumId', '=', anyUuid(entry.hiddenAlbumIds)))])
+          .as('visible'),
+      )
       .where((eb2) =>
         eb2.or([
           eb2.exists(
@@ -539,7 +569,7 @@ export function lockVisibilityExpression(
               .selectFrom('album_user')
               .select('album_user.userId')
               .whereRef('album_user.albumId', '=', 'album.id')
-              .where('album_user.userId', '=', asUuid(lockOwnerId)),
+              .where('album_user.userId', '=', asUuid(entry.ownerId)),
           ),
           eb2.exists(
             eb2
@@ -551,7 +581,7 @@ export function lockVisibilityExpression(
               )
               .select('lock_closure.id_descendant')
               .whereRef('lock_closure.id_descendant', '=', 'album.containerId')
-              .where('lock_folder_user.userId', '=', asUuid(lockOwnerId)),
+              .where('lock_folder_user.userId', '=', asUuid(entry.ownerId)),
           ),
         ]),
       );
@@ -559,25 +589,15 @@ export function lockVisibilityExpression(
   return eb.or([
     eb.not(eb('asset.ownerId', '=', anyUuid(ownersWithLocks))),
     ...entries.map((entry) => {
-      const ownerClauses = [
-        // Visible via an unlocked (live) regular-album membership.
-        eb.exists(
-          liveMembership('asset.id', entry.ownerId).where((eb2) =>
-            eb2.not(eb2('album_asset.albumId', '=', anyUuid(entry.hiddenAlbumIds))),
-          ),
-        ),
-      ];
+      // Visible via an unlocked (live) regular-album membership; with no membership at all, visible unless a hidden
+      // smart album matches (zero-container rule).
+      const zeroContainer =
+        entry.hiddenSmartFilters.length > 0 ? eb.not(inSmart(entry.hiddenSmartFilters)) : sql.lit(true);
+      const ownerClauses = [eb.fn.coalesce(regularVerdict(entry), zeroContainer)];
+      // Visible via a match by a visible smart album.
       if (entry.visibleSmartFilters.length > 0) {
-        ownerClauses.push(eb('asset.id', 'in', unionSmart(entry.visibleSmartFilters)));
+        ownerClauses.push(inSmart(entry.visibleSmartFilters));
       }
-      const zeroContainer = [eb.not(eb.exists(liveMembership('asset.id', entry.ownerId)))];
-      if (entry.hiddenSmartFilters.length > 0) {
-        zeroContainer.push(eb('asset.id', 'not in', unionSmart(entry.hiddenSmartFilters)));
-      }
-      if (entry.visibleSmartFilters.length > 0) {
-        zeroContainer.push(eb('asset.id', 'not in', unionSmart(entry.visibleSmartFilters)));
-      }
-      ownerClauses.push(eb.and(zeroContainer));
       return eb.and([eb('asset.ownerId', '=', asUuid(entry.ownerId)), eb.or(ownerClauses)]);
     }),
   ]);
