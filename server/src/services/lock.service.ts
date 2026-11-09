@@ -404,8 +404,8 @@ export class LockService extends BaseService {
 
   /**
    * R58 (round 3), notifications: the subset of `notifications` (all of `userId`) whose data references an album
-   * (`albumId`) hidden by the recipient's own locks or an asset (`assetId`) hidden for the recipient, both under the
-   * non-elevated rule. Nothing is queried for notifications without such references, and the album side only when the
+   * (`albumId`) hidden by the recipient's own locks or an asset (`assetId`) of the recipient or a partner of theirs that
+   * is hidden for them, both under the non-elevated rule. Nothing is queried for notifications without such references, and the album side only when the
    * recipient holds locks.
    */
   async getHiddenNotificationIds(userId: string, notifications: { id: string; data: unknown }[]): Promise<Set<string>> {
@@ -422,7 +422,9 @@ export class LockService extends BaseService {
       }
     }
     if (assetIds.length > 0) {
-      const hiddenAssetIds = await this.getHiddenAssetIdsForRead({ user: { id: userId } } as AuthDto, assetIds);
+      // Only assets the recipient owns or reaches as a partner are judged (relatedOnly): a notification about an
+      // unrelated user's asset (an admin custom notification) enumerates nothing hidden for this recipient.
+      const hiddenAssetIds = await this.getUnshareableHiddenAssetIds({ user: { id: userId } } as AuthDto, assetIds);
       for (const { id, assetId } of refs) {
         if (assetId && hiddenAssetIds.has(assetId)) {
           hidden.add(id);

@@ -2013,6 +2013,24 @@ describe(AssetService.name, () => {
         await expect(state()).resolves.toMatchObject({ hidden: { deleted: true } });
       });
 
+      it("a notification about an unrelated user's hidden asset is not hidden from its recipient (round 4)", async () => {
+        const { ctx } = setup();
+        const { sut } = albumNotifier();
+        const { user: owner, hidden } = await newLibrary(ctx);
+        const { user: recipient } = await ctx.newUser();
+        const { user: partner } = await ctx.newUser();
+        await ctx.newPartner({ sharedById: owner.id, sharedWithId: partner.id });
+        for (const userId of [recipient.id, partner.id]) {
+          await ctx
+            .get(NotificationRepository)
+            .create({ userId, title: 'about an asset', data: JSON.stringify({ assetId: hidden.id }) });
+        }
+
+        // unrelated: nothing to judge; a partner: the owner's lock hides it
+        await expect(sut.search(factory.auth({ user: recipient }), {})).resolves.toHaveLength(1);
+        await expect(sut.search(factory.auth({ user: partner }), {})).resolves.toHaveLength(0);
+      });
+
       it('a user without locks gets album updates and notifications unchanged', async () => {
         const { ctx } = setup();
         const { sut, ctx: notifyCtx } = albumNotifier();
