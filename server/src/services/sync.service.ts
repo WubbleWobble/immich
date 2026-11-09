@@ -18,8 +18,8 @@ import { SyncQueryOptions } from 'src/repositories/sync.repository.js';
 import { SessionSyncCheckpointTable } from 'src/schema/tables/sync-checkpoint.table.js';
 import { BaseService } from 'src/services/base.service.js';
 import { hexOrBufferToBase64 } from 'src/utils/bytes.js';
-import { ClientDisconnectedError, waitForDrain } from 'src/utils/response.js';
 import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
+import { ClientDisconnectedError, waitForDrain } from 'src/utils/response.js';
 import { SerializeOptions, fromAck, serialize, toAck } from 'src/utils/sync.js';
 
 type CheckpointMap = Partial<Record<SyncEntityType, SyncAck>>;
