@@ -668,6 +668,32 @@ describe(SearchService.name, () => {
         await expect(search(sut, auth, { isFavorite: { eq: true } })).resolves.toEqual(expected([asset.id]));
       });
 
+      it('R21: an album grant pins a cross-owner asset its owner hid; the partner arm does not', async () => {
+        const { sut, ctx } = setup();
+        const { user: albumOwner } = await ctx.newUser();
+        const { user: viewer } = await ctx.newUser();
+        const { user: assetOwner } = await ctx.newUser();
+        await ctx.newPartner({ sharedById: assetOwner.id, sharedWithId: viewer.id });
+
+        // C's asset X sits in A's album L, which A shares with B; C (B's partner) is not a member of L
+        const asset = await newSearchAsset(ctx, { ownerId: assetOwner.id, isFavorite: true });
+        const { album: shared } = await ctx.newAlbum({ ownerId: albumOwner.id }, [asset.id]);
+        await ctx.newAlbumUser({ albumId: shared.id, userId: viewer.id, role: AlbumUserRole.Viewer });
+        const { album: ownersAlbum } = await ctx.newAlbum({ ownerId: assetOwner.id }, [asset.id]);
+
+        const auth = factory.auth({ user: { id: viewer.id } });
+        await expect(search(sut, auth, { isFavorite: { eq: true } })).resolves.toEqual(expected([asset.id]));
+
+        // C locks the album of theirs holding X
+        await lockAlbum(ctx, assetOwner.id, ownersAlbum.id);
+
+        // the album grant follows the viewer's own hidden albums only (C's lock does not withdraw A's share)
+        await expect(search(sut, auth, { albumIds: { any: [shared.id] } })).resolves.toEqual(expected([asset.id]));
+        // without L, X is reachable only through the partner arm, which follows C's locks
+        await expect(search(sut, auth, {})).resolves.toEqual(expected([]));
+        await expect(search(sut, auth, { isFavorite: { eq: true } })).resolves.toEqual(expected([]));
+      });
+
       it('shared link album search respects locks', async () => {
         const { sut, ctx } = setup();
         const { user: owner } = await ctx.newUser();
