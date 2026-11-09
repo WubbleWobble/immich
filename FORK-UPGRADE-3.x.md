@@ -88,6 +88,8 @@ commits.
 | Album shared link to a smart album | `allowUpload` defaults to `false`; explicit `true` returns 400 `Smart albums do not accept uploads` |
 | Stack create (mobile auto-stack) | May return 400 `Asset stack not found` when the target stack holds a hidden member |
 | Per-asset `visibility=locked` | Retired and rejected; enforced by a DB CHECK constraint |
+| Upload duplicate of an asset hidden for a non-elevated session (R49) | `x-immich-checksum` pre-check falls through; `bulk-upload-check` answers `accept`; the upload answers `201 { id: <fresh uuid>, status: created }` and stores nothing. Elevated sessions get the real `duplicate` + id |
+| Asset bytes (thumbnail, preview, original, video playback, asset files, HLS segments) (R50) | `Cache-Control: private, no-cache, no-transform` (was `private, max-age=86400, ... stale-while-revalidate=2592000, stale-if-error=2592000`) |
 
 ## Privacy model limits
 
@@ -107,8 +109,30 @@ State these plainly to users.
   delete it. While you are not elevated, such a link is neither listed nor
   deletable, and it keeps working for visitors. Links hidden only by a
   partner's lock can be revoked in any session.
-- **Residual lock-state oracle (R37):** an uploader on an upload-enabled shared
-  link who already holds the exact file bytes can infer that the owner's matching photo is hidden.
+- **Residual lock-state oracle (R37, R49):** someone who already holds the
+  exact file bytes can infer that the owner's matching photo is hidden. This
+  applies to an uploader on an upload-enabled shared link (R37) and to an
+  ordinary, non-elevated session of the owner (R49). The upload answers like
+  a fresh upload, but the phantom id leads nowhere: follow-up actions on it
+  (add to album, stack) fail, and the "uploaded" photo never appears. There
+  is no websocket `on_upload_success`, and quota usage does not grow. The
+  owner's phone backup is not affected. It decides what to upload from its
+  synced asset table, and the owner's own sync is unfiltered, so hidden
+  photos still count as backed up.
+- **Media is revalidated on every view (R50).** Asset bytes are sent as
+  `private, no-cache`. The browser keeps them but asks the server each time,
+  and the server runs the access check before answering. A photo hidden
+  since it was cached therefore gets the access error, never `304` or the
+  cached bytes. The service worker shares only in-flight requests. Every
+  tab purges them on logout, session loss or lock, end of elevation,
+  lock/unlock, reveal changes and move-to-locked. Cost: scrolling the
+  timeline makes one `304` round trip per thumbnail instead of serving the
+  thumbnail from cache for 24 hours.
+  Two gaps remain. First, media that browsers cached **before this deploy**
+  keeps its old lifetime: fresh for up to 24 hours, then stale-while-
+  revalidate. Clearing the site's cached data removes it at once. Second,
+  within one open page, the browser's in-memory image list can re-show an
+  image it already decoded. Reloading the page clears that list.
 
 ## Deploy checklist
 
