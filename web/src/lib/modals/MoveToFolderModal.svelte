@@ -9,6 +9,7 @@
   } from '@immich/sdk';
   import { Button, Icon, ListButton, LoadingSpinner, Modal, ModalBody, Text, toastManager } from '@immich/ui';
   import { mdiFolderOutline, mdiHomeOutline } from '@mdi/js';
+  import { groupBy } from 'lodash-es';
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
 
@@ -47,24 +48,19 @@
   // Build a flat ordered list with depth for display (sorted by name within each level).
   type Row = { folder: AlbumContainerResponseDto; depth: number };
   const rows = $derived.by(() => {
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity
-    const byParent = new Map<string | null, AlbumContainerResponseDto[]>();
-    for (const c of containers) {
-      const list = byParent.get(c.parentId) ?? [];
-      list.push(c);
-      byParent.set(c.parentId, list);
-    }
-    for (const [, list] of byParent) {
+    // Folder ids are UUIDs, so '' safely stands for the root (parentId null).
+    const byParent = groupBy(containers, (container) => container.parentId ?? '');
+    for (const list of Object.values(byParent)) {
       list.sort((a, b) => a.name.localeCompare(b.name));
     }
     const out: Row[] = [];
-    const walk = (parentId: string | null, depth: number) => {
-      for (const folder of byParent.get(parentId) ?? []) {
+    const walk = (parentId: string, depth: number) => {
+      for (const folder of byParent[parentId] ?? []) {
         out.push({ folder, depth });
         walk(folder.id, depth + 1);
       }
     };
-    walk(null, 0);
+    walk('', 0);
     return out;
   });
 
