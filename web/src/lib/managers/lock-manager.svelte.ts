@@ -13,6 +13,7 @@ import {
 } from '@immich/sdk';
 import { SvelteSet } from 'svelte/reactivity';
 import { eventManager } from '$lib/managers/event-manager.svelte';
+import { userInteraction } from '$lib/stores/user.svelte';
 
 const REVEALED_ALBUMS_HEADER = 'x-immich-revealed-albums';
 const REVEALED_CONTAINERS_HEADER = 'x-immich-revealed-containers';
@@ -91,24 +92,28 @@ class LockManager {
     this.lockedAlbumIds.add(id);
     // Auto-reveal what was just locked so the user does not lose the page they are on.
     this.revealAlbum(id, true);
+    this.invalidateRecentAlbums();
   }
 
   async unlockAlbum(id: string) {
     await unlockAlbum({ id });
     this.lockedAlbumIds.delete(id);
     this.revealAlbum(id, false);
+    this.invalidateRecentAlbums();
   }
 
   async lockContainer(id: string) {
     await lockAlbumContainer({ id });
     this.lockedContainerIds.add(id);
     this.revealContainer(id, true);
+    this.invalidateRecentAlbums();
   }
 
   async unlockContainer(id: string) {
     await unlockAlbumContainer({ id });
     this.lockedContainerIds.delete(id);
     this.revealContainer(id, false);
+    this.invalidateRecentAlbums();
   }
 
   /**
@@ -145,6 +150,7 @@ class LockManager {
     this.lockedAlbumIds.clear();
     this.lockedContainerIds.clear();
     this.clearReveals();
+    this.invalidateRecentAlbums();
   }
 
   /** Drop server-side elevation and every client-side reveal. */
@@ -154,6 +160,12 @@ class LockManager {
     this.lockedAlbumIds.clear();
     this.lockedContainerIds.clear();
     this.clearReveals();
+    this.invalidateRecentAlbums();
+  }
+
+  /** The sidebar's recent-albums cache may hold an album that just became hidden (or visible): refetch it. */
+  private invalidateRecentAlbums() {
+    userInteraction.recentAlbums = undefined;
   }
 
   private clearReveals() {

@@ -44,8 +44,16 @@
     entries = userInteraction.recentAlbums.map((a): AlbumEntry => ({ kind: 'album', data: a }));
   }
 
+  // Refresh on mount (the cache holds albums only, so folders need a fetch) and again whenever the cache is invalidated
+  // (album create/update/delete, lock changes, end of elevation, logout) - upstream's refresh dependency.
+  let isFirstRun = true;
   $effect(() => {
-    void refresh();
+    // read the cache first so it is always tracked, even on the first run
+    const isCached = !!userInteraction.recentAlbums;
+    if (isFirstRun || !isCached) {
+      isFirstRun = false;
+      void refresh();
+    }
   });
 </script>
 
