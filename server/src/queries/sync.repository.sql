@@ -859,6 +859,14 @@ where
 order by
   "partner"."updateId" asc
 
+-- SyncRepository.partner.getSharedByIds
+select
+  "sharedById"
+from
+  "partner"
+where
+  "sharedWithId" = $1
+
 -- SyncRepository.partnerAsset.getBackfill
 select
   "asset"."id",
