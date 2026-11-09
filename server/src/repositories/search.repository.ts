@@ -11,9 +11,9 @@ import { probes } from 'src/repositories/database.repository.js';
 import { DB } from 'src/schema/index.js';
 import { AssetExifTable } from 'src/schema/tables/asset-exif.table.js';
 import {
+  OwnerLockVisibility,
   anyUuid,
   joinDeduplicationPlugin,
-  OwnerLockVisibility,
   searchAssetBuilder,
   searchAssetBuilderLegacy,
   searchMetadataV3Examples,

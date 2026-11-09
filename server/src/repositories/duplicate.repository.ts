@@ -10,10 +10,10 @@ import { probes } from 'src/repositories/database.repository.js';
 import { DB } from 'src/schema/index.js';
 import { AssetExifTable } from 'src/schema/tables/asset-exif.table.js';
 import {
+  OwnerLockVisibility,
   anyUuid,
   asUuid,
   joinDeduplicationPlugin,
-  OwnerLockVisibility,
   withDefaultVisibility,
   withLockVisibility,
 } from 'src/utils/database.js';

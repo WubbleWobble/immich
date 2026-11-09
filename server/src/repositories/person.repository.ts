@@ -20,7 +20,16 @@ import { AssetFaceTable } from 'src/schema/tables/asset-face.table.js';
 import { FaceSearchTable } from 'src/schema/tables/face-search.table.js';
 import { PersonGroupTable } from 'src/schema/tables/person-group.table.js';
 import { PersonTable } from 'src/schema/tables/person.table.js';
-import { anyUuid, dummy, inSharedAlbum, removeUndefinedKeys, withFilePath } from 'src/utils/database.js';
+import {
+  type OwnerLockVisibility,
+  anyUuid,
+  dummy,
+  inSharedAlbum,
+  joinDeduplicationPlugin,
+  removeUndefinedKeys,
+  withFilePath,
+  withLockVisibility,
+} from 'src/utils/database.js';
 import { isLeapDayObserved } from 'src/utils/date.js';
 import { type PaginationOptions, paginationHelper } from 'src/utils/pagination.js';
 
@@ -647,22 +656,57 @@ export class PersonRepository {
       .executeTakeFirst();
   }
 
-  // FORK-PORT: the fork's getByName(userId, personName, { withHidden }, lockVisibility) excluded people whose every
-  // face is on a locked-away asset (EXISTS asset_face visible+not deleted -> EXISTS timeline asset passing
-  // withLockVisibility, with joinDeduplicationPlugin). Upstream rewrote getByName (withSharing, unaccentWithThreshold,
-  // no similarity_threshold CTE, faces now keyed by personGroupId); re-apply the lock EXISTS on personGroupId.
+  // FORK-PORT: the fork's lock EXISTS is re-applied on personGroupId (Task 2, to keep searchPerson fail-closed): a
+  // person whose every face is on an asset hidden by the passed lock visibility does not surface. The entries are the
+  // caller's (SearchService passes only the viewer's own locks); faces on partner/shared assets now included by
+  // upstream are not checked against THEIR owners' locks yet (D10, Task 4).
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.STRING, { withHidden: true }] })
-  getByName(userId: string, personName: string, { withHidden }: PersonNameSearchOptions) {
-    return this.db
-      .selectFrom('person')
-      .selectAll('person')
-      .select(withSharing(userId))
-      .where('person.ownerId', '=', userId)
-      .where(sql<SqlBool>`f_unaccent("person"."name") %> ${unaccentWithThreshold(personName)}`)
-      .orderBy(sql`f_unaccent("person"."name") <->>> f_unaccent(${personName})`)
-      .limit(100)
-      .$if(!withHidden, (qb) => qb.where('person.isHidden', '=', false))
-      .execute();
+  getByName(
+    userId: string,
+    personName: string,
+    { withHidden }: PersonNameSearchOptions,
+    lockVisibility?: OwnerLockVisibility[],
+  ) {
+    return (
+      this.db
+        .selectFrom('person')
+        .selectAll('person')
+        .select(withSharing(userId))
+        .where('person.ownerId', '=', userId)
+        .where(sql<SqlBool>`f_unaccent("person"."name") %> ${unaccentWithThreshold(personName)}`)
+        .orderBy(sql`f_unaccent("person"."name") <->>> f_unaccent(${personName})`)
+        .limit(100)
+        .$if(!withHidden, (qb) => qb.where('person.isHidden', '=', false))
+        // A person whose every face is on a locked-away asset must not surface in search.
+        .$if(!!lockVisibility?.length, (qb) =>
+          qb
+            .where((eb) =>
+              eb.exists((eb) =>
+                eb
+                  .selectFrom('asset_face')
+                  .whereRef('asset_face.personGroupId', '=', 'person.personGroupId')
+                  .where('asset_face.deletedAt', 'is', null)
+                  .where('asset_face.isVisible', '=', true)
+                  .where((eb) =>
+                    eb.exists((eb) =>
+                      withLockVisibility(
+                        eb
+                          .selectFrom('asset')
+                          .whereRef('asset.id', '=', 'asset_face.assetId')
+                          .where('asset.visibility', '=', sql.lit(AssetVisibility.Timeline))
+                          .where('asset.deletedAt', 'is', null),
+                        this.db,
+                        lockVisibility!,
+                      ),
+                    ),
+                  ),
+              ),
+            )
+            // Embedded lock-visibility subqueries rely on the root query for join deduplication.
+            .withPlugin(joinDeduplicationPlugin),
+        )
+        .execute()
+    );
   }
 
   @GenerateSql({ params: [DummyValue.UUID, { withHidden: true }] })

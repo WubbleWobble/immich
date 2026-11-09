@@ -1,12 +1,12 @@
 import { Kysely } from 'kysely';
-import { AlbumKind } from 'src/enum';
-import { AlbumRepository } from 'src/repositories/album.repository';
-import { LoggingRepository } from 'src/repositories/logging.repository';
-import { DB } from 'src/schema';
-import { BaseService } from 'src/services/base.service';
-import { newMediumService } from 'test/medium.factory';
-import { newUuid } from 'test/small.factory';
-import { getKyselyDB } from 'test/utils';
+import { AlbumKind } from 'src/enum.js';
+import { AlbumRepository } from 'src/repositories/album.repository.js';
+import { LoggingRepository } from 'src/repositories/logging.repository.js';
+import { DB } from 'src/schema/index.js';
+import { BaseService } from 'src/services/base.service.js';
+import { newMediumService } from 'test/medium.factory.js';
+import { newUuid } from 'test/small.factory.js';
+import { getKyselyDB } from 'test/utils.js';
 
 let defaultDatabase: Kysely<DB>;
 

@@ -3,7 +3,13 @@ import type { Kysely } from 'kysely';
 import { DummyValue, GenerateSql } from 'src/decorators.js';
 import { AssetVisibility } from 'src/enum.js';
 import { DB } from 'src/schema/index.js';
-import { asUuid, joinDeduplicationPlugin, OwnerLockVisibility, withExif, withLockVisibility } from 'src/utils/database.js';
+import {
+  OwnerLockVisibility,
+  asUuid,
+  joinDeduplicationPlugin,
+  withExif,
+  withLockVisibility,
+} from 'src/utils/database.js';
 
 export class ViewRepository {
   constructor(@InjectKysely() private db: Kysely<DB>) {}

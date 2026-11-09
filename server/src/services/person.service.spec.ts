@@ -1,4 +1,5 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
+import type { AuthDto } from 'src/dtos/auth.dto.js';
 import { BulkIdErrorReason } from 'src/dtos/asset-ids.response.dto.js';
 import { PeopleUsersUpsertType, PersonUserRole, mapFaces, mapPerson } from 'src/dtos/person.dto.js';
 import { AssetFileType, CacheControl, JobName, JobStatus, SourceType, SystemMetadataKey } from 'src/enum.js';
@@ -28,6 +29,16 @@ import { ServiceMocks, makeStream, newTestService } from 'test/utils.js';
 
 const PERSON_READ_ROLES = [PersonUserRole.Read, PersonUserRole.Write, PersonUserRole.Admin];
 const PERSON_WRITE_ROLES = [PersonUserRole.Write, PersonUserRole.Admin];
+
+const setupOwnThumbnail = (mocks: ServiceMocks, auth: AuthDto, faceAssetId: string | null) => {
+  const person = PersonFactory.create({ ownerId: auth.user.id, thumbnailPath: '/path/to/thumbnail.jpg', faceAssetId });
+  mocks.access.person.checkAccess.mockResolvedValue(
+    new Set([{ personGroupId: person.personGroupId, ownerId: auth.user.id }]),
+  );
+  mocks.person.getForThumbnail.mockResolvedValue({ thumbnailPath: person.thumbnailPath, sharedThumbnailPath: null });
+  mocks.person.getByGroupId.mockResolvedValue(person);
+  return person;
+};
 
 describe(PersonService.name, () => {
   let sut: PersonService;
@@ -168,42 +179,49 @@ describe(PersonService.name, () => {
     it('should block the face crop when its source asset is locked away (non-elevated session)', async () => {
       const auth = AuthFactory.create();
       const faceId = newUuid();
-      const assetId = newUuid();
-      const person = PersonFactory.create({ thumbnailPath: '/path/to/thumbnail.jpg', faceAssetId: faceId });
+      const asset = AssetFactory.create({ ownerId: auth.user.id });
+      const person = setupOwnThumbnail(mocks, auth, faceId);
 
-      mocks.person.getById.mockResolvedValue(person);
-      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
       // faceAssetId points at asset_face; the service must resolve it to the face's asset.
-      mocks.person.getFaceAssetId.mockResolvedValue({ assetId });
+      mocks.person.getFaceAssetId.mockResolvedValue({ assetId: asset.id });
+      mocks.asset.getById.mockResolvedValue(getForAsset(asset));
       mocks.access.asset.excludeHiddenForLocker.mockResolvedValue(new Set());
 
-      await expect(sut.getThumbnail(auth, person.id)).rejects.toBeInstanceOf(NotFoundException);
+      await expect(sut.getThumbnail(auth, person.personGroupId)).rejects.toBeInstanceOf(NotFoundException);
       expect(mocks.storage.createReadStream).not.toHaveBeenCalled();
       expect(mocks.person.getFaceAssetId).toHaveBeenCalledWith(faceId);
-      expect(mocks.access.asset.excludeHiddenForLocker).toHaveBeenCalledWith(auth.user.id, new Set([assetId]));
+      expect(mocks.access.asset.excludeHiddenForLocker).toHaveBeenCalledWith(auth.user.id, new Set([asset.id]));
+    });
+
+    it('should block the face crop when its source asset belongs to another user (until Task 4 provenance)', async () => {
+      const auth = AuthFactory.create();
+      const asset = AssetFactory.create();
+      const person = setupOwnThumbnail(mocks, auth, newUuid());
+
+      mocks.person.getFaceAssetId.mockResolvedValue({ assetId: asset.id });
+      mocks.asset.getById.mockResolvedValue(getForAsset(asset));
+      mocks.access.asset.excludeHiddenForLocker.mockResolvedValue(new Set([asset.id]));
+
+      await expect(sut.getThumbnail(auth, person.personGroupId)).rejects.toBeInstanceOf(NotFoundException);
     });
 
     it('should serve the face crop when the resolved asset is visible', async () => {
       const auth = AuthFactory.create();
-      const assetId = newUuid();
-      const person = PersonFactory.create({ thumbnailPath: '/path/to/thumbnail.jpg', faceAssetId: newUuid() });
+      const asset = AssetFactory.create({ ownerId: auth.user.id });
+      const person = setupOwnThumbnail(mocks, auth, newUuid());
 
-      mocks.person.getById.mockResolvedValue(person);
-      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
-      mocks.person.getFaceAssetId.mockResolvedValue({ assetId });
-      mocks.access.asset.excludeHiddenForLocker.mockResolvedValue(new Set([assetId]));
+      mocks.person.getFaceAssetId.mockResolvedValue({ assetId: asset.id });
+      mocks.asset.getById.mockResolvedValue(getForAsset(asset));
+      mocks.access.asset.excludeHiddenForLocker.mockResolvedValue(new Set([asset.id]));
 
-      await expect(sut.getThumbnail(auth, person.id)).resolves.toBeDefined();
+      await expect(sut.getThumbnail(auth, person.personGroupId)).resolves.toBeDefined();
     });
 
     it('should serve the face crop in an elevated session without a visibility check', async () => {
       const auth = AuthFactory.from().session({ hasElevatedPermission: true }).build();
-      const person = PersonFactory.create({ thumbnailPath: '/path/to/thumbnail.jpg', faceAssetId: newUuid() });
+      const person = setupOwnThumbnail(mocks, auth, newUuid());
 
-      mocks.person.getById.mockResolvedValue(person);
-      mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set([person.id]));
-
-      await expect(sut.getThumbnail(auth, person.id)).resolves.toBeDefined();
+      await expect(sut.getThumbnail(auth, person.personGroupId)).resolves.toBeDefined();
       expect(mocks.access.asset.excludeHiddenForLocker).not.toHaveBeenCalled();
     });
 
@@ -256,6 +274,7 @@ describe(PersonService.name, () => {
         thumbnailPath: person.thumbnailPath,
         sharedThumbnailPath: null,
       });
+      mocks.person.getByGroupId.mockResolvedValue(person);
       mocks.access.person.checkAccess.mockResolvedValue(new Set(ids));
       await expect(sut.getThumbnail(auth, person.personGroupId)).resolves.toEqual(
         new ImmichFileResponse({
@@ -860,15 +879,17 @@ describe(PersonService.name, () => {
     it('prunes the deleted person ids from referencing smart album filters', async () => {
       const person = PersonFactory.create();
       mocks.person.getAllWithoutFaces.mockResolvedValue([person]);
+      mocks.person.delete.mockResolvedValue([person]);
 
       await sut.handlePersonCleanup();
 
-      expect(mocks.album.prunePersonIdsFromSmartAlbums).toHaveBeenCalledWith([person.id]);
+      expect(mocks.album.prunePersonIdsFromSmartAlbums).toHaveBeenCalledWith([person.personGroupId]);
     });
 
     it('does not propagate prune failures', async () => {
       const person = PersonFactory.create();
       mocks.person.getAllWithoutFaces.mockResolvedValue([person]);
+      mocks.person.delete.mockResolvedValue([person]);
       mocks.album.prunePersonIdsFromSmartAlbums.mockRejectedValueOnce(new Error('boom'));
 
       await expect(sut.handlePersonCleanup()).resolves.toBe(JobStatus.Success);

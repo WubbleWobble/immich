@@ -1,10 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { Kysely, sql } from 'kysely';
 import { InjectKysely } from 'nestjs-kysely';
-import { DummyValue, GenerateSql } from 'src/decorators';
-import { AlbumKind, AlbumUserRole } from 'src/enum';
-import { DB } from 'src/schema';
-import { anyUuid } from 'src/utils/database';
+import { DummyValue, GenerateSql } from 'src/decorators.js';
+import { AlbumKind, AlbumUserRole } from 'src/enum.js';
+import { DB } from 'src/schema/index.js';
+import { anyUuid } from 'src/utils/database.js';
 
 @Injectable()
 export class AlbumContainerRepository {

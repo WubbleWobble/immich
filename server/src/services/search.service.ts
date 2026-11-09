@@ -32,7 +32,7 @@ import { OwnerLockVisibility } from 'src/utils/database.js';
 import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
 import { isSmartSearchEnabled } from 'src/utils/misc.js';
 import { decodeSearchCursor, encodeSearchCursor } from 'src/utils/search-cursor.js';
-import { applyLockedVisibilityPolicy, collectFilterIds } from 'src/utils/search-filter.js';
+import { collectFilterIds } from 'src/utils/search-filter.js';
 
 @Injectable()
 export class SearchService extends BaseService {
@@ -270,8 +270,9 @@ export class SearchService extends BaseService {
 
   // FORK-PORT: lock-audit — new upstream v3 search paths (8b3d6b320): searchMetadataV3/StatisticsV3/RandomV3/SmartV3
   // build AssetSearchScope via resolveSearchScopeV3 with no lockVisibility (fork's getLockVisibility(auth, userIds) is
-  // not threaded), applyLockedVisibilityPolicy/lockedOwnerId rely on the retired AssetVisibility.Locked (D4), and
-  // album ids in the filter are not rejected when smart (D6). Re-apply grant-aware lock enforcement per branch (D5, Task 5).
+  // not threaded), lockedOwnerId relies on the retired AssetVisibility.Locked (D4; Task 2 deleted
+  // applyLockedVisibilityPolicy and SearchFilterSchema now rejects `locked`), and album ids in the filter are not
+  // rejected when smart (D6). Re-apply grant-aware lock enforcement per branch (D5, Task 5).
   private async searchMetadataV3(auth: AuthDto, dto: MetadataSearchDto): Promise<SearchResponseDto> {
     const { filter, scope } = await this.resolveSearchScopeV3(auth, dto);
 
@@ -337,8 +338,8 @@ export class SearchService extends BaseService {
     auth: AuthDto,
     dto: { filter?: SearchFilter },
   ): Promise<{ filter: SearchFilter; scope: AssetSearchScope }> {
+    // `locked` visibility is rejected by SearchFilterSchema validation (D4), so no locked-visibility policy applies.
     const filter = dto.filter ?? {};
-    const effectiveFilter = applyLockedVisibilityPolicy(auth, filter);
 
     const fullyConfined = isFullyAlbumConfined(filter);
     // a shared link visitor does not have a universe, so there every branch must be confined
@@ -353,7 +354,7 @@ export class SearchService extends BaseService {
       albumIds.length > 0 ? this.requireAccess({ auth, ids: albumIds, permission: Permission.AlbumRead }) : undefined,
     ]);
 
-    return { filter: effectiveFilter, scope: { userIds, lockedOwnerId: auth.user.id, viewingUserId: auth.user.id } };
+    return { filter, scope: { userIds, lockedOwnerId: auth.user.id, viewingUserId: auth.user.id } };
   }
 
   private async resolveEmbedding(

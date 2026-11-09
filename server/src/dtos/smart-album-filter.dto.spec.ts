@@ -1,10 +1,10 @@
 import {
+  SmartAlbumFilterSchema,
   isEmptySmartAlbumFilter,
   sanitizeSmartAlbumFilter,
-  SmartAlbumFilterSchema,
   toEvaluableSmartAlbumFilter,
-} from 'src/dtos/smart-album-filter.dto';
-import { AssetVisibility } from 'src/enum';
+} from 'src/dtos/smart-album-filter.dto.js';
+import { AssetVisibility } from 'src/enum.js';
 
 describe('SmartAlbumFilterSchema', () => {
   it('accepts timeline and archive visibility', () => {

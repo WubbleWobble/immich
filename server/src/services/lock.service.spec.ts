@@ -1,8 +1,8 @@
 import { BadRequestException, UnauthorizedException } from '@nestjs/common';
-import { LockService } from 'src/services/lock.service';
-import { AuthFactory } from 'test/factories/auth.factory';
-import { newUuid } from 'test/small.factory';
-import { newTestService, ServiceMocks } from 'test/utils';
+import { LockService } from 'src/services/lock.service.js';
+import { AuthFactory } from 'test/factories/auth.factory.js';
+import { newUuid } from 'test/small.factory.js';
+import { ServiceMocks, newTestService } from 'test/utils.js';
 
 const elevated = () => AuthFactory.from().session({ hasElevatedPermission: true }).build();
 const notElevated = () => AuthFactory.from().session({ hasElevatedPermission: false }).build();

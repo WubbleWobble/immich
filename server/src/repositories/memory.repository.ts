@@ -17,7 +17,7 @@ import { AssetFileType, AssetOrderWithRandom, AssetVisibility } from 'src/enum.j
 import { type YearMonthDay } from 'src/repositories/asset.repository.js';
 import { DB } from 'src/schema/index.js';
 import { MemoryTable } from 'src/schema/tables/memory.table.js';
-import { joinDeduplicationPlugin, OwnerLockVisibility, withLockVisibility } from 'src/utils/database.js';
+import { OwnerLockVisibility, joinDeduplicationPlugin, withLockVisibility } from 'src/utils/database.js';
 import { asLocalTime } from 'src/utils/date.js';
 
 const asMakeDate = (eb: ExpressionBuilder<DB, 'asset'>, { year, month, day }: YearMonthDay) =>
@@ -96,53 +96,55 @@ export class MemoryRepository implements IBulkAsset {
     { name: 'not upcoming filter', params: [DummyValue.UUID, { isUpcoming: false }] },
   )
   search(ownerId: string, dto: MemorySearchDto, lockVisibility?: OwnerLockVisibility[]) {
-    return this.searchBuilder(ownerId, dto)
-      .select((eb) =>
-        jsonArrayFrom(
-          eb
-            .selectFrom('asset')
-            .selectAll('asset')
-            .innerJoin('memory_asset', 'asset.id', 'memory_asset.assetId')
-            .whereRef('memory_asset.memoriesId', '=', 'memory.id')
-            .where('asset.visibility', '=', sql.lit(AssetVisibility.Timeline))
-            .where('asset.deletedAt', 'is', null)
-            .$if(!!lockVisibility?.length, (qb) => withLockVisibility(qb, this.db, lockVisibility!))
-            .where((eb) =>
-              eb.not(
-                eb.exists(
-                  eb
-                    .selectFrom('asset_face')
-                    .innerJoin('person', (join) =>
-                      join
-                        .onRef('person.personGroupId', '=', 'asset_face.personGroupId')
-                        .onRef('person.ownerId', '=', 'asset.ownerId'),
-                    )
-                    .select((eb) => eb.val(1).as('one'))
-                    .whereRef('asset_face.assetId', '=', 'asset.id')
-                    .where('person.isHidden', '=', true),
+    return (
+      this.searchBuilder(ownerId, dto)
+        .select((eb) =>
+          jsonArrayFrom(
+            eb
+              .selectFrom('asset')
+              .selectAll('asset')
+              .innerJoin('memory_asset', 'asset.id', 'memory_asset.assetId')
+              .whereRef('memory_asset.memoriesId', '=', 'memory.id')
+              .where('asset.visibility', '=', sql.lit(AssetVisibility.Timeline))
+              .where('asset.deletedAt', 'is', null)
+              .$if(!!lockVisibility?.length, (qb) => withLockVisibility(qb, this.db, lockVisibility!))
+              .where((eb) =>
+                eb.not(
+                  eb.exists(
+                    eb
+                      .selectFrom('asset_face')
+                      .innerJoin('person', (join) =>
+                        join
+                          .onRef('person.personGroupId', '=', 'asset_face.personGroupId')
+                          .onRef('person.ownerId', '=', 'asset.ownerId'),
+                      )
+                      .select((eb) => eb.val(1).as('one'))
+                      .whereRef('asset_face.assetId', '=', 'asset.id')
+                      .where('person.isHidden', '=', true),
+                  ),
                 ),
-              ),
-            )
-            .orderBy('asset.fileCreatedAt', 'asc'),
-        ).as('assets'),
-      )
-      .selectAll('memory')
-      .$call((qb) => {
-        if (dto.order === AssetOrderWithRandom.Random) {
-          return qb.orderBy(sql`RANDOM()`);
-        }
+              )
+              .orderBy('asset.fileCreatedAt', 'asc'),
+          ).as('assets'),
+        )
+        .selectAll('memory')
+        .$call((qb) => {
+          if (dto.order === AssetOrderWithRandom.Random) {
+            return qb.orderBy(sql`RANDOM()`);
+          }
 
-        const direction = (dto.order?.toLowerCase() || 'desc') as OrderByDirection;
-        return qb
-          .orderBy('showAt', (ob) => (direction === 'asc' ? ob.asc() : ob.desc()).nullsLast())
-          .orderBy('memoryAt', direction);
-      })
-      .$if(dto.id !== undefined, (qb) => qb.where('id', '=', dto.id!))
-      .$if(dto.size !== undefined, (qb) => qb.limit(dto.size!))
-      .$if(dto.page !== undefined && dto.size !== undefined, (qb) => qb.offset((dto.page! - 1) * dto.size!))
-      // Embedded lock-visibility subqueries rely on the root query for join deduplication.
-      .$if(!!lockVisibility?.length, (qb) => qb.withPlugin(joinDeduplicationPlugin))
-      .execute();
+          const direction = (dto.order?.toLowerCase() || 'desc') as OrderByDirection;
+          return qb
+            .orderBy('showAt', (ob) => (direction === 'asc' ? ob.asc() : ob.desc()).nullsLast())
+            .orderBy('memoryAt', direction);
+        })
+        .$if(dto.id !== undefined, (qb) => qb.where('id', '=', dto.id!))
+        .$if(dto.size !== undefined, (qb) => qb.limit(dto.size!))
+        .$if(dto.page !== undefined && dto.size !== undefined, (qb) => qb.offset((dto.page! - 1) * dto.size!))
+        // Embedded lock-visibility subqueries rely on the root query for join deduplication.
+        .$if(!!lockVisibility?.length, (qb) => qb.withPlugin(joinDeduplicationPlugin))
+        .execute()
+    );
   }
 
   // FORK-PORT: lock-audit — new upstream birthday-memory queries (d6d094738): personAssets /

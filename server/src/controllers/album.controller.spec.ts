@@ -1,7 +1,7 @@
-import { LockService } from 'src/services/lock.service.js';
 import request from 'supertest';
 import { AlbumController } from 'src/controllers/album.controller.js';
 import { AlbumService } from 'src/services/album.service.js';
+import { LockService } from 'src/services/lock.service.js';
 import { factory } from 'test/small.factory.js';
 import { ControllerContext, controllerSetup, mockBaseService } from 'test/utils.js';
 

@@ -15,6 +15,7 @@ import {
   AssetOrder,
   AssetOrderSchema,
   AssetTypeSchema,
+  AssetVisibility,
   AssetVisibilitySchema,
   SearchOrderField,
   SearchOrderFieldSchema,
@@ -222,16 +223,25 @@ const DateFilterNullableSchema = nonEmptyPartial({
 
 const BoolFilterSchema = z.object({ eq: z.boolean() }).meta({ id: 'BoolFilter' });
 
-const enumFilterSchema = <T extends z.core.util.EnumLike>(values: z.ZodEnum<T>, id: string) =>
+const enumFilterShape = <T extends z.core.util.EnumLike>(values: z.ZodEnum<T>) =>
   nonEmptyPartial({
     eq: values,
     ne: values,
     in: z.array(values).min(1),
     notIn: z.array(values).min(1),
-  }).meta({ id });
+  });
+
+const enumFilterSchema = <T extends z.core.util.EnumLike>(values: z.ZodEnum<T>, id: string) =>
+  enumFilterShape(values).meta({ id });
 
 const EnumFilterAssetTypeSchema = enumFilterSchema(AssetTypeSchema, 'EnumFilterAssetType');
-const EnumFilterAssetVisibilitySchema = enumFilterSchema(AssetVisibilitySchema, 'EnumFilterAssetVisibility');
+// The fork retired per-asset `locked` visibility (D4): locked content is album/folder based, so a structured filter
+// that names `locked` with any operator is rejected. The schema is shared by root conditions and `or` branches.
+const EnumFilterAssetVisibilitySchema = enumFilterShape(AssetVisibilitySchema)
+  .refine(({ eq, ne, in: anyOf = [], notIn = [] }) => ![eq, ne, ...anyOf, ...notIn].includes(AssetVisibility.Locked), {
+    message: `The '${AssetVisibility.Locked}' visibility is not supported`,
+  })
+  .meta({ id: 'EnumFilterAssetVisibility' });
 
 const StringSimilarityFilterSchema = z
   .object({

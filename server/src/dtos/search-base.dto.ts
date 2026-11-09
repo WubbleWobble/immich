@@ -2,10 +2,10 @@
 // BaseSearchWithResultsSchema, RandomSearchSchema and MetadataSearchSchema in place in src/dtos/search.dto.ts
 // (deprecated flat fields, size defaults, structured filter/orderBy/cursor). The merge took upstream's definitions
 // there; smart-album-filter.dto.ts still derives SmartAlbumFilterSchema from this stale MetadataSearchSchema.
-import { HistoryBuilder } from 'src/decorators';
-import { AssetOrder, AssetOrderSchema, AssetTypeSchema, AssetVisibilitySchema } from 'src/enum';
-import { isoDatetimeToDate } from 'src/validation';
 import z from 'zod';
+import { HistoryBuilder } from 'src/decorators.js';
+import { AssetOrder, AssetOrderSchema, AssetTypeSchema, AssetVisibilitySchema } from 'src/enum.js';
+import { isoDatetimeToDate } from 'src/validation.js';
 
 export const BaseSearchSchema = z.object({
   libraryId: z.uuidv4().nullish().describe('Library ID to filter by'),

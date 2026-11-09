@@ -1,13 +1,13 @@
 import { BadRequestException } from '@nestjs/common';
 import { Readable } from 'node:stream';
-import { AlbumKind, AlbumUserRole, AssetVisibility } from 'src/enum.js';
-import { AlbumFactory } from 'test/factories/album.factory.js';
-import { getForAlbum } from 'test/mappers.js';
 import { vitest } from 'vitest';
 import { DownloadResponseDto } from 'src/dtos/download.dto.js';
+import { AlbumKind, AlbumUserRole, AssetVisibility } from 'src/enum.js';
 import { DownloadService } from 'src/services/download.service.js';
+import { AlbumFactory } from 'test/factories/album.factory.js';
 import { AssetFactory } from 'test/factories/asset.factory.js';
 import { authStub } from 'test/fixtures/auth.stub.js';
+import { getForAlbum } from 'test/mappers.js';
 import { ServiceMocks, makeStream, newTestService } from 'test/utils.js';
 
 const downloadResponse: DownloadResponseDto = {

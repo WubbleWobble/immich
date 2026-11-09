@@ -1,12 +1,12 @@
 import { Kysely } from 'kysely';
-import { AlbumUserRole } from 'src/enum';
-import { AccessRepository } from 'src/repositories/access.repository';
-import { AlbumContainerRepository } from 'src/repositories/album-container.repository';
-import { LoggingRepository } from 'src/repositories/logging.repository';
-import { DB } from 'src/schema';
-import { BaseService } from 'src/services/base.service';
-import { newMediumService } from 'test/medium.factory';
-import { getKyselyDB } from 'test/utils';
+import { AlbumUserRole } from 'src/enum.js';
+import { AccessRepository } from 'src/repositories/access.repository.js';
+import { AlbumContainerRepository } from 'src/repositories/album-container.repository.js';
+import { LoggingRepository } from 'src/repositories/logging.repository.js';
+import { DB } from 'src/schema/index.js';
+import { BaseService } from 'src/services/base.service.js';
+import { newMediumService } from 'test/medium.factory.js';
+import { getKyselyDB } from 'test/utils.js';
 
 let defaultDatabase: Kysely<DB>;
 

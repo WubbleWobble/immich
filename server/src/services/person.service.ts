@@ -243,21 +243,31 @@ export class PersonService extends BaseService {
       ids: [{ personGroupId, ownerId: auth.user.id }],
     });
     const personGroup = await this.personRepository.getForThumbnail({ ownerId: auth.user.id, personGroupId });
-    const thumbnailPath = personGroup?.thumbnailPath || personGroup?.sharedThumbnailPath;
+    // FORK-PORT: fail-closed until Task 4 (Review Focus 1, source-owner thumbnail provenance). Upstream serves
+    // `thumbnailPath || sharedThumbnailPath`, but getForThumbnail returns no source face/owner for either path, so a
+    // shared thumbnail (cropped from another user's asset) cannot be checked against its SOURCE ASSET OWNER's locks
+    // and is withheld (404). The viewer's own crop keeps the fork check below (feature face's asset vs the viewer's
+    // locks), and is also withheld when that asset belongs to someone else. Task 4 replaces all of this with
+    // per-candidate provenance (thumbnailSourceFaceId) and isFaceVisibleToViewer.
+    const thumbnailPath = personGroup?.thumbnailPath;
     if (!thumbnailPath) {
       throw new NotFoundException();
     }
 
-    // FORK-PORT: fork's thumbnail lock check (auto-merged) still refers to the old `person` from findOrFail(id);
-    // upstream now serves personGroup.thumbnailPath || sharedThumbnailPath from getForThumbnail (no source face/owner).
-    // Every served crop must be checked against its SOURCE ASSET OWNER's locks, including shared thumbnails
-    // (Review Focus 1, Task 4).
     // The face crop is derived from the feature-face asset; if the viewer has locked that
     // asset away, the crop must be unreachable too (the person may otherwise be visible).
     // faceAssetId points at asset_face, so resolve the face to its asset first.
-    if (person.faceAssetId && !auth.sharedLink && !auth.session?.hasElevatedPermission) {
-      const face = await this.personRepository.getFaceAssetId(person.faceAssetId);
+    if (!auth.sharedLink && !auth.session?.hasElevatedPermission) {
+      const person = await this.personRepository.getByGroupId({ ownerId: auth.user.id, personGroupId });
+      if (!person) {
+        throw new NotFoundException();
+      }
+      const face = person.faceAssetId ? await this.personRepository.getFaceAssetId(person.faceAssetId) : undefined;
       if (face) {
+        const asset = await this.assetRepository.getById(face.assetId);
+        if (!asset || asset.ownerId !== auth.user.id) {
+          throw new NotFoundException();
+        }
         const visible = await this.accessRepository.asset.excludeHiddenForLocker(auth.user.id, new Set([face.assetId]));
         if (visible.size === 0) {
           throw new NotFoundException();
@@ -888,11 +898,12 @@ export class PersonService extends BaseService {
     await this.requireAccess({ auth, permission: Permission.FaceDelete, ids: [id] });
 
     // FORK-PORT: smart-album invalidation on face delete (auto-merged fork code); upstream getFaceById now takes
-    // { viewingUserId } as a second argument.
+    // { viewingUserId } as a second argument. Task 2 passes the viewer; only the face's assetId is read, so it does
+    // not affect what is invalidated. Re-check against Task 4's invalidation helpers.
     // Look up the face's asset BEFORE deletion so we know what to invalidate.
     let assetId: string | undefined;
     try {
-      const face = await this.personRepository.getFaceById(id);
+      const face = await this.personRepository.getFaceById(id, { viewingUserId: auth.user.id });
       assetId = face.assetId;
     } catch {
       // face not found / already gone — invalidation will be a no-op

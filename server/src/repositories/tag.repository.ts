@@ -7,7 +7,7 @@ import { LoggingRepository } from 'src/repositories/logging.repository.js';
 import { DB } from 'src/schema/index.js';
 import { TagAssetTable } from 'src/schema/tables/tag-asset.table.js';
 import { TagTable } from 'src/schema/tables/tag.table.js';
-import { joinDeduplicationPlugin, OwnerLockVisibility, withLockVisibility } from 'src/utils/database.js';
+import { OwnerLockVisibility, joinDeduplicationPlugin, withLockVisibility } from 'src/utils/database.js';
 
 @Injectable()
 export class TagRepository {

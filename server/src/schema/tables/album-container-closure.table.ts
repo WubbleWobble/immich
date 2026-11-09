@@ -1,5 +1,5 @@
 import { Check, Column, ForeignKeyColumn, Table } from '@immich/sql-tools';
-import { AlbumContainerTable } from 'src/schema/tables/album-container.table';
+import { AlbumContainerTable } from 'src/schema/tables/album-container.table.js';
 
 @Table('album_container_closure')
 // Created by 1784910000003-AddAlbumContainers; declared here so the schema matches the code.

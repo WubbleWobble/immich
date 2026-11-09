@@ -15,8 +15,8 @@ import { DB } from 'src/schema/index.js';
 import { GeodataPlacesTable } from 'src/schema/tables/geodata-places.table.js';
 import { NaturalEarthCountriesTable } from 'src/schema/tables/natural-earth-countries.table.js';
 import {
-  joinDeduplicationPlugin,
   OwnerLockVisibility,
+  joinDeduplicationPlugin,
   searchAssetIdSubquery,
   withLockVisibility,
 } from 'src/utils/database.js';

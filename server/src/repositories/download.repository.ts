@@ -5,9 +5,9 @@ import { AssetVisibility } from 'src/enum.js';
 import { AssetSearchOptions } from 'src/repositories/search.repository.js';
 import { DB } from 'src/schema/index.js';
 import {
+  OwnerLockVisibility,
   anyUuid,
   joinDeduplicationPlugin,
-  OwnerLockVisibility,
   searchAssetIdSubquery,
   withLockVisibility,
 } from 'src/utils/database.js';

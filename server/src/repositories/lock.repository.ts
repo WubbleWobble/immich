@@ -1,9 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { Kysely } from 'kysely';
 import { InjectKysely } from 'nestjs-kysely';
-import { DummyValue, GenerateSql } from 'src/decorators';
-import { DB } from 'src/schema';
-import { OwnerLockVisibility } from 'src/utils/database';
+import { DummyValue, GenerateSql } from 'src/decorators.js';
+import { DB } from 'src/schema/index.js';
+import { OwnerLockVisibility } from 'src/utils/database.js';
 import {
   LockVisibilityRequest,
   RevealedLocks,
@@ -14,7 +14,7 @@ import {
   isAlbumHiddenForViewerQuery,
   isContainerHiddenForViewerQuery,
   subtreeContainsHiddenContentQuery,
-} from 'src/utils/lock-visibility';
+} from 'src/utils/lock-visibility.js';
 
 /**
  * Per-user lock state for albums and album containers (folders). Rows are pure per-user

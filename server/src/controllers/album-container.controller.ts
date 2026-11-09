@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, Post, Put } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
-import { Endpoint, HistoryBuilder } from 'src/decorators';
+import type { AuthDto } from 'src/dtos/auth.dto.js';
+import { Endpoint, HistoryBuilder } from 'src/decorators.js';
 import {
   AlbumContainerResponseDto,
   AlbumContainerUserCreateDto,
@@ -8,13 +9,12 @@ import {
   AlbumContainerUserUpdateDto,
   CreateAlbumContainerDto,
   UpdateAlbumContainerDto,
-} from 'src/dtos/album-container.dto';
-import { AuthDto } from 'src/dtos/auth.dto';
-import { ApiTag } from 'src/enum';
-import { Auth, Authenticated } from 'src/middleware/auth.guard';
-import { AlbumContainerService } from 'src/services/album-container.service';
-import { LockService } from 'src/services/lock.service';
-import { UUIDParamDto } from 'src/validation';
+} from 'src/dtos/album-container.dto.js';
+import { ApiTag } from 'src/enum.js';
+import { Auth, Authenticated } from 'src/middleware/auth.guard.js';
+import { AlbumContainerService } from 'src/services/album-container.service.js';
+import { LockService } from 'src/services/lock.service.js';
+import { UUIDParamDto } from 'src/validation.js';
 
 @ApiTags(ApiTag.AlbumContainers)
 @Controller('album-containers')

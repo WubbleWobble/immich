@@ -1,6 +1,6 @@
-import { CreateDateColumn, ForeignKeyColumn, Generated, Table, Timestamp } from '@immich/sql-tools';
-import { AlbumContainerTable } from 'src/schema/tables/album-container.table';
-import { UserTable } from 'src/schema/tables/user.table';
+import { CreateDateColumn, ForeignKeyColumn, type Generated, Table, Timestamp } from '@immich/sql-tools';
+import { AlbumContainerTable } from 'src/schema/tables/album-container.table.js';
+import { UserTable } from 'src/schema/tables/user.table.js';
 
 /**
  * Per-user lock state for album containers (folders). Locking a folder cascades through

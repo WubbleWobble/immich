@@ -2,17 +2,17 @@ import {
   Column,
   CreateDateColumn,
   ForeignKeyColumn,
-  Generated,
+  type Generated,
   Index,
   Table,
   Timestamp,
   UpdateDateColumn,
 } from '@immich/sql-tools';
-import { CreateIdColumn, UpdatedAtTrigger, UpdateIdColumn } from 'src/decorators';
-import { AlbumUserRole } from 'src/enum';
-import { album_user_role_enum } from 'src/schema/enums';
-import { AlbumContainerTable } from 'src/schema/tables/album-container.table';
-import { UserTable } from 'src/schema/tables/user.table';
+import { CreateIdColumn, UpdateIdColumn, UpdatedAtTrigger } from 'src/decorators.js';
+import { AlbumUserRole } from 'src/enum.js';
+import { album_user_role_enum } from 'src/schema/enums.js';
+import { AlbumContainerTable } from 'src/schema/tables/album-container.table.js';
+import { UserTable } from 'src/schema/tables/user.table.js';
 
 @Table({ name: 'album_container_user' })
 @Index({

@@ -242,7 +242,10 @@ describe(TimelineService.name, () => {
           isElevated: false,
         }),
       );
-      expect(mocks.asset.getTimeBuckets).toHaveBeenCalledWith(expect.objectContaining({ lockVisibility: entries }));
+      expect(mocks.asset.getTimeBuckets).toHaveBeenCalledWith(
+        expect.objectContaining({ lockVisibility: entries }),
+        authStub.admin,
+      );
     });
 
     it('omits the filter when no owner has locks', async () => {
@@ -294,6 +297,7 @@ describe(TimelineService.name, () => {
           albumId: undefined,
           assetFilter: expect.objectContaining({ isFavorite: true, userIds: [owner.id] }),
         }),
+        authStub.admin,
       );
     });
 
@@ -319,6 +323,7 @@ describe(TimelineService.name, () => {
           withStacked: true,
           assetFilter: expect.objectContaining({ isFavorite: true }),
         }),
+        authStub.admin,
       );
     });
 
@@ -453,7 +458,10 @@ describe(TimelineService.name, () => {
       const result = await sut.getTimeBuckets(authStub.admin, { albumId: 'regular-album-id' });
 
       expect(result).toEqual([{ timeBucket: '2024-01-01', count: 5 }]);
-      expect(mocks.asset.getTimeBuckets).toHaveBeenCalledWith(expect.objectContaining({ albumId: 'regular-album-id' }));
+      expect(mocks.asset.getTimeBuckets).toHaveBeenCalledWith(
+        expect.objectContaining({ albumId: 'regular-album-id' }),
+        authStub.admin,
+      );
       expect(mocks.asset.getTimeBuckets.mock.calls.at(-1)![0]).not.toHaveProperty('assetFilter');
     });
   });

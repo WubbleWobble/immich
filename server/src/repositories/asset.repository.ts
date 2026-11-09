@@ -35,12 +35,12 @@ import { AssetJobStatusTable } from 'src/schema/tables/asset-job-status.table.js
 import { AssetMetadataTable } from 'src/schema/tables/asset-metadata.table.js';
 import { AssetTable } from 'src/schema/tables/asset.table.js';
 import {
+  OwnerLockVisibility,
   anyUuid,
   asUuid,
   hasPeople,
   inSharedAlbum,
   joinDeduplicationPlugin,
-  OwnerLockVisibility,
   removeUndefinedKeys,
   searchAssetIdSubquery,
   truncatedDate,

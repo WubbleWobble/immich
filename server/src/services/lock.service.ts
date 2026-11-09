@@ -1,12 +1,12 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { BulkIdErrorReason } from 'src/dtos/asset-ids.response.dto';
-import { AuthDto } from 'src/dtos/auth.dto';
-import { LocksResponseDto, MoveToLockedAlbumDto, MoveToLockedAlbumResponseDto } from 'src/dtos/lock.dto';
-import { Permission } from 'src/enum';
-import { AlbumService } from 'src/services/album.service';
-import { BaseService } from 'src/services/base.service';
-import { requireElevatedPermission } from 'src/utils/access';
-import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
+import { BulkIdErrorReason } from 'src/dtos/asset-ids.response.dto.js';
+import { AuthDto } from 'src/dtos/auth.dto.js';
+import { LocksResponseDto, MoveToLockedAlbumDto, MoveToLockedAlbumResponseDto } from 'src/dtos/lock.dto.js';
+import { Permission } from 'src/enum.js';
+import { AlbumService } from 'src/services/album.service.js';
+import { BaseService } from 'src/services/base.service.js';
+import { requireElevatedPermission } from 'src/utils/access.js';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
 
 /**
  * Per-user lock toggles for albums and folders. Every operation - including reads - requires

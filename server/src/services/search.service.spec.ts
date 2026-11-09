@@ -1,8 +1,7 @@
-import { BadRequestException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException } from '@nestjs/common';
 import { beforeEach, vitest } from 'vitest';
 import { mapAsset } from 'src/dtos/asset-response.dto.js';
 import { SearchSuggestionType } from 'src/dtos/search.dto.js';
-import { AssetVisibility } from 'src/enum.js';
 import { SearchService } from 'src/services/search.service.js';
 import { AssetFactory } from 'test/factories/asset.factory.js';
 import { AuthFactory } from 'test/factories/auth.factory.js';
@@ -261,13 +260,6 @@ describe(SearchService.name, () => {
     it('should reject an invalid cursor', async () => {
       await expect(sut.searchMetadata(AuthFactory.create(), { size: 250, cursor: '???' })).rejects.toThrowError(
         new BadRequestException('Invalid cursor'),
-      );
-    });
-
-    it('should reject an unelevated session whose filter could match locked assets', async () => {
-      const filter = { visibility: { in: [AssetVisibility.Locked, AssetVisibility.Timeline] } };
-      await expect(sut.searchMetadata(AuthFactory.create(), { size: 250, filter })).rejects.toBeInstanceOf(
-        UnauthorizedException,
       );
     });
 

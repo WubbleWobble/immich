@@ -1,11 +1,11 @@
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
-import { AlbumUserRole } from 'src/enum';
-import { AlbumContainerService } from 'src/services/album-container.service';
-import { AuthFactory } from 'test/factories/auth.factory';
-import { UserFactory } from 'test/factories/user.factory';
-import { newUuid } from 'test/small.factory';
-import { newTestService, ServiceMocks } from 'test/utils';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { AlbumUserRole } from 'src/enum.js';
+import { AlbumContainerService } from 'src/services/album-container.service.js';
+import { AuthFactory } from 'test/factories/auth.factory.js';
+import { UserFactory } from 'test/factories/user.factory.js';
+import { newUuid } from 'test/small.factory.js';
+import { ServiceMocks, newTestService } from 'test/utils.js';
 
 const folderForOwner = (ownerId: string, id = newUuid()) => ({
   id,

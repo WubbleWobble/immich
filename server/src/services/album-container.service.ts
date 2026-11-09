@@ -6,14 +6,14 @@ import {
   AlbumContainerUserUpdateDto,
   CreateAlbumContainerDto,
   UpdateAlbumContainerDto,
-} from 'src/dtos/album-container.dto';
-import { AuthDto } from 'src/dtos/auth.dto';
-import { mapUser } from 'src/dtos/user.dto';
-import { AlbumUserRole } from 'src/enum';
-import { AlbumService } from 'src/services/album.service';
-import { BaseService } from 'src/services/base.service';
-import { LockService } from 'src/services/lock.service';
-import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility';
+} from 'src/dtos/album-container.dto.js';
+import { AuthDto } from 'src/dtos/auth.dto.js';
+import { mapUser } from 'src/dtos/user.dto.js';
+import { AlbumUserRole } from 'src/enum.js';
+import { AlbumService } from 'src/services/album.service.js';
+import { BaseService } from 'src/services/base.service.js';
+import { LockService } from 'src/services/lock.service.js';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
 
 // Folder-tree depth cap. Mirrored on the web side at:
 //   web/src/lib/utils/album-folder-utils.ts (buildFolderBreadcrumbPath `maxDepth` default)

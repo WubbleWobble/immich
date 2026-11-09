@@ -1,7 +1,7 @@
 import { createZodDto } from 'nestjs-zod';
-import { MetadataSearchSchema } from 'src/dtos/search-base.dto';
-import { AssetVisibility } from 'src/enum';
 import z from 'zod';
+import { MetadataSearchSchema } from 'src/dtos/search-base.dto.js';
+import { AssetVisibility } from 'src/enum.js';
 
 // Stored filter for smart albums - subset of MetadataSearchSchema with request-shaping
 // and asset-lookup fields stripped. See ../immich-specs/2026-05-22-smart-albums-design.md §5.4.

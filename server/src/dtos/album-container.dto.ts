@@ -1,7 +1,7 @@
 import { createZodDto } from 'nestjs-zod';
-import { UserResponseSchema } from 'src/dtos/user.dto';
-import { AlbumUserRoleSchema } from 'src/enum';
 import z from 'zod';
+import { UserResponseSchema } from 'src/dtos/user.dto.js';
+import { AlbumUserRoleSchema } from 'src/enum.js';
 
 const CreateAlbumContainerSchema = z
   .object({

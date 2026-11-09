@@ -7,9 +7,9 @@ import { DummyValue, GenerateSql } from 'src/decorators.js';
 import { DB } from 'src/schema/index.js';
 import { StackTable } from 'src/schema/tables/stack.table.js';
 import {
+  OwnerLockVisibility,
   asUuid,
   joinDeduplicationPlugin,
-  OwnerLockVisibility,
   withDefaultVisibility,
   withLockVisibility,
 } from 'src/utils/database.js';

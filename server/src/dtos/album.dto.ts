@@ -8,7 +8,14 @@ import { BulkIdErrorReasonSchema } from 'src/dtos/asset-ids.response.dto.js';
 import { MapAsset } from 'src/dtos/asset-response.dto.js';
 import { SmartAlbumFilter, SmartAlbumFilterSchema } from 'src/dtos/smart-album-filter.dto.js';
 import { UserResponseSchema, mapUser } from 'src/dtos/user.dto.js';
-import { AlbumKind, AlbumKindSchema, AlbumUserRole, AlbumUserRoleSchema, AssetOrder, AssetOrderSchema } from 'src/enum.js';
+import {
+  AlbumKind,
+  AlbumKindSchema,
+  AlbumUserRole,
+  AlbumUserRoleSchema,
+  AssetOrder,
+  AssetOrderSchema,
+} from 'src/enum.js';
 import { asDateTimeString } from 'src/utils/date.js';
 import { stringToBool } from 'src/validation.js';
 

@@ -1,8 +1,8 @@
 import { Kysely, sql } from 'kysely';
-import { SmartAlbumFilter, toEvaluableSmartAlbumFilter } from 'src/dtos/smart-album-filter.dto';
-import { AlbumKind, AlbumUserRole } from 'src/enum';
-import { DB } from 'src/schema';
-import { anyUuid, OwnerLockVisibility } from 'src/utils/database';
+import { SmartAlbumFilter, toEvaluableSmartAlbumFilter } from 'src/dtos/smart-album-filter.dto.js';
+import { AlbumKind, AlbumUserRole } from 'src/enum.js';
+import { DB } from 'src/schema/index.js';
+import { OwnerLockVisibility, anyUuid } from 'src/utils/database.js';
 
 /**
  * Locked-content visibility derivation. Standalone db-taking functions so both services

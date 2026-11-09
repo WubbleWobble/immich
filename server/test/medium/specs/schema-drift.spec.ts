@@ -1,8 +1,8 @@
 import { asHuman } from '@immich/sql-tools';
-import { ConfigRepository } from 'src/repositories/config.repository';
-import { DatabaseRepository } from 'src/repositories/database.repository';
-import { LoggingRepository } from 'src/repositories/logging.repository';
-import { getKyselyDB } from 'test/utils';
+import { ConfigRepository } from 'src/repositories/config.repository.js';
+import { DatabaseRepository } from 'src/repositories/database.repository.js';
+import { LoggingRepository } from 'src/repositories/logging.repository.js';
+import { getKyselyDB } from 'test/utils.js';
 
 // The medium-test template database is built by actually running the migrations, so
 // comparing it against the schema derived from the table definitions catches migrations

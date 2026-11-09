@@ -15,8 +15,8 @@ import { BulkIdErrorReason, BulkIdResponseDto, BulkIdsDto } from 'src/dtos/asset
 import { AuthDto } from 'src/dtos/auth.dto.js';
 import { MapMarkerResponseDto } from 'src/dtos/map.dto.js';
 import {
-  isEmptySmartAlbumFilter,
   SmartAlbumFilter,
+  isEmptySmartAlbumFilter,
   toEvaluableSmartAlbumFilter,
 } from 'src/dtos/smart-album-filter.dto.js';
 import { AlbumKind, AlbumUserRole, Permission } from 'src/enum.js';
@@ -53,10 +53,10 @@ const isSmartAlbumCacheStale = (album: {
   cacheComputedAt?: Date | string | null;
   cacheInvalidatedAt?: Date | string | null;
 }) => {
-  if (album.cacheComputedAt == null) {
+  if (album.cacheComputedAt === null || album.cacheComputedAt === undefined) {
     return true;
   }
-  if (album.cacheInvalidatedAt == null) {
+  if (album.cacheInvalidatedAt === null || album.cacheInvalidatedAt === undefined) {
     return false;
   }
   // After hydration from a JSON-shallow context, timestamps may be strings.
@@ -709,7 +709,7 @@ export class AlbumService extends BaseService {
       this.searchRepository.searchMetadata({ page: 1, size: 1 }, options),
     ]);
     const toDateOnlyOrNull = (raw: Date | string | null) => {
-      if (raw == null) {
+      if (raw === null || raw === undefined) {
         return null;
       }
       const date = raw instanceof Date ? raw : new Date(raw);

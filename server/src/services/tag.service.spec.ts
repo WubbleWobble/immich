@@ -219,6 +219,7 @@ describe(TagService.name, () => {
     it('prunes the deleted tag id from referencing smart album filters', async () => {
       mocks.tag.get.mockResolvedValue(tagStub.tag);
       mocks.tag.delete.mockResolvedValue();
+      mocks.tag.getAssetIdsByTagId.mockResolvedValue([]);
 
       await sut.remove(authStub.admin, 'tag-1');
       expect(mocks.album.pruneTagIdsFromSmartAlbums).toHaveBeenCalledWith(['tag-1']);
@@ -227,6 +228,7 @@ describe(TagService.name, () => {
     it('does not propagate prune failures', async () => {
       mocks.tag.get.mockResolvedValue(tagStub.tag);
       mocks.tag.delete.mockResolvedValue();
+      mocks.tag.getAssetIdsByTagId.mockResolvedValue([]);
       mocks.album.pruneTagIdsFromSmartAlbums.mockRejectedValueOnce(new Error('boom'));
 
       await expect(sut.remove(authStub.admin, 'tag-1')).resolves.toBeUndefined();

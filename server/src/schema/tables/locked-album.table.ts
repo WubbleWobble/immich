@@ -1,6 +1,6 @@
-import { CreateDateColumn, ForeignKeyColumn, Generated, Table, Timestamp } from '@immich/sql-tools';
-import { AlbumTable } from 'src/schema/tables/album.table';
-import { UserTable } from 'src/schema/tables/user.table';
+import { CreateDateColumn, ForeignKeyColumn, type Generated, Table, Timestamp } from '@immich/sql-tools';
+import { AlbumTable } from 'src/schema/tables/album.table.js';
+import { UserTable } from 'src/schema/tables/user.table.js';
 
 /**
  * Per-user lock state for albums (regular and smart alike - both live in the album table).

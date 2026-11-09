@@ -3,14 +3,14 @@ import {
   CreateDateColumn,
   DeleteDateColumn,
   ForeignKeyColumn,
-  Generated,
+  type Generated,
   PrimaryGeneratedColumn,
   Table,
   Timestamp,
   UpdateDateColumn,
 } from '@immich/sql-tools';
-import { UpdatedAtTrigger, UpdateIdColumn } from 'src/decorators';
-import { UserTable } from 'src/schema/tables/user.table';
+import { UpdateIdColumn, UpdatedAtTrigger } from 'src/decorators.js';
+import { UserTable } from 'src/schema/tables/user.table.js';
 
 @Table({ name: 'album_container' })
 @UpdatedAtTrigger('album_container_updatedAt')
