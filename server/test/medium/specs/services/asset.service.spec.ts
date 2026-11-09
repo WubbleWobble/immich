@@ -1947,6 +1947,48 @@ describe(AssetService.name, () => {
         expect(stored.readAt).toBeNull();
       });
 
+      it('an ordinary session cannot delete, bulk-update or bulk-delete a hidden notification (round 4)', async () => {
+        const { ctx } = setup();
+        const { sut } = albumNotifier();
+        const { user, hiddenNotice, openNotice } = await newNotifications(ctx);
+        const ordinary = factory.auth({ user });
+        const rows = () =>
+          ctx.database
+            .selectFrom('notification')
+            .select(['id', 'readAt', 'deletedAt'])
+            .where('id', 'in', [hiddenNotice.id, openNotice.id])
+            .execute();
+        const state = async () => {
+          const current = await rows();
+          return Object.fromEntries(
+            current.map(({ id, readAt, deletedAt }) => [
+              id === hiddenNotice.id ? 'hidden' : 'open',
+              { read: !!readAt, deleted: !!deletedAt },
+            ]),
+          );
+        };
+
+        const missing = await failure((id) => sut.delete(ordinary, id), factory.uuid());
+        await expect(failure((id) => sut.delete(ordinary, id), hiddenNotice.id)).resolves.toEqual(missing);
+
+        // bulk: hidden notifications are skipped silently, the rest is processed
+        await sut.updateAll(ordinary, { ids: [hiddenNotice.id, openNotice.id], readAt: new Date() });
+        await expect(state()).resolves.toEqual({
+          hidden: { read: false, deleted: false },
+          open: { read: true, deleted: false },
+        });
+        await sut.deleteAll(ordinary, { ids: [hiddenNotice.id, openNotice.id] });
+        await expect(state()).resolves.toEqual({
+          hidden: { read: false, deleted: false },
+          open: { read: true, deleted: true },
+        });
+
+        // an elevated session may act on it
+        const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+        await sut.delete(elevated, hiddenNotice.id);
+        await expect(state()).resolves.toMatchObject({ hidden: { deleted: true } });
+      });
+
       it('a user without locks gets album updates and notifications unchanged', async () => {
         const { ctx } = setup();
         const { sut, ctx: notifyCtx } = albumNotifier();

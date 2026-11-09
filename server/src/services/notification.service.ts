@@ -83,14 +83,23 @@ export class NotificationService extends BaseService {
 
   async updateAll(auth: AuthDto, dto: NotificationUpdateAllDto) {
     await this.requireAccess({ auth, ids: dto.ids, permission: Permission.NotificationUpdate });
-    await this.notificationRepository.updateAll(dto.ids, {
-      readAt: dto.readAt,
-    });
+    // Fork (R58, §15.2): notifications about hidden content are skipped silently outside elevation.
+    const hidden = await this.getHiddenOwnNotificationIds(auth, dto.ids);
+    const ids = dto.ids.filter((id) => !hidden.has(id));
+    if (ids.length > 0) {
+      await this.notificationRepository.updateAll(ids, {
+        readAt: dto.readAt,
+      });
+    }
   }
 
   async deleteAll(auth: AuthDto, dto: NotificationDeleteAllDto) {
     await this.requireAccess({ auth, ids: dto.ids, permission: Permission.NotificationDelete });
-    await this.notificationRepository.deleteAll(dto.ids);
+    const hidden = await this.getHiddenOwnNotificationIds(auth, dto.ids);
+    const ids = dto.ids.filter((id) => !hidden.has(id));
+    if (ids.length > 0) {
+      await this.notificationRepository.deleteAll(ids);
+    }
   }
 
   async get(auth: AuthDto, id: string) {
@@ -111,7 +120,7 @@ export class NotificationService extends BaseService {
   }
 
   async delete(auth: AuthDto, id: string) {
-    await this.requireAccess({ auth, ids: [id], permission: Permission.NotificationDelete });
+    await this.requireVisibleNotification(auth, id, Permission.NotificationDelete);
     await this.notificationRepository.delete(id);
   }
 
