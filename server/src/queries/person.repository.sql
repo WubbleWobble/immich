@@ -785,6 +785,14 @@ where
   "asset_face"."id" = $5
   and "asset_face"."deletedAt" is null
 
+-- PersonRepository.getFaceAssetId
+select
+  "asset_face"."assetId"
+from
+  "asset_face"
+where
+  "asset_face"."id" = $1
+
 -- PersonRepository.getFaceForFacialRecognitionJob
 select
   "asset_face"."id",

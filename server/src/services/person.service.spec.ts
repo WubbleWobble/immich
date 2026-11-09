@@ -1853,4 +1853,47 @@ describe(PersonService.name, () => {
       expect(mapFaces(getForAssetFace(AssetFaceFactory.create())).person).toBeNull();
     });
   });
+
+  describe('deleteFace', () => {
+    const faceId = '22222222-2222-4222-8222-222222222222';
+    const assetId = '11111111-1111-4111-8111-111111111111';
+
+    it('guards the asset of a soft-deleted face before a forced delete', async () => {
+      const auth = AuthFactory.from().session({ hasElevatedPermission: false }).build();
+      // face.delete authorizes soft-deleted faces; the asset is hidden for the (non-elevated) owner
+      mocks.access.person.checkFaceOwnerAccess.mockResolvedValue(new Set([faceId]));
+      mocks.person.getFaceAssetId.mockResolvedValue(assetId);
+      mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set([assetId]));
+      mocks.access.asset.excludeHiddenForLocker.mockResolvedValue(new Set());
+
+      for (const force of [true, false]) {
+        await expect(sut.deleteFace(auth, faceId, { force })).rejects.toThrow(
+          new BadRequestException('Not found or no face.delete access'),
+        );
+      }
+      expect(mocks.person.getFaceAssetId).toHaveBeenCalledWith(faceId);
+      expect(mocks.person.deleteAssetFace).not.toHaveBeenCalled();
+      expect(mocks.person.softDeleteAssetFaces).not.toHaveBeenCalled();
+    });
+
+    it('refuses a face that is gone by the time it is resolved like a missing face', async () => {
+      const auth = AuthFactory.from().session({ hasElevatedPermission: true }).build();
+      mocks.access.person.checkFaceOwnerAccess.mockResolvedValue(new Set([faceId]));
+      mocks.person.getFaceAssetId.mockResolvedValue(undefined);
+
+      await expect(sut.deleteFace(auth, faceId, { force: true })).rejects.toThrow(
+        new BadRequestException('Not found or no face.delete access'),
+      );
+      expect(mocks.person.deleteAssetFace).not.toHaveBeenCalled();
+    });
+
+    it('fails closed on a lookup error', async () => {
+      const auth = AuthFactory.from().session({ hasElevatedPermission: true }).build();
+      mocks.access.person.checkFaceOwnerAccess.mockResolvedValue(new Set([faceId]));
+      mocks.person.getFaceAssetId.mockRejectedValue(new Error('connection reset'));
+
+      await expect(sut.deleteFace(auth, faceId, { force: true })).rejects.toThrow('connection reset');
+      expect(mocks.person.deleteAssetFace).not.toHaveBeenCalled();
+    });
+  });
 });

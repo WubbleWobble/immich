@@ -678,6 +678,20 @@ export class PersonRepository {
       .executeTakeFirstOrThrow();
   }
 
+  /**
+   * Fork (§15.2): the asset of a face, soft-deleted or not - face.delete authorizes soft-deleted faces too, so the
+   * delete paths need their asset for the hidden-asset write guard. `undefined` only when the face row is gone.
+   */
+  @GenerateSql({ params: [DummyValue.UUID] })
+  async getFaceAssetId(id: string): Promise<string | undefined> {
+    const face = await this.db
+      .selectFrom('asset_face')
+      .select('asset_face.assetId')
+      .where('asset_face.id', '=', id)
+      .executeTakeFirst();
+    return face?.assetId;
+  }
+
   @GenerateSql({ params: [DummyValue.UUID] })
   getFaceForFacialRecognitionJob(id: string) {
     return this.db

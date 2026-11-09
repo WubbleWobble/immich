@@ -2248,6 +2248,71 @@ describe(PersonService.name, () => {
       await expect(personOf(ctx, hiddenFace.id)).resolves.toBeUndefined();
     });
 
+    it('deleteFace guards a soft-deleted face on a hidden asset too (both delete paths)', async () => {
+      const { ctx, sut } = setup();
+      ctx.getMock(JobRepository).queueAll.mockResolvedValue();
+      ctx.getMock(JobRepository).queue.mockResolvedValue();
+      const invalidate = vi.spyOn(AlbumService.prototype, 'invalidateSmartAlbumsForAssetIdsSafe');
+      const { user } = await ctx.newUser();
+      const { person } = await ctx.newPerson({ ownerId: user.id });
+      const { asset, face } = await newFaceOn(ctx, { ownerId: user.id, personGroupId: person.personGroupId });
+      const auth = factory.auth({ user, session: { hasElevatedPermission: false } });
+
+      // soft-delete while visible, then the asset becomes hidden (its album is locked)
+      await sut.deleteFace(auth, face.id, { force: false });
+      const softDeleted = await personOf(ctx, face.id);
+      const softDeletedAt = softDeleted?.deletedAt;
+      expect(softDeletedAt).not.toBeNull();
+      const [{ albumId }] = await ctx.database
+        .selectFrom('album_asset')
+        .select('albumId')
+        .where('assetId', '=', asset.id)
+        .execute();
+      await ctx.get(LockRepository).lockAlbum(user.id, albumId);
+      invalidate.mockClear();
+
+      const missing = await sut.deleteFace(auth, newUuid(), { force: true }).catch((error: Error) => error);
+      expect(missing).toBeInstanceOf(Error);
+      for (const force of [true, false]) {
+        const refused = await sut.deleteFace(auth, face.id, { force }).catch((error: Error) => error);
+        // the face permission's message, identical to a missing face (R32)
+        expect(refused).toEqual(missing);
+        expect((refused as Error).message).toBe('Not found or no face.delete access');
+      }
+      // nothing deleted, nothing invalidated
+      await expect(personOf(ctx, face.id)).resolves.toEqual({
+        personGroupId: person.personGroupId,
+        deletedAt: softDeletedAt,
+      });
+      expect(invalidate).not.toHaveBeenCalled();
+
+      // an elevated session may permanently delete it, and the asset's smart albums are invalidated
+      const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+      await expect(sut.deleteFace(elevated, face.id, { force: true })).resolves.toBeUndefined();
+      await expect(personOf(ctx, face.id)).resolves.toBeUndefined();
+      expect(invalidate).toHaveBeenCalledWith([asset.id]);
+      invalidate.mockRestore();
+    });
+
+    it('deleteFace fails closed when the face lookup errors', async () => {
+      const { ctx, sut } = setup();
+      ctx.getMock(JobRepository).queueAll.mockResolvedValue();
+      ctx.getMock(JobRepository).queue.mockResolvedValue();
+      const { user } = await ctx.newUser();
+      const { person } = await ctx.newPerson({ ownerId: user.id });
+      const { face } = await newFaceOn(ctx, { ownerId: user.id, personGroupId: person.personGroupId });
+      const auth = factory.auth({ user, session: { hasElevatedPermission: true } });
+      const lookup = vi
+        .spyOn(ctx.get(PersonRepository), 'getFaceAssetId')
+        .mockRejectedValue(new Error('connection reset'));
+
+      for (const force of [true, false]) {
+        await expect(sut.deleteFace(auth, face.id, { force })).rejects.toThrow('connection reset');
+      }
+      await expect(personOf(ctx, face.id)).resolves.toEqual({ personGroupId: person.personGroupId, deletedAt: null });
+      lookup.mockRestore();
+    });
+
     it('reassignFacesById refuses a face on a hidden asset outside elevation like a missing face', async () => {
       const { ctx, sut } = setup();
       ctx.getMock(JobRepository).queueAll.mockResolvedValue();

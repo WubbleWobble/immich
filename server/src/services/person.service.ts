@@ -958,28 +958,19 @@ export class PersonService extends BaseService {
   async deleteFace(auth: AuthDto, id: string, dto: AssetFaceDeleteDto): Promise<void> {
     await this.requireAccess({ auth, permission: Permission.FaceDelete, ids: [id] });
 
-    // Look up the face's asset BEFORE deletion so we know what to invalidate. Only the face's assetId is read, so the
-    // viewer passed to upstream's getFaceById({ viewingUserId }) does not change what is invalidated: the asset
-    // owner's smart albums (blanket, see invalidateSmartAlbumsForAssetIdsSafe).
-    let assetId: string | undefined;
-    try {
-      const face = await this.personRepository.getFaceById(id, { viewingUserId: auth.user.id });
-      assetId = face.assetId;
-    } catch {
-      // face not found / already gone — invalidation will be a no-op
+    // Fork (§15.2): resolve the face's asset BEFORE either delete path - soft-deleted faces included, since face.delete
+    // authorizes them too - and guard the asset write on it. A lookup error propagates (fail closed); a face that is
+    // gone by now gets the same error as a missing or hidden one (ruling R32). The asset id also decides what to
+    // invalidate: the asset owner's smart albums (blanket, see invalidateSmartAlbumsForAssetIdsSafe).
+    const assetId = await this.personRepository.getFaceAssetId(id);
+    if (!assetId) {
+      throw new BadRequestException(`Not found or no ${Permission.FaceDelete} access`);
     }
-    if (assetId) {
-      await this.assertFaceAssetUpdatable(auth, assetId, Permission.FaceDelete);
-    }
+    await this.assertFaceAssetUpdatable(auth, assetId, Permission.FaceDelete);
 
-    const result = dto.force
-      ? this.personRepository.deleteAssetFace(id)
-      : this.personRepository.softDeleteAssetFaces(id);
-    await result;
+    await (dto.force ? this.personRepository.deleteAssetFace(id) : this.personRepository.softDeleteAssetFaces(id));
 
-    if (assetId) {
-      await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetIdsSafe([assetId]);
-    }
+    await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetIdsSafe([assetId]);
   }
 
   async getUsersForPeople(auth: AuthDto, dto: PersonUsersSearchDto): Promise<PersonUsersResponseDto> {
