@@ -787,6 +787,20 @@ describe(AlbumService.name, () => {
       expect(mocks.albumContainer.getById).toHaveBeenCalledWith(containerId, structureLockedTxMock);
     });
 
+    it('judges a hidden destination folder on the structure transaction and creates nothing', async () => {
+      const album = AlbumFactory.create();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      const containerId = newUuid();
+      mocks.user.getMetadata.mockResolvedValue([]);
+      mocks.lock.isContainerHiddenForViewer.mockResolvedValue(true);
+
+      await expect(
+        sut.create(AuthFactory.create(owner), { albumName: 'In Folder', containerId, kind: AlbumKind.Regular }),
+      ).rejects.toThrow(new BadRequestException('Not found or no albumContainer.read access'));
+      expect(mocks.lock.isContainerHiddenForViewer).toHaveBeenCalledWith(owner.id, containerId, structureLockedTxMock);
+      expect(mocks.album.create).not.toHaveBeenCalled();
+    });
+
     it("rejects create with containerId pointing to another user's folder", async () => {
       const album = AlbumFactory.create();
       const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;

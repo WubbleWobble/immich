@@ -139,6 +139,18 @@ const newChain = async (ctx: Ctx, ownerId: string, length: number, name: string)
   return chain;
 };
 
+// The destination is the locked folder itself, or a folder below a locked ancestor.
+const hiddenDestination = async (
+  ctx: Ctx,
+  ownerId: string,
+  depth: 'locked parent' | 'descendant of a locked ancestor',
+) => {
+  const repository = ctx.get(AlbumContainerRepository);
+  const locked = await repository.create({ ownerId, name: 'Locked', parentId: null });
+  await ctx.get(LockRepository).lockContainer(ownerId, locked.id);
+  return depth === 'locked parent' ? locked : repository.create({ ownerId, name: 'Inner', parentId: locked.id });
+};
+
 describe(AlbumContainerService.name, () => {
   describe('structural serialization', () => {
     it('create child under P racing a move of P from shared A to private D leaves no (A, C) closure row', async () => {
@@ -266,5 +278,41 @@ describe(AlbumContainerService.name, () => {
       await ctx.expectClosureMatchesParents(owner1.id);
       await ctx.expectClosureMatchesParents(owner2.id);
     });
+  });
+
+  describe('create inside a hidden folder', () => {
+    it.each(['locked parent', 'descendant of a locked ancestor'] as const)(
+      'rejects a folder created in a %s outside an elevated session',
+      async (depth) => {
+        const { sut, ctx } = setup();
+        const { user } = await ctx.newUser();
+        const parent = await hiddenDestination(ctx, user.id, depth);
+
+        await expect(sut.create(factory.auth({ user }), { name: 'Sneaky', parentId: parent.id })).rejects.toThrow(
+          new BadRequestException('Not found or no albumContainer.read access'),
+        );
+        const children = await ctx.database
+          .selectFrom('album_container')
+          .select('id')
+          .where('parentId', '=', parent.id)
+          .execute();
+        expect(children).toEqual([]);
+      },
+    );
+
+    it.each(['locked parent', 'descendant of a locked ancestor'] as const)(
+      'allows a folder created in a %s in an elevated session',
+      async (depth) => {
+        const { sut, ctx } = setup();
+        const { user } = await ctx.newUser();
+        const parent = await hiddenDestination(ctx, user.id, depth);
+        const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+
+        const created = await sut.create(elevated, { name: 'Inside', parentId: parent.id });
+
+        expect(created.parentId).toBe(parent.id);
+        await ctx.expectClosureMatchesParents(user.id);
+      },
+    );
   });
 });

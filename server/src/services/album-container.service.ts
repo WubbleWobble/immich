@@ -141,6 +141,8 @@ export class AlbumContainerService extends BaseService {
     // Validation and the closure rows it relies on share one owner-serialized transaction.
     const container = await this.albumContainerRepository.withStructureLock(auth.user.id, async (tx) => {
       if (dto.parentId) {
+        // Creating inside a hidden folder is a write on hidden content (lock spec 15.2).
+        await BaseService.create(LockService, this).assertContainerVisibleForViewer(auth, dto.parentId, tx);
         const parent = await this.albumContainerRepository.getById(dto.parentId, tx);
         if (!parent) {
           throw new BadRequestException('Parent folder not found');

@@ -299,6 +299,9 @@ export class AlbumService extends BaseService {
     foreignFolderMessage: string,
     tx: StructureLockedTx,
   ): Promise<void> {
+    // Placing an album in a hidden folder is a write on hidden content (lock spec 15.2), and an
+    // album there - smart ones included - changes what that folder hides.
+    await BaseService.create(LockService, this).assertContainerVisibleForViewer(auth, containerId, tx);
     const container = await this.albumContainerRepository.getById(containerId, tx);
     if (!container) {
       throw new BadRequestException('Folder not found');

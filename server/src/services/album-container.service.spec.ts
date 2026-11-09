@@ -448,6 +448,19 @@ describe(AlbumContainerService.name, () => {
 
       await expect(sut.create(auth, { name: 'TooDeep', parentId })).rejects.toBeInstanceOf(BadRequestException);
     });
+
+    it('judges a hidden parent on the structure transaction and creates nothing', async () => {
+      const owner = UserFactory.create();
+      const auth = AuthFactory.create({ id: owner.id });
+      const parentId = newUuid();
+      mocks.lock.isContainerHiddenForViewer.mockResolvedValue(true);
+
+      await expect(sut.create(auth, { name: 'Sneaky', parentId })).rejects.toThrow(
+        new BadRequestException('Not found or no albumContainer.read access'),
+      );
+      expect(mocks.lock.isContainerHiddenForViewer).toHaveBeenCalledWith(owner.id, parentId, structureLockedTxMock);
+      expect(mocks.albumContainer.create).not.toHaveBeenCalled();
+    });
   });
 
   describe('update', () => {

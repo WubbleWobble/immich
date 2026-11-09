@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { Kysely } from 'kysely';
 import { AuthDto } from 'src/dtos/auth.dto.js';
 import { AlbumKind, AlbumUserRole, AssetVisibility } from 'src/enum.js';
@@ -106,6 +107,21 @@ const takenAt = (day: string) => ({ fileCreatedAt: new Date(day), localDateTime:
 
 const favorite = (ctx: Ctx, assetId: string) =>
   ctx.database.updateTable('asset').set({ isFavorite: true }).where('id', '=', assetId).execute();
+
+// The destination is the locked folder itself, or a folder below a locked ancestor.
+const hiddenDestination = async (
+  ctx: Ctx,
+  ownerId: string,
+  depth: 'locked parent' | 'descendant of a locked ancestor',
+) => {
+  const repository = ctx.get(AlbumContainerRepository);
+  const locked = await repository.create({ ownerId, name: 'Locked', parentId: null });
+  await ctx.get(LockRepository).lockContainer(ownerId, locked.id);
+  return depth === 'locked parent' ? locked : repository.create({ ownerId, name: 'Inner', parentId: locked.id });
+};
+
+const albumsIn = (ctx: Ctx, containerId: string) =>
+  ctx.database.selectFrom('album').select('id').where('containerId', '=', containerId).execute();
 
 describe(AlbumService.name, () => {
   describe('removeAssets', () => {
@@ -258,6 +274,60 @@ describe(AlbumService.name, () => {
       const fetched = await sut.get(auth, album.id);
       expect(fetched.kind).toBe(AlbumKind.Smart);
       expect(fetched.description).toBe('');
+    });
+  });
+
+  describe('create inside a hidden folder', () => {
+    const cases = [
+      [AlbumKind.Regular, 'locked parent'],
+      [AlbumKind.Regular, 'descendant of a locked ancestor'],
+      [AlbumKind.Smart, 'locked parent'],
+      [AlbumKind.Smart, 'descendant of a locked ancestor'],
+    ] as const;
+
+    const dtoFor = (kind: AlbumKind, containerId: string) =>
+      kind === AlbumKind.Smart
+        ? { albumName: 'Inside', kind, filter: { isFavorite: true }, containerId }
+        : { albumName: 'Inside', kind, containerId };
+
+    it.each(cases)('rejects a %s album created in a %s outside an elevated session', async (kind, depth) => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser();
+      const folder = await hiddenDestination(ctx, user.id, depth);
+
+      await expect(sut.create(factory.auth({ user }), dtoFor(kind, folder.id))).rejects.toThrow(
+        new BadRequestException('Not found or no albumContainer.read access'),
+      );
+      await expect(albumsIn(ctx, folder.id)).resolves.toEqual([]);
+    });
+
+    it.each(cases)('allows a %s album created in a %s in an elevated session', async (kind, depth) => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser();
+      const folder = await hiddenDestination(ctx, user.id, depth);
+      const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+
+      const album = await sut.create(elevated, dtoFor(kind, folder.id));
+
+      expect(album.containerId).toBe(folder.id);
+      await expect(albumsIn(ctx, folder.id)).resolves.toEqual([{ id: album.id }]);
+    });
+
+    it('rejects moving an album into a hidden folder outside an elevated session', async () => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser();
+      const folder = await hiddenDestination(ctx, user.id, 'descendant of a locked ancestor');
+      const { album } = await ctx.newAlbum({ ownerId: user.id });
+
+      await expect(sut.update(factory.auth({ user }), album.id, { containerId: folder.id })).rejects.toThrow(
+        new BadRequestException('Not found or no albumContainer.read access'),
+      );
+      await expect(albumsIn(ctx, folder.id)).resolves.toEqual([]);
+
+      const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+      await expect(sut.update(elevated, album.id, { containerId: folder.id })).resolves.toMatchObject({
+        containerId: folder.id,
+      });
     });
   });
 
