@@ -10,6 +10,8 @@ where
 
 -- AlbumContainerRepository.create
 begin
+SELECT
+  pg_advisory_xact_lock(hashtextextended ('album_container:' || $1, 0))
 insert into
   "album_container" ("ownerId", "name", "parentId")
 values
@@ -19,36 +21,18 @@ returning
 rollback
 
 -- AlbumContainerRepository.move
-begin
-delete from "album_container_closure"
+select
+  "ownerId"
+from
+  "album_container"
 where
-  "id_descendant" in (
-    select
-      "id_descendant"
-    from
-      "album_container_closure"
-    where
-      "id_ancestor" = $1
-  )
-  and "id_ancestor" not in (
-    select
-      "id_descendant"
-    from
-      "album_container_closure"
-    where
-      "id_ancestor" = $2
-  )
-update "album_container"
-set
-  "parentId" = $1
-where
-  "id" = $2
-returning
-  *
-rollback
+  "id" = $1
 
 -- AlbumContainerRepository.delete
-delete from "album_container"
+select
+  "ownerId"
+from
+  "album_container"
 where
   "id" = $1
 

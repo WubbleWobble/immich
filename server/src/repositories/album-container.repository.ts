@@ -6,104 +6,153 @@ import { AlbumKind, AlbumUserRole } from 'src/enum.js';
 import { DB } from 'src/schema/index.js';
 import { anyUuid } from 'src/utils/database.js';
 
+declare const structureLocked: unique symbol;
+
+/** A transaction that holds an owner's folder-structure lock; only withStructureLock hands these out. */
+export type StructureLockedTx = Kysely<DB> & { readonly [structureLocked]: true };
+
 @Injectable()
 export class AlbumContainerRepository {
   constructor(@InjectKysely() private db: Kysely<DB>) {}
 
   @GenerateSql({ params: [DummyValue.UUID] })
-  getById(id: string) {
-    return this.db.selectFrom('album_container').selectAll().where('id', '=', id).executeTakeFirst();
+  getById(id: string, db: Kysely<DB> = this.db) {
+    return db.selectFrom('album_container').selectAll().where('id', '=', id).executeTakeFirst();
   }
 
-  @GenerateSql({ params: [{ ownerId: DummyValue.UUID, name: DummyValue.STRING, parentId: DummyValue.UUID }] })
-  async create(payload: { ownerId: string; name: string; parentId: string | null }) {
+  /**
+   * Runs `fn` in one transaction that first takes the owner's folder-structure lock. Every
+   * structural mutation of an owner's tree - folder create, move and delete, and placing an album
+   * into a folder - runs in here with its validation reads on `tx`, so a check and the closure
+   * rows it trusts cannot interleave with another change to the same tree (the closure decides
+   * inherited shares and lock inheritance). Structure is owner-only, so the lock is per owner and
+   * different owners never wait on each other. Each transaction takes exactly one such lock.
+   */
+  withStructureLock<T>(ownerId: string, fn: (tx: StructureLockedTx) => Promise<T>): Promise<T> {
     return this.db.transaction().execute(async (tx) => {
-      const container = await tx
-        .insertInto('album_container')
-        .values({ ownerId: payload.ownerId, name: payload.name, parentId: payload.parentId })
-        .returningAll()
-        .executeTakeFirstOrThrow();
+      await sql`SELECT pg_advisory_xact_lock(hashtextextended('album_container:' || ${ownerId}, 0))`.execute(tx);
+      return fn(tx as unknown as StructureLockedTx);
+    });
+  }
 
-      // Self closure row (depth 0)
+  private async withOwnerStructureLock<T>(containerId: string, fn: (tx: StructureLockedTx) => Promise<T>): Promise<T> {
+    const { ownerId } = await this.db
+      .selectFrom('album_container')
+      .select('ownerId')
+      .where('id', '=', containerId)
+      .executeTakeFirstOrThrow();
+    return this.withStructureLock(ownerId, fn);
+  }
+
+  /** Without `tx` this takes the owner's structure lock itself; with `tx` the caller must hold it. */
+  @GenerateSql({ params: [{ ownerId: DummyValue.UUID, name: DummyValue.STRING, parentId: DummyValue.UUID }] })
+  create(payload: { ownerId: string; name: string; parentId: string | null }, tx?: StructureLockedTx) {
+    return tx
+      ? this.insertWithClosure(payload, tx)
+      : this.withStructureLock(payload.ownerId, (tx) => this.insertWithClosure(payload, tx));
+  }
+
+  private async insertWithClosure(
+    payload: { ownerId: string; name: string; parentId: string | null },
+    tx: StructureLockedTx,
+  ) {
+    const container = await tx
+      .insertInto('album_container')
+      .values({ ownerId: payload.ownerId, name: payload.name, parentId: payload.parentId })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+
+    // Self closure row (depth 0)
+    await tx
+      .insertInto('album_container_closure')
+      .values({ id_ancestor: container.id, id_descendant: container.id, depth: 0 })
+      .execute();
+
+    // Inherit ancestor rows from parent (depth + 1) if there is a parent.
+    if (payload.parentId) {
       await tx
         .insertInto('album_container_closure')
-        .values({ id_ancestor: container.id, id_descendant: container.id, depth: 0 })
+        .columns(['id_ancestor', 'id_descendant', 'depth'])
+        .expression((eb) =>
+          eb
+            .selectFrom('album_container_closure')
+            .select([
+              'id_ancestor',
+              sql.raw<string>(`'${container.id}'`).as('id_descendant'),
+              sql<number>`depth + 1`.as('depth'),
+            ])
+            .where('id_descendant', '=', payload.parentId!),
+        )
         .execute();
+    }
 
-      // Inherit ancestor rows from parent (depth + 1) if there is a parent.
-      if (payload.parentId) {
-        await tx
-          .insertInto('album_container_closure')
-          .columns(['id_ancestor', 'id_descendant', 'depth'])
-          .expression((eb) =>
-            eb
-              .selectFrom('album_container_closure')
-              .select([
-                'id_ancestor',
-                sql.raw<string>(`'${container.id}'`).as('id_descendant'),
-                sql<number>`depth + 1`.as('depth'),
-              ])
-              .where('id_descendant', '=', payload.parentId!),
-          )
-          .execute();
-      }
-
-      return container;
-    });
+    return container;
   }
 
+  /** Without `tx` this takes the folder owner's structure lock itself; with `tx` the caller must hold it. */
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID] })
-  async move(containerId: string, newParentId: string | null) {
-    return this.db.transaction().execute(async (tx) => {
-      // 1. Remove closure rows that connect the moved subtree to nodes outside of it.
-      //    These are rows where `id_descendant` is in the moved subtree but `id_ancestor` is not.
-      await tx
-        .deleteFrom('album_container_closure')
-        .where('id_descendant', 'in', (eb) =>
-          eb.selectFrom('album_container_closure').select('id_descendant').where('id_ancestor', '=', containerId),
-        )
-        .where('id_ancestor', 'not in', (eb) =>
-          eb.selectFrom('album_container_closure').select('id_descendant').where('id_ancestor', '=', containerId),
-        )
-        .execute();
-
-      // 2. Update the parent pointer.
-      const updated = await tx
-        .updateTable('album_container')
-        .set({ parentId: newParentId })
-        .where('id', '=', containerId)
-        .returningAll()
-        .executeTakeFirstOrThrow();
-
-      // 3. Attach the moved subtree under the new parent (if any).
-      //    For each (ancestor A of new parent) x (descendant D of moved container)
-      //    insert (A, D, A.depth + D.depth + 1).
-      if (newParentId) {
-        await tx
-          .insertInto('album_container_closure')
-          .columns(['id_ancestor', 'id_descendant', 'depth'])
-          .expression((eb) =>
-            eb
-              .selectFrom('album_container_closure as parent_anc')
-              .innerJoin('album_container_closure as moved_desc', (join) => join.onTrue())
-              .select([
-                'parent_anc.id_ancestor as id_ancestor',
-                'moved_desc.id_descendant as id_descendant',
-                sql<number>`parent_anc.depth + moved_desc.depth + 1`.as('depth'),
-              ])
-              .where('parent_anc.id_descendant', '=', newParentId)
-              .where('moved_desc.id_ancestor', '=', containerId),
-          )
-          .execute();
-      }
-
-      return updated;
-    });
+  move(containerId: string, newParentId: string | null, tx?: StructureLockedTx) {
+    return tx
+      ? this.reparentWithClosure(containerId, newParentId, tx)
+      : this.withOwnerStructureLock(containerId, (tx) => this.reparentWithClosure(containerId, newParentId, tx));
   }
 
+  private async reparentWithClosure(containerId: string, newParentId: string | null, tx: StructureLockedTx) {
+    // 1. Remove closure rows that connect the moved subtree to nodes outside of it.
+    //    These are rows where `id_descendant` is in the moved subtree but `id_ancestor` is not.
+    await tx
+      .deleteFrom('album_container_closure')
+      .where('id_descendant', 'in', (eb) =>
+        eb.selectFrom('album_container_closure').select('id_descendant').where('id_ancestor', '=', containerId),
+      )
+      .where('id_ancestor', 'not in', (eb) =>
+        eb.selectFrom('album_container_closure').select('id_descendant').where('id_ancestor', '=', containerId),
+      )
+      .execute();
+
+    // 2. Update the parent pointer.
+    const updated = await tx
+      .updateTable('album_container')
+      .set({ parentId: newParentId })
+      .where('id', '=', containerId)
+      .returningAll()
+      .executeTakeFirstOrThrow();
+
+    // 3. Attach the moved subtree under the new parent (if any).
+    //    For each (ancestor A of new parent) x (descendant D of moved container)
+    //    insert (A, D, A.depth + D.depth + 1).
+    if (newParentId) {
+      await tx
+        .insertInto('album_container_closure')
+        .columns(['id_ancestor', 'id_descendant', 'depth'])
+        .expression((eb) =>
+          eb
+            .selectFrom('album_container_closure as parent_anc')
+            .innerJoin('album_container_closure as moved_desc', (join) => join.onTrue())
+            .select([
+              'parent_anc.id_ancestor as id_ancestor',
+              'moved_desc.id_descendant as id_descendant',
+              sql<number>`parent_anc.depth + moved_desc.depth + 1`.as('depth'),
+            ])
+            .where('parent_anc.id_descendant', '=', newParentId)
+            .where('moved_desc.id_ancestor', '=', containerId),
+        )
+        .execute();
+    }
+
+    return updated;
+  }
+
+  /**
+   * Sub-folders and closure rows cascade; albums detach to the root. Without `tx` this takes the
+   * folder owner's structure lock itself; with `tx` the caller must hold it.
+   */
   @GenerateSql({ params: [DummyValue.UUID] })
-  async delete(id: string) {
-    await this.db.deleteFrom('album_container').where('id', '=', id).execute();
+  async delete(id: string, tx?: StructureLockedTx): Promise<void> {
+    const remove = async (tx: StructureLockedTx) => {
+      await tx.deleteFrom('album_container').where('id', '=', id).execute();
+    };
+    await (tx ? remove(tx) : this.withOwnerStructureLock(id, remove));
   }
 
   @GenerateSql({ params: [DummyValue.UUID] })
@@ -166,8 +215,8 @@ export class AlbumContainerRepository {
   }
 
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID] })
-  async isDescendantOf(containerId: string, ancestorId: string): Promise<boolean> {
-    const row = await this.db
+  async isDescendantOf(containerId: string, ancestorId: string, db: Kysely<DB> = this.db): Promise<boolean> {
+    const row = await db
       .selectFrom('album_container_closure')
       .select('depth')
       .where('id_ancestor', '=', ancestorId)
@@ -178,8 +227,8 @@ export class AlbumContainerRepository {
   }
 
   @GenerateSql({ params: [DummyValue.UUID] })
-  async getDepth(containerId: string): Promise<number> {
-    const row = await this.db
+  async getDepth(containerId: string, db: Kysely<DB> = this.db): Promise<number> {
+    const row = await db
       .selectFrom('album_container_closure')
       .select((eb) => eb.fn.max('depth').as('maxDepth'))
       .where('id_descendant', '=', containerId)
@@ -188,8 +237,8 @@ export class AlbumContainerRepository {
   }
 
   @GenerateSql({ params: [DummyValue.UUID] })
-  async getHeight(containerId: string): Promise<number> {
-    const row = await this.db
+  async getHeight(containerId: string, db: Kysely<DB> = this.db): Promise<number> {
+    const row = await db
       .selectFrom('album_container_closure')
       .select((eb) => eb.fn.max('depth').as('maxDepth'))
       .where('id_ancestor', '=', containerId)
@@ -198,8 +247,8 @@ export class AlbumContainerRepository {
   }
 
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.STRING] })
-  async rename(id: string, name: string) {
-    return this.db
+  async rename(id: string, name: string, db: Kysely<DB> = this.db) {
+    return db
       .updateTable('album_container')
       .set({ name })
       .where('id', '=', id)

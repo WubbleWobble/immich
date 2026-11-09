@@ -20,6 +20,7 @@ import {
   toEvaluableSmartAlbumFilter,
 } from 'src/dtos/smart-album-filter.dto.js';
 import { AlbumKind, AlbumUserRole, Permission } from 'src/enum.js';
+import { StructureLockedTx } from 'src/repositories/album-container.repository.js';
 import { AlbumAssetCount, AlbumInfoOptions } from 'src/repositories/album.repository.js';
 import { BaseService } from 'src/services/base.service.js';
 import { LockService } from 'src/services/lock.service.js';
@@ -254,16 +255,6 @@ export class AlbumService extends BaseService {
       }
     }
 
-    if (dto.containerId) {
-      const container = await this.albumContainerRepository.getById(dto.containerId);
-      if (!container) {
-        throw new BadRequestException('Folder not found');
-      }
-      if (container.ownerId !== auth.user.id) {
-        throw new ForbiddenException("Cannot create album in another user's folder");
-      }
-    }
-
     const allowedAssetIdsSet = await this.checkAccess({
       auth,
       permission: Permission.AssetShare,
@@ -273,26 +264,48 @@ export class AlbumService extends BaseService {
 
     const userMetadata = await this.userRepository.getMetadata(auth.user.id);
 
-    const album = await this.albumRepository.create(
-      {
-        albumName: dto.albumName,
-        description: dto.description,
-        albumThumbnailAssetId: assetIds[0] || null,
-        order: getPreferences(userMetadata).albums.defaultAssetOrder,
-        kind,
-        filter,
-        containerId: dto.containerId ?? null,
-      },
-      assetIds,
-      [{ userId: auth.user.id, role: AlbumUserRole.Owner }, ...albumUsers],
-      auth.user.id,
-    );
+    const values = {
+      albumName: dto.albumName,
+      description: dto.description,
+      albumThumbnailAssetId: assetIds[0] || null,
+      order: getPreferences(userMetadata).albums.defaultAssetOrder,
+      kind,
+      filter,
+      containerId: dto.containerId ?? null,
+    };
+    const albumUserRows = [{ userId: auth.user.id, role: AlbumUserRole.Owner }, ...albumUsers];
+
+    // Placing the album into a folder is a structural mutation: the folder checks and the insert
+    // share the owner's folder-structure transaction.
+    const containerId = dto.containerId;
+    const album = containerId
+      ? await this.albumContainerRepository.withStructureLock(auth.user.id, async (tx) => {
+          await this.assertAlbumDestination(auth, containerId, "Cannot create album in another user's folder", tx);
+          return this.albumRepository.create(values, assetIds, albumUserRows, auth.user.id, tx);
+        })
+      : await this.albumRepository.create(values, assetIds, albumUserRows, auth.user.id);
 
     for (const { userId } of albumUsers) {
       await this.eventRepository.emit('AlbumInvite', { id: album.id, userId, senderName: auth.user.name });
     }
 
     return mapAlbum(album);
+  }
+
+  /** Destination-folder checks for placing an album, on the caller's folder-structure transaction. */
+  private async assertAlbumDestination(
+    auth: AuthDto,
+    containerId: string,
+    foreignFolderMessage: string,
+    tx: StructureLockedTx,
+  ): Promise<void> {
+    const container = await this.albumContainerRepository.getById(containerId, tx);
+    if (!container) {
+      throw new BadRequestException('Folder not found');
+    }
+    if (container.ownerId !== auth.user.id) {
+      throw new ForbiddenException(foreignFolderMessage);
+    }
   }
 
   async update(auth: AuthDto, id: string, dto: UpdateAlbumDto): Promise<AlbumResponseDto> {
@@ -329,37 +342,38 @@ export class AlbumService extends BaseService {
       }
     }
 
-    if (dto.containerId !== undefined && dto.containerId !== album.containerId) {
+    const isPlacement = dto.containerId !== undefined && dto.containerId !== album.containerId;
+    if (isPlacement) {
       const albumOwnerId = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
       if (auth.user.id !== albumOwnerId) {
         throw new ForbiddenException('Only the album owner can move it to a folder');
       }
-
-      if (dto.containerId !== null) {
-        const container = await this.albumContainerRepository.getById(dto.containerId);
-        if (!container) {
-          throw new BadRequestException('Folder not found');
-        }
-        if (container.ownerId !== auth.user.id) {
-          throw new ForbiddenException("Cannot move album to another user's folder");
-        }
-      }
     }
 
-    const updatedAlbum = await this.albumRepository.update(
-      album.id,
-      {
-        id: album.id,
-        albumName: dto.albumName,
-        description: dto.description,
-        albumThumbnailAssetId: dto.albumThumbnailAssetId,
-        isActivityEnabled: dto.isActivityEnabled,
-        order: dto.order,
-        ...(dto.filter !== undefined && { filter: dto.filter }),
-        containerId: dto.containerId,
-      },
-      auth.user.id,
-    );
+    const changes = {
+      id: album.id,
+      albumName: dto.albumName,
+      description: dto.description,
+      albumThumbnailAssetId: dto.albumThumbnailAssetId,
+      isActivityEnabled: dto.isActivityEnabled,
+      order: dto.order,
+      ...(dto.filter !== undefined && { filter: dto.filter }),
+      // Only a placement writes containerId: an unchanged value judged on a stale read must not be
+      // written outside the structure lock.
+      containerId: isPlacement ? dto.containerId : undefined,
+    };
+
+    // Moving the album into or out of a folder is a structural mutation: the folder checks and the
+    // write share the owner's folder-structure transaction.
+    const containerId = dto.containerId;
+    const updatedAlbum = isPlacement
+      ? await this.albumContainerRepository.withStructureLock(auth.user.id, async (tx) => {
+          if (containerId) {
+            await this.assertAlbumDestination(auth, containerId, "Cannot move album to another user's folder", tx);
+          }
+          return this.albumRepository.update(album.id, changes, auth.user.id, tx);
+        })
+      : await this.albumRepository.update(album.id, changes, auth.user.id);
 
     // A filter write also invalidates the list-view cache: AlbumRepository.update bumps cacheRevision in the same
     // UPDATE, so no recompute can publish the old filter's count, thumbnail or date range as fresh.

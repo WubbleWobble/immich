@@ -4,7 +4,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { Stats } from 'node:fs';
 import { resolve } from 'node:path';
 import { Writable } from 'node:stream';
-import { Mocked } from 'vitest';
+import { Mocked, expect } from 'vitest';
 import type { ClassConstructor, ClassConstructorsToInstances, UploadFile } from 'src/types.js';
 import { AssetFace } from 'src/database.js';
 import { AuthDto, LoginResponseDto } from 'src/dtos/auth.dto.js';
@@ -113,6 +113,9 @@ export const newMediumService = <S extends ClassConstructor<typeof BaseService>>
   const ctx = new MediumTestContext(Service, options);
   return { sut: ctx.sut, ctx };
 };
+
+const closureKey = (row: { id_ancestor: string; id_descendant: string; depth: number }) =>
+  `${row.id_ancestor}>${row.id_descendant}@${row.depth}`;
 
 export class MediumTestContext<S extends ClassConstructor<typeof BaseService> = ClassConstructor<typeof BaseService>> {
   private repoCache: Record<string, any> = {};
@@ -351,6 +354,49 @@ export class MediumTestContext<S extends ClassConstructor<typeof BaseService> = 
   async newEdits(assetId: string, dto: AssetEditsCreateDto) {
     const edits = await this.get(AssetEditRepository).replaceAll(assetId, dto.edits as AssetEditActionItem[]);
     return { edits };
+  }
+
+  /**
+   * Asserts the owner's album_container_closure is exactly the transitive closure of the
+   * parentId pointers: one (ancestor, node, depth) row per step up each node's parent chain,
+   * including the depth-0 self row - no stale, missing or extra rows, and no parent cycle.
+   */
+  async expectClosureMatchesParents(ownerId: string) {
+    const containers = await this.database
+      .selectFrom('album_container')
+      .select(['id', 'parentId'])
+      .where('ownerId', '=', ownerId)
+      .execute();
+    const parentOf = new Map(containers.map(({ id, parentId }) => [id, parentId]));
+
+    const expected: { id_ancestor: string; id_descendant: string; depth: number }[] = [];
+    for (const { id } of containers) {
+      const seen = new Set<string>();
+      let current: string | null = id;
+      for (let depth = 0; current; depth++) {
+        if (seen.has(current)) {
+          expect.fail(`folder ${id} has a parent cycle through ${current}`);
+        }
+        seen.add(current);
+        if (!parentOf.has(current)) {
+          expect.fail(`folder ${id} has an ancestor ${current} that ${ownerId} does not own`);
+        }
+        expected.push({ id_ancestor: current, id_descendant: id, depth });
+        current = parentOf.get(current) ?? null;
+      }
+    }
+
+    const ids = containers.map(({ id }) => id);
+    const actual =
+      ids.length === 0
+        ? []
+        : await this.database
+            .selectFrom('album_container_closure')
+            .select(['id_ancestor', 'id_descendant', 'depth'])
+            .where((eb) => eb.or([eb('id_ancestor', 'in', ids), eb('id_descendant', 'in', ids)]))
+            .execute();
+
+    expect(actual.map((row) => closureKey(row)).sort()).toEqual(expected.map((row) => closureKey(row)).sort());
   }
 
   async getConfig({ withCache = true }: { withCache?: boolean } = {}) {

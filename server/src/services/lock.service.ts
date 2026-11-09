@@ -1,8 +1,10 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
+import { Kysely } from 'kysely';
 import { BulkIdErrorReason } from 'src/dtos/asset-ids.response.dto.js';
 import { AuthDto } from 'src/dtos/auth.dto.js';
 import { LocksResponseDto, MoveToLockedAlbumDto, MoveToLockedAlbumResponseDto } from 'src/dtos/lock.dto.js';
 import { Permission, SharedLinkType } from 'src/enum.js';
+import { DB } from 'src/schema/index.js';
 import { AlbumService } from 'src/services/album.service.js';
 import { BaseService } from 'src/services/base.service.js';
 import { requireElevatedPermission } from 'src/utils/access.js';
@@ -337,20 +339,25 @@ export class LockService extends BaseService {
    * cascades through descendants, and moves/share changes propagate cascade access - so an
    * unlocked ancestor is not a safe handle on the locked content beneath it.
    */
-  async assertSubtreeVisibleForViewer(auth: AuthDto, containerId: string): Promise<void> {
+  async assertSubtreeVisibleForViewer(auth: AuthDto, containerId: string, tx?: Kysely<DB>): Promise<void> {
     if (auth.sharedLink || auth.session?.hasElevatedPermission) {
       return;
     }
-    if (await this.lockRepository.subtreeContainsHiddenContent(auth.user.id, containerId)) {
+    if (await this.lockRepository.subtreeContainsHiddenContent(auth.user.id, containerId, tx)) {
       throw new BadRequestException('Not found or no album.read access');
     }
   }
 
-  async assertContainerVisibleForViewer(auth: AuthDto, containerId: string): Promise<void> {
+  /**
+   * Read guard for a folder, and the write guard for creating or placing content inside one
+   * (a hidden destination is hidden content too). `tx` is the caller's folder-structure
+   * transaction, so the closure it judges is the one the mutation will build on.
+   */
+  async assertContainerVisibleForViewer(auth: AuthDto, containerId: string, tx?: Kysely<DB>): Promise<void> {
     if (auth.sharedLink || auth.session?.hasElevatedPermission) {
       return;
     }
-    if (await this.lockRepository.isContainerHiddenForViewer(auth.user.id, containerId)) {
+    if (await this.lockRepository.isContainerHiddenForViewer(auth.user.id, containerId, tx)) {
       throw new BadRequestException('Not found or no albumContainer.read access');
     }
   }

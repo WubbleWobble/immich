@@ -5,7 +5,7 @@ import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR, APP_PIPE } from '@nestjs/core';
 import { transformException } from '@nestjs/platform-express/multer/multer/multer.utils';
 import { Test } from '@nestjs/testing';
 import { NextFunction } from 'express';
-import { Kysely } from 'kysely';
+import { Kysely, sql } from 'kysely';
 import multer, { memoryStorage } from 'multer';
 import { ClsService } from 'nestjs-cls';
 import { ZodSerializerInterceptor, ZodValidationPipe } from 'nestjs-zod';
@@ -21,7 +21,7 @@ import { FileUploadInterceptor } from 'src/middleware/file-upload.interceptor.js
 import { GlobalExceptionFilter } from 'src/middleware/global-exception.filter.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { ActivityRepository } from 'src/repositories/activity.repository.js';
-import { AlbumContainerRepository } from 'src/repositories/album-container.repository.js';
+import { AlbumContainerRepository, StructureLockedTx } from 'src/repositories/album-container.repository.js';
 import { AlbumUserRepository } from 'src/repositories/album-user.repository.js';
 import { AlbumRepository } from 'src/repositories/album.repository.js';
 import { ApiKeyRepository } from 'src/repositories/api-key.repository.js';
@@ -310,6 +310,9 @@ type Constructor<Type, Args extends Array<any>> = {
   new (...deps: Args): Type;
 };
 
+/** The transaction the mocked AlbumContainerRepository.withStructureLock hands its callback. */
+export const structureLockedTxMock = { structureLockedTxMock: true } as unknown as StructureLockedTx;
+
 export const getMocks = () => {
   const loggerMock = { setContext: () => {} };
   const configMock = { getEnv: () => ({}) };
@@ -318,6 +321,10 @@ export const getMocks = () => {
   const databaseMock = automock(DatabaseRepository, { args: [, loggerMock], strict: false });
 
   databaseMock.withLock.mockImplementation((_type, fn) => fn());
+
+  const albumContainerMock = automock(AlbumContainerRepository, { strict: false });
+  // Runs the callback on a stand-in transaction, as the real repository does after taking the lock.
+  albumContainerMock.withStructureLock.mockImplementation((_ownerId, fn) => fn(structureLockedTxMock));
   databaseMock.getPostgresVersion = vitest.fn().mockResolvedValue('14.10 (Debian 14.10-1.pgdg120+1)');
   databaseMock.getPostgresVersionRange = vitest.fn().mockReturnValue('>=14.0.0');
   databaseMock.createExtension = vitest.fn().mockResolvedValue(void 0);
@@ -332,7 +339,7 @@ export const getMocks = () => {
     crypto: newCryptoRepositoryMock(),
     activity: automock(ActivityRepository),
     album: automock(AlbumRepository, { strict: false }),
-    albumContainer: automock(AlbumContainerRepository, { strict: false }),
+    albumContainer: albumContainerMock,
     albumUser: automock(AlbumUserRepository),
     asset: newAssetRepositoryMock(),
     assetEdit: automock(AssetEditRepository),
@@ -516,6 +523,16 @@ export const getKyselyDB = async (suffix?: string): Promise<Kysely<DB>> => {
   await sql.unsafe(`CREATE DATABASE ${dbName} WITH TEMPLATE ${templateName} OWNER postgres;`);
 
   return new Kysely<DB>(getKyselyConfig({ connectionType: 'url', url: withDatabase(testUrl, dbName) }));
+};
+
+/**
+ * A second, independent connection pool to the database behind `db`, so a medium test can run
+ * two transactions on genuinely separate connections. The caller must destroy() it.
+ */
+export const getKyselyPeerDB = async (db: Kysely<DB>): Promise<Kysely<DB>> => {
+  const { rows } = await sql<{ name: string }>`SELECT current_database() AS name`.execute(db);
+  const url = withDatabase(process.env.IMMICH_TEST_POSTGRES_URL!, rows[0].name);
+  return new Kysely<DB>(getKyselyConfig({ connectionType: 'url', url }));
 };
 
 export const newRandomImage = () => {

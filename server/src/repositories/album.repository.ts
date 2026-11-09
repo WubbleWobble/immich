@@ -445,6 +445,8 @@ export class AlbumRepository {
     assetIds: string[],
     albumUsers: AlbumUserCreateDto[],
     authUserId: string,
+    // A placement into a folder passes its folder-structure transaction (AlbumContainerRepository).
+    db: Kysely<DB> = this.db,
   ) {
     if (albumUsers.every((u) => u.role !== AlbumUserRole.Owner)) {
       throw new Error('Album must have an owner');
@@ -453,7 +455,7 @@ export class AlbumRepository {
     const userIds = albumUsers.map((u) => u.userId);
     const roles = albumUsers.map((u) => u.role);
 
-    const result = await this.db
+    const result = await db
       .with('album', (db) => db.insertInto('album').values(album).returningAll())
       .with('album_user', (db) =>
         db
@@ -490,9 +492,10 @@ export class AlbumRepository {
     return result;
   }
 
-  update(id: string, album: Updateable<AlbumTable>, authUserId: string) {
+  /** A move into or out of a folder passes its folder-structure transaction (AlbumContainerRepository). */
+  update(id: string, album: Updateable<AlbumTable>, authUserId: string, db: Kysely<DB> = this.db) {
     return (
-      this.db
+      db
         .updateTable('album')
         .set(album)
         // A filter write invalidates the smart-album cache in the same statement, so a recompute that reads

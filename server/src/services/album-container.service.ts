@@ -138,24 +138,26 @@ export class AlbumContainerService extends BaseService {
   }
 
   async create(auth: AuthDto, dto: CreateAlbumContainerDto): Promise<AlbumContainerResponseDto> {
-    if (dto.parentId) {
-      const parent = await this.albumContainerRepository.getById(dto.parentId);
-      if (!parent) {
-        throw new BadRequestException('Parent folder not found');
+    // Validation and the closure rows it relies on share one owner-serialized transaction.
+    const container = await this.albumContainerRepository.withStructureLock(auth.user.id, async (tx) => {
+      if (dto.parentId) {
+        const parent = await this.albumContainerRepository.getById(dto.parentId, tx);
+        if (!parent) {
+          throw new BadRequestException('Parent folder not found');
+        }
+        if (parent.ownerId !== auth.user.id) {
+          throw new ForbiddenException("Cannot create folder under another user's folder");
+        }
+        const parentDepth = await this.albumContainerRepository.getDepth(parent.id, tx);
+        if (parentDepth + 1 > MAX_DEPTH) {
+          throw new BadRequestException(`Folder depth exceeds limit of ${MAX_DEPTH}`);
+        }
       }
-      if (parent.ownerId !== auth.user.id) {
-        throw new ForbiddenException("Cannot create folder under another user's folder");
-      }
-      const parentDepth = await this.albumContainerRepository.getDepth(parent.id);
-      if (parentDepth + 1 > MAX_DEPTH) {
-        throw new BadRequestException(`Folder depth exceeds limit of ${MAX_DEPTH}`);
-      }
-    }
 
-    const container = await this.albumContainerRepository.create({
-      ownerId: auth.user.id,
-      name: dto.name,
-      parentId: dto.parentId ?? null,
+      return this.albumContainerRepository.create(
+        { ownerId: auth.user.id, name: dto.name, parentId: dto.parentId ?? null },
+        tx,
+      );
     });
 
     return this.mapToResponse(container, [], []);
@@ -163,50 +165,54 @@ export class AlbumContainerService extends BaseService {
 
   async update(auth: AuthDto, id: string, dto: UpdateAlbumContainerDto): Promise<AlbumContainerResponseDto> {
     const lockService = BaseService.create(LockService, this);
-    await lockService.assertContainerVisibleForViewer(auth, id);
-    if (dto.parentId !== undefined) {
-      // Moving a folder re-routes cascade shares for everything beneath it, and moving it
-      // INTO a hidden parent is a write on hidden content.
-      await lockService.assertSubtreeVisibleForViewer(auth, id);
-      if (dto.parentId !== null) {
-        await lockService.assertContainerVisibleForViewer(auth, dto.parentId);
-      }
-    }
-    const container = await this.albumContainerRepository.getById(id);
-    if (!container) {
-      throw new NotFoundException('Folder not found');
-    }
-    if (container.ownerId !== auth.user.id) {
-      throw new ForbiddenException('Not allowed');
-    }
-
-    if (dto.parentId !== undefined && dto.parentId !== container.parentId) {
-      if (dto.parentId !== null) {
-        const parent = await this.albumContainerRepository.getById(dto.parentId);
-        if (!parent) {
-          throw new BadRequestException('Parent folder not found');
-        }
-        if (parent.ownerId !== auth.user.id) {
-          throw new ForbiddenException("Cannot move folder under another user's folder");
-        }
-
-        const isCycle = await this.albumContainerRepository.isDescendantOf(dto.parentId, id);
-        if (isCycle) {
-          throw new BadRequestException('Cannot move a folder into its own descendant');
-        }
-
-        const parentDepth = await this.albumContainerRepository.getDepth(dto.parentId);
-        const subtreeHeight = await this.albumContainerRepository.getHeight(id);
-        if (parentDepth + 1 + subtreeHeight > MAX_DEPTH) {
-          throw new BadRequestException(`Folder depth exceeds limit of ${MAX_DEPTH}`);
+    // Folder structure is owner-only, so the caller's own structure lock covers every folder a
+    // successful move touches; validation runs on the same transaction as the closure rewrite.
+    await this.albumContainerRepository.withStructureLock(auth.user.id, async (tx) => {
+      await lockService.assertContainerVisibleForViewer(auth, id, tx);
+      if (dto.parentId !== undefined) {
+        // Moving a folder re-routes cascade shares for everything beneath it, and moving it
+        // INTO a hidden parent is a write on hidden content.
+        await lockService.assertSubtreeVisibleForViewer(auth, id, tx);
+        if (dto.parentId !== null) {
+          await lockService.assertContainerVisibleForViewer(auth, dto.parentId, tx);
         }
       }
-      await this.albumContainerRepository.move(id, dto.parentId);
-    }
+      const container = await this.albumContainerRepository.getById(id, tx);
+      if (!container) {
+        throw new NotFoundException('Folder not found');
+      }
+      if (container.ownerId !== auth.user.id) {
+        throw new ForbiddenException('Not allowed');
+      }
 
-    if (dto.name !== undefined && dto.name !== container.name) {
-      await this.albumContainerRepository.rename(id, dto.name);
-    }
+      if (dto.parentId !== undefined && dto.parentId !== container.parentId) {
+        if (dto.parentId !== null) {
+          const parent = await this.albumContainerRepository.getById(dto.parentId, tx);
+          if (!parent) {
+            throw new BadRequestException('Parent folder not found');
+          }
+          if (parent.ownerId !== auth.user.id) {
+            throw new ForbiddenException("Cannot move folder under another user's folder");
+          }
+
+          const isCycle = await this.albumContainerRepository.isDescendantOf(dto.parentId, id, tx);
+          if (isCycle) {
+            throw new BadRequestException('Cannot move a folder into its own descendant');
+          }
+
+          const parentDepth = await this.albumContainerRepository.getDepth(dto.parentId, tx);
+          const subtreeHeight = await this.albumContainerRepository.getHeight(id, tx);
+          if (parentDepth + 1 + subtreeHeight > MAX_DEPTH) {
+            throw new BadRequestException(`Folder depth exceeds limit of ${MAX_DEPTH}`);
+          }
+        }
+        await this.albumContainerRepository.move(id, dto.parentId, tx);
+      }
+
+      if (dto.name !== undefined && dto.name !== container.name) {
+        await this.albumContainerRepository.rename(id, dto.name, tx);
+      }
+    });
 
     const updated = await this.albumContainerRepository.getById(id);
     const usersByContainer = await this.fetchUsersByContainer([id]);
@@ -219,18 +225,20 @@ export class AlbumContainerService extends BaseService {
 
   async delete(auth: AuthDto, id: string): Promise<void> {
     const lockService = BaseService.create(LockService, this);
-    await lockService.assertContainerVisibleForViewer(auth, id);
-    // Deleting cascades through descendant folders (removing their lock rows) and detaches
-    // their albums to the root, un-hiding content - so a locked descendant blocks it too.
-    await lockService.assertSubtreeVisibleForViewer(auth, id);
-    const container = await this.albumContainerRepository.getById(id);
-    if (!container) {
-      throw new NotFoundException('Folder not found');
-    }
-    if (container.ownerId !== auth.user.id) {
-      throw new ForbiddenException('Not allowed');
-    }
-    await this.albumContainerRepository.delete(id);
+    await this.albumContainerRepository.withStructureLock(auth.user.id, async (tx) => {
+      await lockService.assertContainerVisibleForViewer(auth, id, tx);
+      // Deleting cascades through descendant folders (removing their lock rows) and detaches
+      // their albums to the root, un-hiding content - so a locked descendant blocks it too.
+      await lockService.assertSubtreeVisibleForViewer(auth, id, tx);
+      const container = await this.albumContainerRepository.getById(id, tx);
+      if (!container) {
+        throw new NotFoundException('Folder not found');
+      }
+      if (container.ownerId !== auth.user.id) {
+        throw new ForbiddenException('Not allowed');
+      }
+      await this.albumContainerRepository.delete(id, tx);
+    });
   }
 
   async addUser(auth: AuthDto, id: string, dto: AlbumContainerUserCreateDto): Promise<void> {

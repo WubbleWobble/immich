@@ -160,11 +160,13 @@ export class LockRepository {
     return isAlbumHiddenForViewerQuery(this.db, viewerId, albumId);
   }
 
-  subtreeContainsHiddenContent(userId: string, containerId: string): Promise<boolean> {
-    return subtreeContainsHiddenContentQuery(this.db, userId, containerId);
+  /** `db` lets a folder-structure mutation judge visibility inside its locked transaction. */
+  subtreeContainsHiddenContent(userId: string, containerId: string, db: Kysely<DB> = this.db): Promise<boolean> {
+    return subtreeContainsHiddenContentQuery(db, userId, containerId);
   }
 
-  isContainerHiddenForViewer(viewerId: string, containerId: string): Promise<boolean> {
-    return isContainerHiddenForViewerQuery(this.db, viewerId, containerId);
+  /** `db` lets a folder-structure mutation judge visibility inside its locked transaction. */
+  isContainerHiddenForViewer(viewerId: string, containerId: string, db: Kysely<DB> = this.db): Promise<boolean> {
+    return isContainerHiddenForViewerQuery(db, viewerId, containerId);
   }
 }

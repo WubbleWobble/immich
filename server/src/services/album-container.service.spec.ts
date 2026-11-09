@@ -5,7 +5,7 @@ import { AlbumContainerService } from 'src/services/album-container.service.js';
 import { AuthFactory } from 'test/factories/auth.factory.js';
 import { UserFactory } from 'test/factories/user.factory.js';
 import { newUuid } from 'test/small.factory.js';
-import { ServiceMocks, newTestService } from 'test/utils.js';
+import { ServiceMocks, newTestService, structureLockedTxMock } from 'test/utils.js';
 
 const folderForOwner = (ownerId: string, id = newUuid()) => ({
   id,
@@ -404,11 +404,11 @@ describe(AlbumContainerService.name, () => {
       expect(result.id).toEqual(id);
       expect(result.parentId).toBeNull();
       expect(result.ownerId).toEqual(owner.id);
-      expect(mocks.albumContainer.create).toHaveBeenCalledWith({
-        ownerId: owner.id,
-        name: 'Root',
-        parentId: null,
-      });
+      expect(mocks.albumContainer.withStructureLock).toHaveBeenCalledWith(owner.id, expect.any(Function));
+      expect(mocks.albumContainer.create).toHaveBeenCalledWith(
+        { ownerId: owner.id, name: 'Root', parentId: null },
+        structureLockedTxMock,
+      );
     });
 
     it('rejects when parent is owned by another user', async () => {
@@ -498,7 +498,7 @@ describe(AlbumContainerService.name, () => {
 
       await expect(sut.delete(auth, folder.id)).resolves.toBeUndefined();
       expect(mocks.lock.subtreeContainsHiddenContent).not.toHaveBeenCalled();
-      expect(mocks.albumContainer.delete).toHaveBeenCalledWith(folder.id);
+      expect(mocks.albumContainer.delete).toHaveBeenCalledWith(folder.id, structureLockedTxMock);
     });
 
     it('rejects moving a container into its own descendant (cycle)', async () => {
@@ -653,7 +653,8 @@ describe(AlbumContainerService.name, () => {
 
       const result = await sut.update(auth, id, { parentId: newParentId });
 
-      expect(mocks.albumContainer.move).toHaveBeenCalledWith(id, newParentId);
+      expect(mocks.albumContainer.withStructureLock).toHaveBeenCalledWith(owner.id, expect.any(Function));
+      expect(mocks.albumContainer.move).toHaveBeenCalledWith(id, newParentId, structureLockedTxMock);
       expect(result.parentId).toEqual(newParentId);
     });
   });
