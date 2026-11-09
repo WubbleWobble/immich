@@ -6,6 +6,8 @@ import { TrashResponseDto } from 'src/dtos/trash.dto.js';
 import { JobName, JobStatus, Permission, QueueName } from 'src/enum.js';
 import { AlbumService } from 'src/services/album.service.js';
 import { BaseService } from 'src/services/base.service.js';
+import { OwnerLockVisibility } from 'src/utils/database.js';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
 import { batched } from 'src/utils/misc.js';
 
 @Injectable()
@@ -29,7 +31,7 @@ export class TrashService extends BaseService {
   }
 
   async restore(auth: AuthDto): Promise<TrashResponseDto> {
-    const count = await this.trashRepository.restore(auth.user.id);
+    const count = await this.trashRepository.restore(auth.user.id, await this.getBulkLockVisibility(auth));
     if (count > 0) {
       this.logger.log(`Restored ${count} asset(s) from trash`);
       // Affected asset ids aren't easily enumerated here, so invalidate all of the user's
@@ -40,7 +42,7 @@ export class TrashService extends BaseService {
   }
 
   async empty(auth: AuthDto): Promise<TrashResponseDto> {
-    const count = await this.trashRepository.empty(auth.user.id);
+    const count = await this.trashRepository.empty(auth.user.id, await this.getBulkLockVisibility(auth));
     if (count > 0) {
       await this.jobRepository.queue({ name: JobName.AssetEmptyTrash, data: {} });
       // The actual hard-delete is queued; invalidate now because trashed-but-still-present
@@ -48,6 +50,24 @@ export class TrashService extends BaseService {
       await BaseService.create(AlbumService, this).invalidateAllSmartAlbumsForOwnerSafe(auth.user.id);
     }
     return { count };
+  }
+
+  /**
+   * Fork (ruling R65): outside elevation the bulk operations (restore all, empty) act only on trashed assets NOT hidden
+   * by the owner's own locks - the rule the explicit `restoreAssets` path applies through excludeHiddenForLocker, with
+   * no reveal (a write). Hidden rows are skipped silently and are not counted. An elevated session, or an owner without
+   * locks, gets an empty list and the all-rows behaviour. Scheduled trash retention is a separate policy and unchanged.
+   */
+  private getBulkLockVisibility(auth: AuthDto): Promise<OwnerLockVisibility[]> {
+    if (auth.session?.hasElevatedPermission) {
+      return Promise.resolve([]);
+    }
+    return this.lockRepository.getOwnerLockVisibility({
+      viewerId: auth.user.id,
+      ownerIds: [auth.user.id],
+      revealed: NO_REVEALED_LOCKS,
+      isElevated: false,
+    });
   }
 
   @OnEvent({ name: 'AssetDeleteAll' })

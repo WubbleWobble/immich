@@ -148,6 +148,14 @@ State these plainly to users.
   no session (R62). Sharees who did not lock the album are unaffected. A person's thumbnail-ready event
   for a person you only see on hidden photos also reaches elevated sessions
   only (R60).
+- **"Restore all" and "Empty trash" skip hidden photos outside elevation
+  (R65).** The two bulk trash actions follow the same own-lock rule as
+  restoring a photo by id: a trashed photo hidden by your locks is left in
+  the trash, is not counted in the returned count, and is not scheduled for
+  permanent deletion. Elevate (PIN) to restore or empty everything. The
+  scheduled trash retention job (automatic deletion after the configured
+  number of days) is a separate policy and is unchanged: it still removes
+  every expired trashed photo, hidden or not.
 - **CLI and API-key uploads re-send hidden files every run (R49).** API-key
   sessions are never elevated. So `immich-cli` and `immich-go` see an
   already-hidden file as new each time, upload it again and get a phantom
