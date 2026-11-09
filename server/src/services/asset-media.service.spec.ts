@@ -890,4 +890,69 @@ describe(AssetMediaService.name, () => {
       });
     });
   });
+
+  describe('fork: ordinary-session hidden duplicates (R49)', () => {
+    const checksum = Buffer.from('d2947b871a706081be194569951b7db246907957', 'hex');
+    const hiddenId = '11111111-1111-4111-8111-111111111111';
+    const phantomId = '33333333-3333-4333-8333-333333333333';
+
+    const hideForOwner = (ownerId: string) => {
+      mocks.lock.getAssetOwners.mockResolvedValue([{ id: hiddenId, ownerId, isPartner: false }]);
+      mocks.lock.getOwnerLockVisibility.mockResolvedValue([
+        { ownerId, hiddenAlbumIds: ['locked-album'], hiddenSmartFilters: [], visibleSmartFilters: [] },
+      ]);
+      mocks.lock.getVisibleAssetIds.mockResolvedValue(new Set());
+    };
+
+    it('the checksum pre-check names no hidden asset', async () => {
+      const auth = AuthFactory.from().session({ hasElevatedPermission: false }).build();
+      hideForOwner(auth.user.id);
+      mocks.asset.getUploadAssetIdByChecksum.mockResolvedValue(hiddenId);
+
+      await expect(sut.getUploadAssetIdByChecksum(auth, checksum.toString('hex'))).resolves.toBeUndefined();
+      expect(mocks.lock.getOwnerLockVisibility).toHaveBeenCalledWith(
+        expect.objectContaining({ viewerId: auth.user.id, ownerIds: [auth.user.id], isElevated: false }),
+      );
+    });
+
+    it('bulkUploadCheck accepts a hidden match like a new checksum', async () => {
+      const auth = AuthFactory.from().session({ hasElevatedPermission: false }).build();
+      hideForOwner(auth.user.id);
+      mocks.asset.getByChecksums.mockResolvedValue([{ id: hiddenId, checksum, deletedAt: new Date() }]);
+
+      await expect(
+        sut.bulkUploadCheck(auth, { assets: [{ id: 'client-file', checksum: checksum.toString('hex') }] }),
+      ).resolves.toEqual({ results: [{ id: 'client-file', action: AssetUploadAction.ACCEPT }] });
+    });
+
+    it('the checksum-conflict fallback answers with an unstored phantom', async () => {
+      const auth = AuthFactory.from().session({ hasElevatedPermission: false }).build();
+      hideForOwner(auth.user.id);
+      mocks.asset.getUploadAssetIdByChecksum.mockResolvedValue(hiddenId);
+      mocks.asset.create.mockRejectedValue(
+        Object.assign(new Error('duplicate'), { constraint_name: ASSET_CHECKSUM_CONSTRAINT }),
+      );
+      mocks.crypto.randomUUID.mockReturnValue(phantomId);
+
+      const response = await sut.uploadAsset(
+        auth,
+        { fileCreatedAt: new Date(), fileModifiedAt: new Date() } as AssetMediaCreateDto,
+        { uuid: 'new-upload', checksum, originalPath: '/upload/image.jpeg', originalName: 'image.jpeg', size: 0 },
+      );
+      expect(JSON.stringify(response)).toBe(JSON.stringify({ id: phantomId, status: AssetMediaStatus.CREATED }));
+      expect(mocks.event.emit).not.toHaveBeenCalledWith('AssetCreate', expect.anything());
+    });
+
+    it('an elevated session skips the lock lookup and gets the real duplicate', async () => {
+      const auth = AuthFactory.from().session({ hasElevatedPermission: true }).build();
+      hideForOwner(auth.user.id);
+      mocks.asset.getUploadAssetIdByChecksum.mockResolvedValue(hiddenId);
+
+      await expect(sut.getUploadAssetIdByChecksum(auth, checksum.toString('hex'))).resolves.toEqual({
+        id: hiddenId,
+        status: AssetMediaStatus.DUPLICATE,
+      });
+      expect(mocks.lock.getAssetOwners).not.toHaveBeenCalled();
+    });
+  });
 });
