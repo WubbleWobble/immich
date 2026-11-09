@@ -326,10 +326,10 @@ export class SearchService extends BaseService {
       throw new BadRequestException('Smart search is not enabled');
     }
 
-    const [{ filter, scope }, embedding] = await Promise.all([
-      this.resolveSearchScopeV3(auth, dto),
-      this.resolveEmbedding(auth, dto, machineLearning),
-    ]);
+    // Fork (S9): the scope (album validation, shared-link confinement) is settled before the embedding is resolved, so
+    // a refused request never reaches machine learning or reads a query asset's embedding.
+    const { filter, scope } = await this.resolveSearchScopeV3(auth, dto);
+    const embedding = await this.resolveEmbedding(auth, dto, machineLearning);
 
     // no cursor until a rank-aware pagination strategy for smart search is decided
     const { items } = await this.searchRepository.searchSmartV3(

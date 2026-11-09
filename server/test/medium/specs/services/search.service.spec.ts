@@ -485,6 +485,22 @@ describe(SearchService.name, () => {
     const SEARCH_KINDS = ['metadata', 'statistics', 'random', 'smart'] as const;
     type SearchKind = (typeof SEARCH_KINDS)[number];
 
+    it('smart search validates the albums it names before resolving the embedding', async () => {
+      const { sut, ctx } = setup();
+      const { user: viewer } = await ctx.newUser();
+      const hidden = await newSearchAsset(ctx, { ownerId: viewer.id });
+      const { album: locked } = await ctx.newAlbum({ ownerId: viewer.id }, [hidden.id]);
+      await lockAlbum(ctx, viewer.id, locked.id);
+      const encodeText = ctx.getMock(MachineLearningRepository).encodeText;
+      encodeText.mockClear();
+
+      const auth = factory.auth({ user: { id: viewer.id } });
+      await expect(
+        sut.searchSmart(auth, { size: 100, query: 'photo', filter: { albumIds: { any: [locked.id] } } }),
+      ).rejects.toThrow(new BadRequestException(ALBUM_ACCESS_ERROR));
+      expect(encodeText).not.toHaveBeenCalled();
+    });
+
     describe.each(SEARCH_KINDS)('%s search', (kind: SearchKind) => {
       /** Result ids (sorted), or the total for statistics, which has no items. */
       const search = async (sut: SearchService, auth: AuthDto, filter: SearchFilter) => {
