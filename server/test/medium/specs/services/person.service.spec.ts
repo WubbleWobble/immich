@@ -181,6 +181,16 @@ beforeAll(async () => {
   defaultDatabase = await getKyselyDB();
 });
 
+/** A face's person and soft-delete state, or undefined once hard-deleted. */
+const personOf = async (ctx: Ctx, faceId: string) => {
+  const row = await ctx.database
+    .selectFrom('asset_face')
+    .select(['personGroupId', 'deletedAt'])
+    .where('id', '=', faceId)
+    .executeTakeFirst();
+  return row;
+};
+
 describe(PersonService.name, () => {
   describe('reassignFaces', () => {
     it('should require access to the person the auth user is assigning to', async () => {
@@ -2201,6 +2211,90 @@ describe(PersonService.name, () => {
         .where('id', '=', album.id)
         .execute();
       await expect(readableAssetIds(ctx, ownerAuth, [hidden.id])).resolves.toEqual([hidden.id]);
+    });
+  });
+
+  describe('fork locks: face edits on hidden assets (§15.2)', () => {
+    it('deleteFace refuses a face on a hidden asset outside elevation like a missing face', async () => {
+      const { ctx, sut } = setup();
+      ctx.getMock(JobRepository).queueAll.mockResolvedValue();
+      ctx.getMock(JobRepository).queue.mockResolvedValue();
+      const { user } = await ctx.newUser();
+      const { person } = await ctx.newPerson({ ownerId: user.id });
+      const { face: hiddenFace } = await newFaceOn(ctx, {
+        ownerId: user.id,
+        personGroupId: person.personGroupId,
+        locked: true,
+      });
+      const { face: visibleFace } = await newFaceOn(ctx, { ownerId: user.id, personGroupId: person.personGroupId });
+      const auth = factory.auth({ user });
+
+      for (const force of [false, true]) {
+        await expect(sut.deleteFace(auth, hiddenFace.id, { force })).rejects.toThrow(
+          'Not found or no face.delete access',
+        );
+      }
+      await expect(personOf(ctx, hiddenFace.id)).resolves.toEqual({
+        personGroupId: person.personGroupId,
+        deletedAt: null,
+      });
+      await expect(sut.deleteFace(auth, newUuid(), { force: true })).rejects.toThrow(
+        'Not found or no face.delete access',
+      );
+
+      await expect(sut.deleteFace(auth, visibleFace.id, { force: true })).resolves.toBeUndefined();
+      const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+      await expect(sut.deleteFace(elevated, hiddenFace.id, { force: true })).resolves.toBeUndefined();
+      await expect(personOf(ctx, hiddenFace.id)).resolves.toBeUndefined();
+    });
+
+    it('reassignFacesById refuses a face on a hidden asset outside elevation like a missing face', async () => {
+      const { ctx, sut } = setup();
+      ctx.getMock(JobRepository).queueAll.mockResolvedValue();
+      ctx.getMock(JobRepository).queue.mockResolvedValue();
+      const { user } = await ctx.newUser();
+      const { person: source } = await ctx.newPerson({ ownerId: user.id });
+      const { person: target } = await ctx.newPerson({ ownerId: user.id });
+      const { face } = await newFaceOn(ctx, { ownerId: user.id, personGroupId: source.personGroupId, locked: true });
+      const auth = factory.auth({ user });
+
+      await expect(sut.reassignFacesById(auth, target.personGroupId, { id: face.id })).rejects.toThrow(
+        'Not found or no person.create access',
+      );
+      await expect(personOf(ctx, face.id)).resolves.toEqual({ personGroupId: source.personGroupId, deletedAt: null });
+
+      const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+      await sut.reassignFacesById(elevated, target.personGroupId, { id: face.id });
+      await expect(personOf(ctx, face.id)).resolves.toEqual({ personGroupId: target.personGroupId, deletedAt: null });
+    });
+
+    it('reassignFaces skips faces on hidden assets outside elevation', async () => {
+      const { ctx, sut } = setup();
+      ctx.getMock(JobRepository).queueAll.mockResolvedValue();
+      ctx.getMock(JobRepository).queue.mockResolvedValue();
+      const { user } = await ctx.newUser();
+      const { person: source } = await ctx.newPerson({ ownerId: user.id });
+      const { person: target } = await ctx.newPerson({ ownerId: user.id });
+      const hidden = await newFaceOn(ctx, { ownerId: user.id, personGroupId: source.personGroupId, locked: true });
+      const visible = await newFaceOn(ctx, { ownerId: user.id, personGroupId: source.personGroupId });
+      const data = [hidden, visible].map(({ asset }) => ({ personId: source.personGroupId, assetId: asset.id }));
+
+      await sut.reassignFaces(factory.auth({ user }), target.personGroupId, { data });
+      await expect(personOf(ctx, hidden.face.id)).resolves.toEqual({
+        personGroupId: source.personGroupId,
+        deletedAt: null,
+      });
+      await expect(personOf(ctx, visible.face.id)).resolves.toEqual({
+        personGroupId: target.personGroupId,
+        deletedAt: null,
+      });
+
+      const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+      await sut.reassignFaces(elevated, target.personGroupId, { data: data.slice(0, 1) });
+      await expect(personOf(ctx, hidden.face.id)).resolves.toEqual({
+        personGroupId: target.personGroupId,
+        deletedAt: null,
+      });
     });
   });
 });

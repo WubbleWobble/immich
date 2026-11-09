@@ -166,11 +166,18 @@ export class PersonService extends BaseService {
         [{ personGroupId: data.personId, assetId: data.assetId }],
         { viewingUserId: auth.user.id },
       );
+      // Fork (§15.2): editing a face edits its asset; a face on an asset hidden for its locker is skipped outside
+      // elevation, exactly like a face the caller cannot reach (ruling R32).
+      const updatableAssetIds = await this.checkAccess({
+        auth,
+        permission: Permission.AssetUpdate,
+        ids: [...new Set(faces.map(({ assetId }) => assetId))],
+      });
 
       for (const face of faces) {
         const ids = await this.checkAccess({ auth, permission: Permission.PersonCreate, ids: [face.id] });
 
-        if (ids.size !== 1) {
+        if (ids.size !== 1 || !updatableAssetIds.has(face.assetId)) {
           continue;
         }
 
@@ -205,6 +212,7 @@ export class PersonService extends BaseService {
     });
     await this.requireAccess({ auth, permission: Permission.PersonCreate, ids: [dto.id] });
     const face = await this.personRepository.getFaceById(dto.id, { viewingUserId: auth.user.id });
+    await this.assertFaceAssetUpdatable(auth, face.assetId, Permission.PersonCreate);
     const person = await this.findOrFail(auth, personGroupId);
 
     await this.personRepository.reassignFace(face.id, person.personGroupId);
@@ -936,6 +944,17 @@ export class PersonService extends BaseService {
     await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetIdsSafe([dto.assetId]);
   }
 
+  /**
+   * Fork (§15.2): a face edit is a write on its asset, so a face on an asset hidden for its locker is refused outside
+   * elevation - with the face permission's own "not found" error (ruling R32: no lock-state oracle).
+   */
+  private async assertFaceAssetUpdatable(auth: AuthDto, assetId: string, facePermission: Permission) {
+    const allowed = await this.checkAccess({ auth, permission: Permission.AssetUpdate, ids: [assetId] });
+    if (!allowed.has(assetId)) {
+      throw new BadRequestException(`Not found or no ${facePermission} access`);
+    }
+  }
+
   async deleteFace(auth: AuthDto, id: string, dto: AssetFaceDeleteDto): Promise<void> {
     await this.requireAccess({ auth, permission: Permission.FaceDelete, ids: [id] });
 
@@ -948,6 +967,9 @@ export class PersonService extends BaseService {
       assetId = face.assetId;
     } catch {
       // face not found / already gone — invalidation will be a no-op
+    }
+    if (assetId) {
+      await this.assertFaceAssetUpdatable(auth, assetId, Permission.FaceDelete);
     }
 
     const result = dto.force
