@@ -30,6 +30,7 @@ import {
 } from 'src/enum.js';
 import { AuthRequest } from 'src/middleware/auth.guard.js';
 import { BaseService } from 'src/services/base.service.js';
+import { LockService } from 'src/services/lock.service.js';
 import { requireUploadAccess } from 'src/utils/access.js';
 import { asUploadRequest, onBeforeLink, rejectLegacyLockedVisibility } from 'src/utils/asset.util.js';
 import { isAssetChecksumConstraint } from 'src/utils/database.js';
@@ -49,7 +50,8 @@ export class AssetMediaService extends BaseService {
     }
 
     const assetId = await this.assetRepository.getUploadAssetIdByChecksum(auth.user.id, fromChecksum(checksum));
-    if (!assetId) {
+    // Fork (7A.8a): never name a hidden asset; the upload proceeds and takes the checksum-constraint path below.
+    if (!assetId || (await this.isDuplicateHiddenFromSharedLink(auth, assetId))) {
       return;
     }
 
@@ -209,6 +211,14 @@ export class AssetMediaService extends BaseService {
           throw new InternalServerErrorException();
         }
 
+        if (await this.isDuplicateHiddenFromSharedLink(auth, duplicateId)) {
+          // Fork (7A.8a): neither add the hidden asset to the link nor name it. Reply exactly like a fresh upload with
+          // an id that is never persisted - the result for "no duplicate exists" (ruling R32), so the response is no
+          // existence or lock-state oracle for the link holder.
+          this.logger.debug(`Duplicate asset upload rejected: existing asset is hidden for the link owner`);
+          return { status: AssetMediaStatus.CREATED, id: this.cryptoRepository.randomUUID() };
+        }
+
         if (auth.sharedLink) {
           await this.addToSharedLink(auth.sharedLink, duplicateId);
         }
@@ -344,6 +354,22 @@ export class AssetMediaService extends BaseService {
         };
       }),
     };
+  }
+
+  /**
+   * Fork (7A.8a): whether a shared-link upload's checksum duplicate is an asset hidden for the link owner that the link
+   * does not already grant. A link that grants it (e.g. an album link to the locked album itself) reveals nothing new,
+   * so that duplicate keeps the regular response; adding it again would be a no-op.
+   */
+  private async isDuplicateHiddenFromSharedLink(auth: AuthDto, assetId: string): Promise<boolean> {
+    if (!auth.sharedLink) {
+      return false;
+    }
+    if (!(await BaseService.create(LockService, this).isAssetHiddenForSharedLinkOwner(auth, assetId))) {
+      return false;
+    }
+    const granted = await this.checkAccess({ auth, permission: Permission.AssetRead, ids: [assetId] });
+    return !granted.has(assetId);
   }
 
   private async addToSharedLink(sharedLink: AuthSharedLink, assetId: string) {

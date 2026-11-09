@@ -192,6 +192,18 @@ export class LockService extends BaseService {
     return this.getHiddenAssetIds(auth, assetIds, 'direct', { relatedOnly: true });
   }
 
+  /**
+   * Shared-link upload guard (7A.8a): whether the link owner's asset that an upload matched by checksum is hidden for
+   * that owner. The visitor is never elevated and holds no reveal set, so the owner's own locks apply in full - adding
+   * the asset to the link (or its album) would be a non-elevated mutation of hidden content that also exposes it to
+   * every link holder.
+   */
+  async isAssetHiddenForSharedLinkOwner(auth: AuthDto, assetId: string): Promise<boolean> {
+    const owner = { user: auth.user };
+    const hidden = await this.getHiddenAssetIds(owner, [assetId], 'direct', { ownOnly: true });
+    return hidden.has(assetId);
+  }
+
   private async findHiddenSharedLinks(
     auth: AuthDto,
     links: SharedLinkLockTarget[],

@@ -6,8 +6,10 @@ import { AssetFileType, SharedLinkType } from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { AlbumRepository } from 'src/repositories/album.repository.js';
 import { AssetRepository } from 'src/repositories/asset.repository.js';
+import { CryptoRepository } from 'src/repositories/crypto.repository.js';
 import { EventRepository } from 'src/repositories/event.repository.js';
 import { JobRepository } from 'src/repositories/job.repository.js';
+import { LockRepository } from 'src/repositories/lock.repository.js';
 import { LoggingRepository } from 'src/repositories/logging.repository.js';
 import { SharedLinkRepository } from 'src/repositories/shared-link.repository.js';
 import { StorageRepository } from 'src/repositories/storage.repository.js';
@@ -25,7 +27,15 @@ let defaultDatabase: Kysely<DB>;
 const setup = (db?: Kysely<DB>) => {
   return newMediumService(AssetMediaService, {
     database: db || defaultDatabase,
-    real: [AccessRepository, AlbumRepository, AssetRepository, SharedLinkRepository, UserRepository],
+    real: [
+      AccessRepository,
+      AlbumRepository,
+      AssetRepository,
+      CryptoRepository,
+      LockRepository,
+      SharedLinkRepository,
+      UserRepository,
+    ],
     mock: [EventRepository, LoggingRepository, JobRepository, StorageRepository],
   });
 };
@@ -259,6 +269,77 @@ describe(AssetService.name, () => {
       const assets = [...result];
       expect(assets).toHaveLength(1);
       expect(assets[0]).toEqual(response.id);
+    });
+  });
+
+  describe('fork locks', () => {
+    it('shared-link upload matching a hidden asset checksum neither adds it to the link/album nor reveals its id', async () => {
+      const { sut, ctx } = setup();
+      ctx.getMock(StorageRepository).utimes.mockResolvedValue();
+      ctx.getMock(EventRepository).emit.mockResolvedValue();
+      ctx.getMock(JobRepository).queue.mockResolvedValue();
+      const sharedLinkRepo = ctx.get(SharedLinkRepository);
+
+      const { user } = await ctx.newUser();
+      const { asset: hidden } = await ctx.newAsset({ ownerId: user.id });
+      const { album: locked } = await ctx.newAlbum({ ownerId: user.id }, [hidden.id]);
+      await ctx.get(LockRepository).lockAlbum(user.id, locked.id);
+      const { album: open } = await ctx.newAlbum({ ownerId: user.id });
+
+      const linkDto = {
+        description: 'Shared link description',
+        userId: user.id,
+        allowDownload: true,
+        allowUpload: true,
+      };
+      const individualLink = await sharedLinkRepo.create({
+        ...linkDto,
+        key: randomBytes(50),
+        type: SharedLinkType.Individual,
+      });
+      const albumLink = await sharedLinkRepo.create({
+        ...linkDto,
+        key: randomBytes(50),
+        type: SharedLinkType.Album,
+        albumId: open.id,
+      });
+      const uploadDto = { fileModifiedAt: new Date(), fileCreatedAt: new Date(), assetData: Buffer.from('some data') };
+
+      for (const sharedLink of [individualLink, albumLink]) {
+        const auth = factory.auth({ user: { id: user.id }, sharedLink });
+
+        // the checksum pre-check (x-immich-checksum) falls through to a regular upload instead of naming the asset
+        await expect(sut.getUploadAssetIdByChecksum(auth, hidden.checksum.toString('hex'))).resolves.toBeUndefined();
+
+        // the response is shaped like a fresh upload (ruling R32): no DUPLICATE status, no hidden id
+        const response = await sut.uploadAsset(
+          auth,
+          uploadDto,
+          mediumFactory.uploadFile({ checksum: hidden.checksum }),
+        );
+        expect(response).toEqual({ id: expect.any(String), status: AssetMediaStatus.CREATED });
+        expect(response.id).not.toEqual(hidden.id);
+      }
+
+      // the hidden asset was added to neither the individual link nor the album behind the album link
+      const individual = await sharedLinkRepo.get(user.id, individualLink.id);
+      expect(individual!.assets).toEqual([]);
+      await expect(ctx.get(AlbumRepository).getAssetIds(open.id, [hidden.id])).resolves.toEqual(new Set());
+      await expect(
+        ctx.database.selectFrom('asset').select('id').where('ownerId', '=', user.id).execute(),
+      ).resolves.toEqual([{ id: hidden.id }]);
+
+      // a link that already grants the asset (an album link to the locked album itself) reveals nothing new
+      const lockedLink = await sharedLinkRepo.create({
+        ...linkDto,
+        key: randomBytes(50),
+        type: SharedLinkType.Album,
+        albumId: locked.id,
+      });
+      const lockedLinkAuth = factory.auth({ user: { id: user.id }, sharedLink: lockedLink });
+      await expect(
+        sut.uploadAsset(lockedLinkAuth, uploadDto, mediumFactory.uploadFile({ checksum: hidden.checksum })),
+      ).resolves.toEqual({ id: hidden.id, status: AssetMediaStatus.DUPLICATE });
     });
   });
 
