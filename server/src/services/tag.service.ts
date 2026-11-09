@@ -100,11 +100,11 @@ export class TagService extends BaseService {
     // getAssetIdsByTagId); nothing about them is returned.
     await this.syncAssetTags(assetIds);
 
-    // FORK-PORT: D12 (Task 7A.3) removes this pruning; dangling tag ids must stay and zero-match.
-    // Self-heal smart album filters that still reference the deleted tag id. With AND
-    // semantics across tagIds, a dangling reference would otherwise make the album match
-    // nothing. Safe wrapper: failure here must not abort the tag delete from the user's POV.
-    await BaseService.create(AlbumService, this).pruneTagIdsFromSmartAlbumsSafe([id]);
+    // D12: smart-album filters keep the deleted tag id; it dangles and zero-matches. Rewriting the filter instead
+    // would drop a restriction and broaden what an already-shared album exposes. The assets that lost the tag (and
+    // its descendants) may have left some smart albums, so their owners' caches are invalidated. Safe wrapper:
+    // failure here must not abort the tag delete from the user's POV.
+    await BaseService.create(AlbumService, this).invalidateSmartAlbumsForAssetIdsSafe(assetIds);
   }
 
   async bulkTagAssets(auth: AuthDto, dto: TagBulkAssetsDto): Promise<TagBulkAssetsResponseDto> {
@@ -185,11 +185,9 @@ export class TagService extends BaseService {
 
   @OnJob({ name: JobName.TagCleanup, queue: QueueName.BackgroundTask })
   async handleTagCleanup() {
-    const deletedIds = await this.tagRepository.deleteEmptyTags();
-    if (deletedIds.length > 0) {
-      // Self-heal any smart album filters that still reference the cleaned-up tag ids.
-      await BaseService.create(AlbumService, this).pruneTagIdsFromSmartAlbumsSafe(deletedIds);
-    }
+    // D12: smart-album filters keep the deleted ids (they dangle and zero-match). An empty tag tagged nothing, so
+    // no smart album's membership or cache changes.
+    await this.tagRepository.deleteEmptyTags();
     return JobStatus.Success;
   }
 

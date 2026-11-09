@@ -4,7 +4,7 @@ import { DateTime } from 'luxon';
 import { AuthDto } from 'src/dtos/auth.dto.js';
 import { AssetEditAction, MirrorAxis } from 'src/dtos/editing.dto.js';
 import { AssetFaceCreateDto, PersonSearchDto, PersonUserRole } from 'src/dtos/person.dto.js';
-import { AlbumKind, AssetFileType, AssetVisibility, JobName } from 'src/enum.js';
+import { AlbumKind, AlbumUserRole, AssetFileType, AssetVisibility, JobName, Permission } from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { AlbumUserRepository } from 'src/repositories/album-user.repository.js';
 import { AlbumRepository } from 'src/repositories/album.repository.js';
@@ -21,14 +21,17 @@ import { MachineLearningRepository } from 'src/repositories/machine-learning.rep
 import { PartnerRepository } from 'src/repositories/partner.repository.js';
 import { PersonUserRepository } from 'src/repositories/person-user.repository.js';
 import { PersonRepository } from 'src/repositories/person.repository.js';
+import { SearchRepository } from 'src/repositories/search.repository.js';
 import { StorageRepository } from 'src/repositories/storage.repository.js';
 import { SystemMetadataRepository } from 'src/repositories/system-metadata.repository.js';
 import { UserRepository } from 'src/repositories/user.repository.js';
 import { DB } from 'src/schema/index.js';
+import { AlbumService } from 'src/services/album.service.js';
 import { BaseService } from 'src/services/base.service.js';
 import { ClusterGroupService } from 'src/services/cluster-group.service.js';
 import { PersonService } from 'src/services/person.service.js';
 import { SearchService } from 'src/services/search.service.js';
+import { checkAccess } from 'src/utils/access.js';
 import { getMyPartnerIds } from 'src/utils/asset.util.js';
 import { newMediumService } from 'test/medium.factory.js';
 import { factory, newUuid } from 'test/small.factory.js';
@@ -55,6 +58,7 @@ const setup = (db?: Kysely<DB>) => {
       LockRepository,
       AlbumRepository,
       AlbumUserRepository,
+      SearchRepository,
     ],
     mock: [JobRepository, LoggingRepository, StorageRepository, MachineLearningRepository],
   });
@@ -125,6 +129,34 @@ const getCacheInvalidatedAt = async (ctx: Ctx, albumId: string) => {
 
 const resetCacheInvalidatedAt = (ctx: Ctx, albumId: string) =>
   ctx.database.updateTable('album').set({ cacheInvalidatedAt: null }).where('id', '=', albumId).execute();
+
+const getFilter = async (ctx: Ctx, albumId: string) => {
+  const { filter } = await ctx.database
+    .selectFrom('album')
+    .select('filter')
+    .where('id', '=', albumId)
+    .executeTakeFirstOrThrow();
+  return filter as { personIds?: string[] } | null;
+};
+
+/** Which of `assetIds` `auth` may read, through every grant path (owner, album, partner, smart album, locks). */
+const readableAssetIds = async (ctx: Ctx, auth: AuthDto, assetIds: string[]) =>
+  [
+    ...(await checkAccess(ctx.get(AccessRepository), { auth, permission: Permission.AssetRead, ids: assetIds })),
+  ].toSorted();
+
+/** The asset count the Albums list shows `auth` for `albumId` (served from, or recomputed into, the smart-album cache). */
+const listedAssetCount = async (sut: PersonService, auth: AuthDto, albumId: string) => {
+  const albums = await BaseService.create(AlbumService, sut).getAll(auth, {});
+  return albums.find(({ id }) => id === albumId)?.assetCount;
+};
+
+/** A smart album of `ownerId` with `filter`, shared with `recipientId` as a viewer. */
+const newSharedSmartAlbum = async (ctx: Ctx, ownerId: string, recipientId: string, filter: object) => {
+  const { album } = await ctx.newAlbum({ ownerId, kind: AlbumKind.Smart, filter: filter as any });
+  await ctx.newAlbumUser({ albumId: album.id, userId: recipientId, role: AlbumUserRole.Viewer });
+  return album;
+};
 
 /** A shares person group G with B; B's own person row (created by the share trigger) has no thumbnail. */
 const newSharedPerson = async (ctx: Ctx) => {
@@ -2063,6 +2095,114 @@ describe(PersonService.name, () => {
       await resetCacheInvalidatedAt(ctx, album.id);
       await BaseService.create(ClusterGroupService, sut).leave(auth, user.clusterGroupId);
       expect(await getCacheInvalidatedAt(ctx, album.id), 'cluster reassignment').not.toBeNull();
+
+      // D12: none of these rewrote the filter - the merged-away and deleted ids stay in place, dangling, and zero-match
+      await expect(getFilter(ctx, album.id)).resolves.toHaveProperty('personIds', [
+        target.personGroupId,
+        source.personGroupId,
+        toDelete.personGroupId,
+        shared.personGroupId,
+      ]);
+    });
+  });
+
+  describe('smart album filters keep dangling person ids (D12)', () => {
+    it('deleting one of several referenced people does not broaden a shared smart album', async () => {
+      const { ctx, sut } = setup();
+      ctx.getMock(StorageRepository).unlink.mockResolvedValue();
+      const { user: owner } = await ctx.newUser();
+      const { user: recipient } = await ctx.newUser();
+      const { person: p } = await ctx.newPerson({ ownerId: owner.id });
+      const { person: q } = await ctx.newPerson({ ownerId: owner.id });
+      const { asset: both } = await ctx.newAsset({ ownerId: owner.id });
+      const { asset: onlyP } = await ctx.newAsset({ ownerId: owner.id });
+      const { asset: onlyQ } = await ctx.newAsset({ ownerId: owner.id });
+      await ctx.newAssetFace({ assetId: both.id, personGroupId: p.personGroupId });
+      await ctx.newAssetFace({ assetId: both.id, personGroupId: q.personGroupId });
+      await ctx.newAssetFace({ assetId: onlyP.id, personGroupId: p.personGroupId });
+      await ctx.newAssetFace({ assetId: onlyQ.id, personGroupId: q.personGroupId });
+      const album = await newSharedSmartAlbum(ctx, owner.id, recipient.id, {
+        personIds: [p.personGroupId, q.personGroupId],
+      });
+      const recipientAuth = factory.auth({ user: recipient });
+      const candidates = [both.id, onlyP.id, onlyQ.id];
+
+      const before = await readableAssetIds(ctx, recipientAuth, candidates);
+      expect(before).toEqual([both.id]);
+
+      await sut.deleteAll(factory.auth({ user: owner }), { ids: [p.personGroupId] });
+
+      const after = await readableAssetIds(ctx, recipientAuth, candidates);
+      expect(
+        after.filter((id) => !before.includes(id)),
+        'newly readable',
+      ).toEqual([]);
+      expect(after).not.toContain(onlyQ.id);
+      await expect(getFilter(ctx, album.id)).resolves.toHaveProperty('personIds', [p.personGroupId, q.personGroupId]);
+    });
+
+    it('deleting the last referenced person/tag while another criterion remains yields zero matches', async () => {
+      const { ctx, sut } = setup();
+      ctx.getMock(StorageRepository).unlink.mockResolvedValue();
+      const { user: owner } = await ctx.newUser();
+      const { user: recipient } = await ctx.newUser();
+      const { person: p } = await ctx.newPerson({ ownerId: owner.id });
+      const { asset: favoriteWithP } = await ctx.newAsset({ ownerId: owner.id, isFavorite: true });
+      const { asset: favoriteOnly } = await ctx.newAsset({ ownerId: owner.id, isFavorite: true });
+      await ctx.newAssetFace({ assetId: favoriteWithP.id, personGroupId: p.personGroupId });
+      const album = await newSharedSmartAlbum(ctx, owner.id, recipient.id, {
+        personIds: [p.personGroupId],
+        isFavorite: true,
+      });
+      const ownerAuth = factory.auth({ user: owner });
+      const recipientAuth = factory.auth({ user: recipient });
+      const candidates = [favoriteWithP.id, favoriteOnly.id];
+
+      await expect(readableAssetIds(ctx, recipientAuth, candidates)).resolves.toEqual([favoriteWithP.id]);
+      await expect(listedAssetCount(sut, ownerAuth, album.id)).resolves.toBe(1);
+      await expect(listedAssetCount(sut, recipientAuth, album.id)).resolves.toBe(1);
+
+      await sut.deleteAll(ownerAuth, { ids: [p.personGroupId] });
+
+      await expect(readableAssetIds(ctx, recipientAuth, candidates)).resolves.toEqual([]);
+      // the list-view cache recompute evaluates the dangling id without error, to zero
+      await expect(listedAssetCount(sut, ownerAuth, album.id)).resolves.toBe(0);
+      await expect(listedAssetCount(sut, recipientAuth, album.id)).resolves.toBe(0);
+      expect(await getFilter(ctx, album.id)).toEqual({ personIds: [p.personGroupId], isFavorite: true });
+    });
+
+    it('an unlocked smart album with a dangling id cannot rescue locked assets', async () => {
+      const { ctx, sut } = setup();
+      ctx.getMock(StorageRepository).unlink.mockResolvedValue();
+      const { user: owner } = await ctx.newUser();
+      const { person: p } = await ctx.newPerson({ ownerId: owner.id });
+      const { person: q } = await ctx.newPerson({ ownerId: owner.id });
+      const { asset: hidden } = await newFaceOn(ctx, {
+        ownerId: owner.id,
+        personGroupId: q.personGroupId,
+        locked: true,
+      });
+      const { album } = await ctx.newAlbum({
+        ownerId: owner.id,
+        kind: AlbumKind.Smart,
+        filter: { personIds: [p.personGroupId, q.personGroupId] } as any,
+      });
+      const ownerAuth = factory.auth({ user: owner });
+
+      await expect(readableAssetIds(ctx, ownerAuth, [hidden.id])).resolves.toEqual([]);
+
+      await sut.deleteAll(ownerAuth, { ids: [p.personGroupId] });
+
+      await expect(readableAssetIds(ctx, ownerAuth, [hidden.id])).resolves.toEqual([]);
+      await expect(getFilter(ctx, album.id)).resolves.toHaveProperty('personIds', [p.personGroupId, q.personGroupId]);
+
+      // control: the album with the dangling id pruned away would rescue the asset, so the checks above are meaningful
+      await ctx.database
+        .updateTable('album')
+        .set({ filter: { personIds: [q.personGroupId] } as any })
+        .where('id', '=', album.id)
+        .execute();
+      await expect(readableAssetIds(ctx, ownerAuth, [hidden.id])).resolves.toEqual([hidden.id]);
     });
   });
 });

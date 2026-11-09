@@ -890,21 +890,27 @@ describe(PersonService.name, () => {
       expect(mocks.storage.unlink).toHaveBeenCalledWith(person.thumbnailPath);
     });
 
-    it('prunes the deleted person ids from referencing smart album filters', async () => {
+    it('retains the deleted person ids in referencing smart album filters and only invalidates their caches', async () => {
       const person = PersonFactory.create();
       mocks.person.getAllWithoutFaces.mockResolvedValue([person]);
       mocks.person.delete.mockResolvedValue([person]);
+      mocks.album.getSmartAlbumsForOwnerByPersonIds.mockResolvedValue([{ id: 'smart-album' }]);
 
       await sut.handlePersonCleanup();
 
-      expect(mocks.album.prunePersonIdsFromSmartAlbums).toHaveBeenCalledWith([person.personGroupId]);
+      // D12: a dangling id stays in the filter and zero-matches; no filter is rewritten
+      expect(mocks.album.update).not.toHaveBeenCalled();
+      expect(mocks.album.getSmartAlbumsForOwnerByPersonIds).toHaveBeenCalledWith(person.ownerId, [
+        person.personGroupId,
+      ]);
+      expect(mocks.album.markCacheInvalidated).toHaveBeenCalledWith(['smart-album'], expect.any(Date));
     });
 
-    it('does not propagate prune failures', async () => {
+    it('does not propagate smart-album invalidation failures', async () => {
       const person = PersonFactory.create();
       mocks.person.getAllWithoutFaces.mockResolvedValue([person]);
       mocks.person.delete.mockResolvedValue([person]);
-      mocks.album.prunePersonIdsFromSmartAlbums.mockRejectedValueOnce(new Error('boom'));
+      mocks.album.getSmartAlbumsForOwnerByPersonIds.mockRejectedValueOnce(new Error('boom'));
 
       await expect(sut.handlePersonCleanup()).resolves.toBe(JobStatus.Success);
     });

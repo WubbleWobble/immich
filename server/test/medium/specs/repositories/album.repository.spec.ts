@@ -24,161 +24,22 @@ beforeAll(async () => {
 });
 
 describe(AlbumRepository.name, () => {
-  describe('prunePersonIdsFromSmartAlbums', () => {
-    it('splices a deleted person id out of filter.personIds and bumps cacheInvalidatedAt', async () => {
+  describe('getSmartAlbumsForOwnerByPersonIds', () => {
+    it("finds the owner's smart albums by a person id that no longer exists (D12: ids dangle, not pruned)", async () => {
       const { ctx, sut } = setup();
       const { user } = await ctx.newUser();
+      const { user: other } = await ctx.newUser();
       const deadId = newUuid();
       const liveId = newUuid();
-
-      await ctx.newAlbum({
+      const { album } = await ctx.newAlbum({
         ownerId: user.id,
         kind: AlbumKind.Smart,
         filter: { personIds: [deadId, liveId] } as any,
       });
+      await ctx.newAlbum({ ownerId: other.id, kind: AlbumKind.Smart, filter: { personIds: [deadId] } as any });
+      await ctx.newAlbum({ ownerId: user.id, kind: AlbumKind.Smart, filter: { personIds: [newUuid()] } as any });
 
-      const before = await ctx.database.selectFrom('album').selectAll().execute();
-      expect(before).toHaveLength(1);
-
-      const affected = await sut.prunePersonIdsFromSmartAlbums([deadId]);
-      expect(affected).toHaveLength(1);
-
-      const after = await ctx.database
-        .selectFrom('album')
-        .select(['filter', 'cacheInvalidatedAt'])
-        .where('id', '=', affected[0])
-        .executeTakeFirstOrThrow();
-
-      expect((after.filter as any).personIds).toEqual([liveId]);
-      expect(after.cacheInvalidatedAt).not.toBeNull();
-    });
-
-    it('removes the personIds key entirely when the spliced array would be empty', async () => {
-      const { ctx, sut } = setup();
-      const { user } = await ctx.newUser();
-      const deadId = newUuid();
-
-      const { album } = await ctx.newAlbum({
-        ownerId: user.id,
-        kind: AlbumKind.Smart,
-        filter: { personIds: [deadId] } as any,
-      });
-
-      const affected = await sut.prunePersonIdsFromSmartAlbums([deadId]);
-      expect(affected).toEqual([album.id]);
-
-      const after = await ctx.database
-        .selectFrom('album')
-        .select('filter')
-        .where('id', '=', album.id)
-        .executeTakeFirstOrThrow();
-
-      expect(after.filter).not.toBeNull();
-      expect((after.filter as any).personIds).toBeUndefined();
-    });
-
-    it('leaves filters that do not reference the deleted ids untouched', async () => {
-      const { ctx, sut } = setup();
-      const { user } = await ctx.newUser();
-      const otherId = newUuid();
-
-      const { album } = await ctx.newAlbum({
-        ownerId: user.id,
-        kind: AlbumKind.Smart,
-        filter: { personIds: [otherId] } as any,
-      });
-
-      const affected = await sut.prunePersonIdsFromSmartAlbums([newUuid(), newUuid()]);
-      expect(affected).toEqual([]);
-
-      const after = await ctx.database
-        .selectFrom('album')
-        .select(['filter', 'cacheInvalidatedAt'])
-        .where('id', '=', album.id)
-        .executeTakeFirstOrThrow();
-
-      expect((after.filter as any).personIds).toEqual([otherId]);
-      expect(after.cacheInvalidatedAt).toBeNull();
-    });
-
-    it('skips soft-deleted smart albums', async () => {
-      const { ctx, sut } = setup();
-      const { user } = await ctx.newUser();
-      const deadId = newUuid();
-
-      const { album } = await ctx.newAlbum({
-        ownerId: user.id,
-        kind: AlbumKind.Smart,
-        filter: { personIds: [deadId] } as any,
-      });
-      await ctx.softDeleteAlbum(album.id);
-
-      const affected = await sut.prunePersonIdsFromSmartAlbums([deadId]);
-      expect(affected).toEqual([]);
-
-      const after = await ctx.database
-        .selectFrom('album')
-        .select('filter')
-        .where('id', '=', album.id)
-        .executeTakeFirstOrThrow();
-      // Filter was left untouched on the soft-deleted album.
-      expect((after.filter as any).personIds).toEqual([deadId]);
-    });
-
-    it('returns an empty result and is a no-op when given no ids', async () => {
-      const { sut } = setup();
-      const result = await sut.prunePersonIdsFromSmartAlbums([]);
-      expect(result).toEqual([]);
-    });
-  });
-
-  describe('pruneTagIdsFromSmartAlbums', () => {
-    it('splices a deleted tag id out of filter.tagIds and bumps cacheInvalidatedAt', async () => {
-      const { ctx, sut } = setup();
-      const { user } = await ctx.newUser();
-      const deadId = newUuid();
-      const liveId = newUuid();
-
-      const { album } = await ctx.newAlbum({
-        ownerId: user.id,
-        kind: AlbumKind.Smart,
-        filter: { tagIds: [deadId, liveId] } as any,
-      });
-
-      const affected = await sut.pruneTagIdsFromSmartAlbums([deadId]);
-      expect(affected).toEqual([album.id]);
-
-      const after = await ctx.database
-        .selectFrom('album')
-        .select(['filter', 'cacheInvalidatedAt'])
-        .where('id', '=', album.id)
-        .executeTakeFirstOrThrow();
-
-      expect((after.filter as any).tagIds).toEqual([liveId]);
-      expect(after.cacheInvalidatedAt).not.toBeNull();
-    });
-
-    it('removes the tagIds key entirely when the spliced array would be empty', async () => {
-      const { ctx, sut } = setup();
-      const { user } = await ctx.newUser();
-      const deadId = newUuid();
-
-      const { album } = await ctx.newAlbum({
-        ownerId: user.id,
-        kind: AlbumKind.Smart,
-        filter: { tagIds: [deadId] } as any,
-      });
-
-      const affected = await sut.pruneTagIdsFromSmartAlbums([deadId]);
-      expect(affected).toEqual([album.id]);
-
-      const after = await ctx.database
-        .selectFrom('album')
-        .select('filter')
-        .where('id', '=', album.id)
-        .executeTakeFirstOrThrow();
-
-      expect((after.filter as any).tagIds).toBeUndefined();
+      await expect(sut.getSmartAlbumsForOwnerByPersonIds(user.id, [deadId])).resolves.toEqual([{ id: album.id }]);
     });
   });
 });

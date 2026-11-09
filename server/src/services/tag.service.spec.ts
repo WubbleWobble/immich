@@ -2,6 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { BulkIdErrorReason } from 'src/dtos/asset-ids.response.dto.js';
 import { JobName, JobStatus } from 'src/enum.js';
 import { TagService } from 'src/services/tag.service.js';
+import { AssetFactory } from 'test/factories/asset.factory.js';
 import { authStub } from 'test/fixtures/auth.stub.js';
 import { tagResponseStub, tagStub } from 'test/fixtures/tag.stub.js';
 import { ServiceMocks, newTestService } from 'test/utils.js';
@@ -216,20 +217,31 @@ describe(TagService.name, () => {
       expect(mocks.job.queueAll).toHaveBeenCalledWith([{ name: JobName.SidecarWrite, data: { id: 'asset-1' } }]);
     });
 
-    it('prunes the deleted tag id from referencing smart album filters', async () => {
+    it('keeps the deleted tag id in smart album filters and invalidates the affected caches', async () => {
       mocks.tag.get.mockResolvedValue(tagStub.tag);
       mocks.tag.delete.mockResolvedValue();
-      mocks.tag.getAssetIdsByTagId.mockResolvedValue([]);
+      mocks.tag.getAssetIdsByTagId.mockResolvedValue(['asset-1']);
+      mocks.asset.getForUpdateTags.mockResolvedValue({ tags: [] });
+      mocks.asset.getByIds.mockResolvedValue([AssetFactory.create({ id: 'asset-1', ownerId: 'owner-1' })]);
+      mocks.album.getSmartAlbumsForOwner.mockResolvedValue([
+        { id: 'smart-album', filter: { tagIds: ['tag-1'] }, cachedThumbnailAssetId: null },
+      ]);
 
       await sut.remove(authStub.admin, 'tag-1');
-      expect(mocks.album.pruneTagIdsFromSmartAlbums).toHaveBeenCalledWith(['tag-1']);
+
+      // D12: the dangling tag id stays in the filter and zero-matches; no filter is rewritten
+      expect(mocks.album.update).not.toHaveBeenCalled();
+      expect(mocks.album.getSmartAlbumsForOwner).toHaveBeenCalledWith('owner-1');
+      expect(mocks.album.markCacheInvalidated).toHaveBeenCalledWith(['smart-album'], expect.any(Date));
     });
 
-    it('does not propagate prune failures', async () => {
+    it('does not propagate smart-album invalidation failures', async () => {
       mocks.tag.get.mockResolvedValue(tagStub.tag);
       mocks.tag.delete.mockResolvedValue();
-      mocks.tag.getAssetIdsByTagId.mockResolvedValue([]);
-      mocks.album.pruneTagIdsFromSmartAlbums.mockRejectedValueOnce(new Error('boom'));
+      mocks.tag.getAssetIdsByTagId.mockResolvedValue(['asset-1']);
+      mocks.asset.getForUpdateTags.mockResolvedValue({ tags: [] });
+      mocks.asset.getByIds.mockResolvedValue([AssetFactory.create({ id: 'asset-1', ownerId: 'owner-1' })]);
+      mocks.album.getSmartAlbumsForOwner.mockRejectedValueOnce(new Error('boom'));
 
       await expect(sut.remove(authStub.admin, 'tag-1')).resolves.toBeUndefined();
     });
@@ -374,20 +386,16 @@ describe(TagService.name, () => {
       expect(mocks.tag.deleteEmptyTags).toHaveBeenCalled();
     });
 
-    it('prunes deleted tag ids from referencing smart album filters', async () => {
+    it('leaves smart albums untouched (an empty tag matched nothing, and its id stays in place)', async () => {
       mocks.tag.deleteEmptyTags.mockResolvedValue(['tag-a', 'tag-b']);
 
       await expect(sut.handleTagCleanup()).resolves.toBe(JobStatus.Success);
 
-      expect(mocks.album.pruneTagIdsFromSmartAlbums).toHaveBeenCalledWith(['tag-a', 'tag-b']);
-    });
-
-    it('skips the prune call when no tags were deleted', async () => {
-      mocks.tag.deleteEmptyTags.mockResolvedValue([]);
-
-      await sut.handleTagCleanup();
-
-      expect(mocks.album.pruneTagIdsFromSmartAlbums).not.toHaveBeenCalled();
+      for (const [name, method] of Object.entries(mocks.album)) {
+        if (vi.isMockFunction(method)) {
+          expect(method, name).not.toHaveBeenCalled();
+        }
+      }
     });
   });
 });
