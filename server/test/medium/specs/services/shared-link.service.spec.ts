@@ -1,5 +1,6 @@
 import { Kysely } from 'kysely';
 import { randomBytes } from 'node:crypto';
+import { AssetIdErrorReason } from 'src/dtos/asset-ids.response.dto.js';
 import { AuthDto } from 'src/dtos/auth.dto.js';
 import { AlbumKind, AlbumUserRole, AssetType, AssetVisibility, Permission, SharedLinkType } from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
@@ -42,7 +43,9 @@ beforeAll(async () => {
 });
 
 const ALBUM_READ_ERROR = 'Not found or no album.read access';
-const ASSET_ERROR = 'Not found or no asset access';
+// Ruling R32: hidden content fails exactly like missing content on every link-management path
+const LINK_NOT_FOUND = 'Shared link not found';
+const ASSET_SHARE_ERROR = 'Not found or no asset.share access';
 
 type Ctx = ReturnType<typeof setup>['ctx'];
 
@@ -76,6 +79,20 @@ const asVisitor = async (ctx: Ctx, userId: string, link: Link) => {
   const sharedLink = await ctx.get(SharedLinkRepository).get(userId, link.id);
   return { user: { id: userId }, sharedLink } as unknown as AuthDto;
 };
+
+/** A thrown error reduced to what a client can observe (ruling R32 compares these). */
+const errorOf = (promise: Promise<unknown>) =>
+  promise
+    .then(() => ({ resolved: true }))
+    .catch((error: any) => ({
+      type: error?.constructor?.name,
+      message: error?.message,
+      status: error?.getStatus?.(),
+      response: error?.getResponse?.(),
+    }));
+
+/** Per-asset results without their ids. */
+const strip = (results: { assetId: string }[]) => results.map(({ assetId: _, ...rest }) => rest);
 
 const getLinkRow = (ctx: Ctx, id: string) =>
   ctx.database
@@ -825,11 +842,11 @@ describe(SharedLinkService.name, () => {
         { showMetadata: true },
       ];
       for (const link of hiddenLinks) {
-        await expect(sut.get(plain, link.id)).rejects.toThrow(ALBUM_READ_ERROR);
+        await expect(sut.get(plain, link.id)).rejects.toThrow(LINK_NOT_FOUND);
         for (const dto of edits) {
-          await expect(sut.update(plain, link.id, dto)).rejects.toThrow(ALBUM_READ_ERROR);
+          await expect(sut.update(plain, link.id, dto)).rejects.toThrow(LINK_NOT_FOUND);
         }
-        await expect(sut.remove(plain, link.id)).rejects.toThrow(ALBUM_READ_ERROR);
+        await expect(sut.remove(plain, link.id)).rejects.toThrow(LINK_NOT_FOUND);
         await expect(getLinkRow(ctx, link.id)).resolves.toEqual({
           password: null,
           expiresAt: null,
@@ -839,10 +856,10 @@ describe(SharedLinkService.name, () => {
       }
       for (const link of hiddenIndividualLinks) {
         await expect(sut.addAssets(plain, link.id, { assetIds: [assets.visibleAsset.id] })).rejects.toThrow(
-          ALBUM_READ_ERROR,
+          LINK_NOT_FOUND,
         );
         await expect(sut.removeAssets(plain, link.id, { assetIds: [assets.hiddenA.id] })).rejects.toThrow(
-          ALBUM_READ_ERROR,
+          LINK_NOT_FOUND,
         );
       }
       await expect(
@@ -880,11 +897,17 @@ describe(SharedLinkService.name, () => {
         [assets.visibleAsset.id, assets.hiddenA.id],
         [assets.hiddenB.id],
       ]) {
-        await expect(sut.create(plain, { type: SharedLinkType.Individual, assetIds })).rejects.toThrow(ASSET_ERROR);
+        await expect(sut.create(plain, { type: SharedLinkType.Individual, assetIds })).rejects.toThrow(
+          ASSET_SHARE_ERROR,
+        );
       }
+      // a hidden asset is reported exactly like a missing one, and not added
       await expect(
         sut.addAssets(plain, links.visibleIndividual.id, { assetIds: [assets.hiddenA.id, assets.visibleAsset.id] }),
-      ).rejects.toThrow(ASSET_ERROR);
+      ).resolves.toEqual([
+        { assetId: assets.hiddenA.id, success: false, error: AssetIdErrorReason.NO_PERMISSION },
+        { assetId: assets.visibleAsset.id, success: false, error: AssetIdErrorReason.DUPLICATE },
+      ]);
       await expect(sut.get(plain, links.visibleIndividual.id)).resolves.toEqual(
         expect.objectContaining({ assets: [expect.objectContaining({ id: assets.visibleAsset.id })] }),
       );
@@ -959,17 +982,17 @@ describe(SharedLinkService.name, () => {
         await expect(sut.getAll(auth, { id: link.id })).resolves.toEqual([]);
 
         for (const id of [link.id, mixedLink.id]) {
-          await expect(sut.get(auth, id)).rejects.toThrow(ALBUM_READ_ERROR);
+          await expect(sut.get(auth, id)).rejects.toThrow(LINK_NOT_FOUND);
           for (const dto of [
             { expiresAt: new Date('2099-01-01T00:00:00.000Z') },
             { password: 'secret' },
             { allowDownload: true },
           ]) {
-            await expect(sut.update(auth, id, dto)).rejects.toThrow(ALBUM_READ_ERROR);
+            await expect(sut.update(auth, id, dto)).rejects.toThrow(LINK_NOT_FOUND);
           }
           // addAssets cannot probe the link: same answer for a new asset, a present one, or one it already holds
           for (const assetIds of [[ownAsset.id], [photoX.id]]) {
-            await expect(sut.addAssets(auth, id, { assetIds })).rejects.toThrow(ALBUM_READ_ERROR);
+            await expect(sut.addAssets(auth, id, { assetIds })).rejects.toThrow(LINK_NOT_FOUND);
           }
           await expect(getLinkRow(ctx, id)).resolves.toEqual({
             password: null,
@@ -981,7 +1004,7 @@ describe(SharedLinkService.name, () => {
 
         // nor can B mint a fresh link to X
         await expect(sut.create(auth, { type: SharedLinkType.Individual, assetIds: [photoX.id] })).rejects.toThrow(
-          ASSET_ERROR,
+          ASSET_SHARE_ERROR,
         );
       }
     });
@@ -1010,11 +1033,138 @@ describe(SharedLinkService.name, () => {
       // management, and the list shows the link only when the album is revealed (spec §15.3)
       await ctx.get(LockRepository).lockAlbum(managerB.id, shared.id);
       expect(idsOf(await sut.getAll(plain, {}))).not.toContain(link.id);
-      await expect(sut.get(plain, link.id)).rejects.toThrow(ALBUM_READ_ERROR);
+      await expect(sut.get(plain, link.id)).rejects.toThrow(LINK_NOT_FOUND);
       await expect(sut.get(elevated, link.id)).resolves.toEqual(expect.objectContaining({ id: link.id }));
       expect(idsOf(await sut.getAll(elevated, {}))).not.toContain(link.id);
       const revealing = { ...elevated, revealedLocks: { albumIds: [shared.id], containerIds: [] } } as AuthDto;
       expect(idsOf(await sut.getAll(revealing, {}))).toContain(link.id);
+    });
+
+    it("link owner can revoke a link hidden only by a partner's lock, elevated or not", async () => {
+      const { sut, ctx } = setup();
+      const { partnerA, photoX, plain, elevated, link, mixedLink } = await setupPartnerLink(ctx, sut);
+      const { album } = await ctx.newAlbum({ ownerId: partnerA.id }, [photoX.id]);
+      await ctx.get(LockRepository).lockAlbum(partnerA.id, album.id);
+
+      // still hidden for B on every other path ...
+      await expect(sut.get(plain, link.id)).rejects.toThrow(LINK_NOT_FOUND);
+      await expect(sut.get(elevated, mixedLink.id)).rejects.toThrow(LINK_NOT_FOUND);
+      // ... but revoking returns and reveals nothing and ends the public exposure (ruling R30)
+      await expect(sut.remove(plain, link.id)).resolves.toBeUndefined();
+      await expect(getLinkRow(ctx, link.id)).resolves.toBeUndefined();
+      await expect(sut.remove(elevated, mixedLink.id)).resolves.toBeUndefined();
+      await expect(getLinkRow(ctx, mixedLink.id)).resolves.toBeUndefined();
+    });
+
+    it("link owner can revoke a link hidden by a former partner's lock", async () => {
+      const { sut, ctx } = setup();
+      const { partnerA, managerB, photoX, plain, link } = await setupPartnerLink(ctx, sut);
+      const { album } = await ctx.newAlbum({ ownerId: partnerA.id }, [photoX.id]);
+      await ctx.get(LockRepository).lockAlbum(partnerA.id, album.id);
+      await ctx.get(PartnerRepository).remove({ sharedById: partnerA.id, sharedWithId: managerB.id });
+
+      // X is now a stranger's asset, still judged by its owner's locks: the link stays hidden ...
+      await expect(sut.getAll(plain, {}).then(idsOf)).resolves.toEqual([]);
+      await expect(sut.get(plain, link.id)).rejects.toThrow(LINK_NOT_FOUND);
+      // ... and stays revocable
+      await expect(sut.remove(plain, link.id)).resolves.toBeUndefined();
+      await expect(getLinkRow(ctx, link.id)).resolves.toBeUndefined();
+    });
+
+    it("revoking a link hidden by the manager's own lock requires elevation", async () => {
+      const { sut, ctx } = setup();
+      const { plain, elevated, hiddenLinks, albums, folders } = await setupOwnLocks(ctx, sut);
+      const revealingUnelevated = {
+        ...plain,
+        revealedLocks: {
+          albumIds: [albums.regular.id, albums.smart.id],
+          containerIds: [folders.folder.id, folders.ancestor.id],
+        },
+      } as AuthDto;
+
+      for (const link of hiddenLinks) {
+        for (const auth of [plain, revealingUnelevated]) {
+          await expect(sut.remove(auth, link.id)).rejects.toThrow(LINK_NOT_FOUND);
+        }
+        await expect(getLinkRow(ctx, link.id)).resolves.toBeDefined();
+        await expect(sut.remove(elevated, link.id)).resolves.toBeUndefined();
+        await expect(getLinkRow(ctx, link.id)).resolves.toBeUndefined();
+      }
+
+      // hidden by the manager's own lock AND a partner's: the own lock still requires elevation
+      const partner = await setupPartnerLink(ctx, sut);
+      const { album: partnerAlbum } = await ctx.newAlbum({ ownerId: partner.partnerA.id }, [partner.photoX.id]);
+      await ctx.get(LockRepository).lockAlbum(partner.partnerA.id, partnerAlbum.id);
+      const { album: ownAlbum } = await ctx.newAlbum({ ownerId: partner.managerB.id }, [partner.ownAsset.id]);
+      await ctx.get(LockRepository).lockAlbum(partner.managerB.id, ownAlbum.id);
+      await expect(sut.remove(partner.plain, partner.mixedLink.id)).rejects.toThrow(LINK_NOT_FOUND);
+      await expect(getLinkRow(ctx, partner.mixedLink.id)).resolves.toBeDefined();
+      await expect(sut.remove(partner.elevated, partner.mixedLink.id)).resolves.toBeUndefined();
+    });
+
+    it('a hidden id and a non-existent id produce identical errors on each path', async () => {
+      const { sut, ctx } = setup();
+      const { plain, links, assets, hiddenLinks, hiddenIndividualLinks } = await setupOwnLocks(ctx, sut);
+      const missingId = factory.uuid();
+      const same = async (call: (id: string) => Promise<unknown>, hiddenId: string) => {
+        const hidden = await errorOf(call(hiddenId));
+        expect(hidden).not.toEqual({ resolved: true });
+        expect(hidden).toEqual(await errorOf(call(missingId)));
+      };
+
+      // existing links: hidden by the manager's own locks, non-elevated
+      for (const link of hiddenLinks) {
+        await same((id) => sut.get(plain, id), link.id);
+        await same((id) => sut.update(plain, id, { allowDownload: true }), link.id);
+        await same((id) => sut.remove(plain, id), link.id);
+      }
+      for (const link of hiddenIndividualLinks) {
+        await same((id) => sut.addAssets(plain, id, { assetIds: [assets.visibleAsset.id] }), link.id);
+        await same((id) => sut.removeAssets(plain, id, { assetIds: [assets.hiddenA.id] }), link.id);
+      }
+
+      // minting a link: a hidden asset fails exactly like a non-existent one
+      await same((id) => sut.create(plain, { type: SharedLinkType.Individual, assetIds: [id] }), assets.hiddenA.id);
+      await same(
+        (id) => sut.create(plain, { type: SharedLinkType.Individual, assetIds: [assets.visibleAsset.id, id] }),
+        assets.hiddenA.id,
+      );
+
+      // addAssets: the per-asset result does not distinguish hidden from missing, and nothing is added
+      const hiddenResult = await sut.addAssets(plain, links.visibleIndividual.id, { assetIds: [assets.hiddenA.id] });
+      const missingResult = await sut.addAssets(plain, links.visibleIndividual.id, { assetIds: [missingId] });
+      expect(strip(hiddenResult)).toEqual(strip(missingResult));
+      expect(hiddenResult).toEqual([
+        { assetId: assets.hiddenA.id, success: false, error: AssetIdErrorReason.NO_PERMISSION },
+      ]);
+      await expect(
+        ctx.database
+          .selectFrom('shared_link_asset')
+          .select('assetId')
+          .where('sharedLinkId', '=', links.visibleIndividual.id)
+          .execute(),
+      ).resolves.toEqual([{ assetId: assets.visibleAsset.id }]);
+
+      // and for a partner's later-locked photo, in an elevated session
+      const partner = await setupPartnerLink(ctx, sut);
+      const { album } = await ctx.newAlbum({ ownerId: partner.partnerA.id }, [partner.photoX.id]);
+      await ctx.get(LockRepository).lockAlbum(partner.partnerA.id, album.id);
+      const { elevated } = partner;
+      await same((id) => sut.get(elevated, id), partner.link.id);
+      await same(
+        (id) => sut.update(elevated, id, { expiresAt: new Date('2099-01-01T00:00:00.000Z') }),
+        partner.link.id,
+      );
+      await same((id) => sut.addAssets(elevated, id, { assetIds: [partner.ownAsset.id] }), partner.link.id);
+      await same((id) => sut.removeAssets(elevated, id, { assetIds: [partner.photoX.id] }), partner.link.id);
+      await same((id) => sut.create(elevated, { type: SharedLinkType.Individual, assetIds: [id] }), partner.photoX.id);
+      const ownLink = await newLink(ctx, partner.managerB.id, { assetIds: [partner.ownAsset.id] });
+      const partnerHidden = await sut.addAssets(elevated, ownLink.id, { assetIds: [partner.photoX.id] });
+      const partnerMissing = await sut.addAssets(elevated, ownLink.id, { assetIds: [missingId] });
+      expect(strip(partnerHidden)).toEqual(strip(partnerMissing));
+      expect(partnerHidden).toEqual([
+        { assetId: partner.photoX.id, success: false, error: AssetIdErrorReason.NO_PERMISSION },
+      ]);
     });
 
     it('elevated getAll lists a hidden link only when revealed', async () => {
@@ -1071,10 +1221,10 @@ describe(SharedLinkService.name, () => {
       await locks.lockAlbum(user.id, album.id);
 
       await expect(sut.getAll(plain, {}).then(idsOf)).resolves.toEqual([]);
-      await expect(sut.get(plain, link.id)).rejects.toThrow(ALBUM_READ_ERROR);
-      await expect(sut.update(plain, link.id, { allowDownload: true })).rejects.toThrow(ALBUM_READ_ERROR);
+      await expect(sut.get(plain, link.id)).rejects.toThrow(LINK_NOT_FOUND);
+      await expect(sut.update(plain, link.id, { allowDownload: true })).rejects.toThrow(LINK_NOT_FOUND);
       await expect(sut.create(plain, { type: SharedLinkType.Individual, assetIds: [motion.id] })).rejects.toThrow(
-        ASSET_ERROR,
+        ASSET_SHARE_ERROR,
       );
 
       // the manager's own lock: elevation bypasses it for direct-by-id management, the list needs the reveal set
@@ -1089,7 +1239,7 @@ describe(SharedLinkService.name, () => {
       const partnerLink = await newLink(ctx, managerB.id, { assetIds: [motion.id] });
       const bElevated = factory.auth({ user: managerB, session: { hasElevatedPermission: true } });
       await expect(sut.getAll(bElevated, {}).then(idsOf)).resolves.toEqual([]);
-      await expect(sut.get(bElevated, partnerLink.id)).rejects.toThrow(ALBUM_READ_ERROR);
+      await expect(sut.get(bElevated, partnerLink.id)).rejects.toThrow(LINK_NOT_FOUND);
     });
 
     it('public visitor access through an existing key is unchanged', async () => {

@@ -167,29 +167,34 @@ export class LockService extends BaseService {
     return this.findHiddenSharedLinks(auth, links, 'list');
   }
 
-  /** Management guard on an existing link; indistinguishable from the album-guard no-access error. */
-  async assertSharedLinkVisibleForViewer(auth: AuthDto, link: SharedLinkLockTarget): Promise<void> {
-    if (await this.isSharedLinkHiddenForViewer(auth, link)) {
-      throw new BadRequestException('Not found or no album.read access');
+  /**
+   * Revocation guard (ruling R30): removing a link returns and reveals nothing and only reduces exposure, so only
+   * the manager's OWN locks can stop it, and only outside elevation (§15.2). A link hidden solely by another owner's
+   * locks - a partner's or a former partner's - stays revocable in every session.
+   */
+  async isSharedLinkHiddenByOwnLocks(auth: AuthDto, link: SharedLinkLockTarget): Promise<boolean> {
+    if (auth.session?.hasElevatedPermission) {
+      return false;
     }
+    const hidden = await this.findHiddenSharedLinks(auth, [link], 'direct', true);
+    return hidden.has(link.id);
   }
 
   /**
-   * Minting guard (create an individual link, addAssets): none of `assetIds` may be hidden for the manager under the
-   * direct-by-id rule. Only assets the manager owns or reaches as a partner are judged, so the answer never depends on
-   * a stranger's lock state (those fail the regular asset.share check instead).
+   * Minting guard (create an individual link, addAssets): the subset of `assetIds` hidden for the manager under the
+   * direct-by-id rule. Callers treat these exactly like missing or unshareable assets (ruling R32: no lock-state
+   * oracle). Only assets the manager owns or reaches as a partner are judged; any other asset fails the regular
+   * asset.share check anyway.
    */
-  async assertAssetsShareableForViewer(auth: AuthDto, assetIds: string[]): Promise<void> {
-    const hidden = await this.getHiddenAssetIds(auth, assetIds, 'direct', true);
-    if (hidden.size > 0) {
-      throw new BadRequestException('Not found or no asset access');
-    }
+  getUnshareableHiddenAssetIds(auth: AuthDto, assetIds: string[]): Promise<Set<string>> {
+    return this.getHiddenAssetIds(auth, assetIds, 'direct', { relatedOnly: true });
   }
 
   private async findHiddenSharedLinks(
     auth: AuthDto,
     links: SharedLinkLockTarget[],
     mode: LockMode,
+    ownOnly = false,
   ): Promise<Set<string>> {
     const hidden = new Set<string>();
     if (auth.sharedLink || links.length === 0) {
@@ -216,7 +221,12 @@ export class LockService extends BaseService {
     const individualLinkIds = links.filter(({ type }) => type === SharedLinkType.Individual).map(({ id }) => id);
     if (individualLinkIds.length > 0) {
       const rows = await this.sharedLinkRepository.getAssetIds(individualLinkIds);
-      const hiddenAssetIds = await this.getHiddenAssetIds(auth, [...new Set(rows.map(({ assetId }) => assetId))], mode);
+      const hiddenAssetIds = await this.getHiddenAssetIds(
+        auth,
+        [...new Set(rows.map(({ assetId }) => assetId))],
+        mode,
+        { ownOnly },
+      );
       for (const { sharedLinkId, assetId } of rows) {
         if (hiddenAssetIds.has(assetId)) {
           hidden.add(sharedLinkId);
@@ -232,13 +242,13 @@ export class LockService extends BaseService {
    * elevated direct-by-id session; minus the reveal set on an elevated list) or another owner's (always, never
    * revealed). An asset hidden by another owner is rescued by the viewer's own album or smart-album grant to it, the
    * grant itself subject to the viewer's locks (spec §15.1) in the same mode. With `relatedOnly`, only assets the
-   * viewer owns or reaches as a partner are judged.
+   * viewer owns or reaches as a partner are judged; with `ownOnly`, only the viewer's own assets (own locks).
    */
   private async getHiddenAssetIds(
     auth: AuthDto,
     assetIds: string[],
     mode: LockMode,
-    relatedOnly = false,
+    { relatedOnly = false, ownOnly = false }: { relatedOnly?: boolean; ownOnly?: boolean } = {},
   ): Promise<Set<string>> {
     if (assetIds.length === 0) {
       return new Set();
@@ -248,9 +258,9 @@ export class LockService extends BaseService {
     const isElevated = !!auth.session?.hasElevatedPermission;
     const bypassOwnLocks = isElevated && mode === 'direct';
     const owners = await this.lockRepository.getAssetOwners(viewerId, assetIds);
-    const candidates = relatedOnly
-      ? owners.filter(({ ownerId, isPartner }) => ownerId === viewerId || isPartner)
-      : owners;
+    const candidates = owners.filter(
+      ({ ownerId, isPartner }) => ownerId === viewerId || (!ownOnly && (!relatedOnly || isPartner)),
+    );
     const ownerIds = [...new Set(candidates.map(({ ownerId }) => ownerId))].filter(
       (ownerId) => !(bypassOwnLocks && ownerId === viewerId),
     );

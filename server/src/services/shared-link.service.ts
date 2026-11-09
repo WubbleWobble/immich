@@ -13,7 +13,7 @@ import {
 } from 'src/dtos/shared-link.dto.js';
 import { Permission, SharedLinkType } from 'src/enum.js';
 import { BaseService } from 'src/services/base.service.js';
-import { LockService } from 'src/services/lock.service.js';
+import { LockService, SharedLinkLockTarget } from 'src/services/lock.service.js';
 import { OpenGraphTags, findOrFail, getExternalDomain } from 'src/utils/misc.js';
 
 @Injectable()
@@ -87,9 +87,13 @@ export class SharedLinkService extends BaseService {
           throw new BadRequestException('Invalid assetIds');
         }
 
-        // Fork (audit 1): judged before the share check so a hidden asset reports the lock-guard error
-        await this.lockService().assertAssetsShareableForViewer(auth, dto.assetIds);
         await this.requireAccess({ auth, permission: Permission.AssetShare, ids: dto.assetIds });
+        // Fork (audit 1): a link to a hidden asset would hand it out. Refused exactly like a missing or unshareable
+        // asset (ruling R32: no lock-state oracle).
+        const hidden = await this.lockService().getUnshareableHiddenAssetIds(auth, dto.assetIds);
+        if (hidden.size > 0) {
+          throw new BadRequestException(`Not found or no ${Permission.AssetShare} access`);
+        }
 
         break;
       }
@@ -146,7 +150,11 @@ export class SharedLinkService extends BaseService {
   }
 
   async remove(auth: AuthDto, id: string): Promise<void> {
-    const sharedLink = await this.findManageableOrFail(auth, id);
+    // Fork (ruling R30): revoking reveals nothing and reduces exposure, so only the manager's own locks (outside
+    // elevation) refuse it; a link hidden solely by another owner's locks stays revocable.
+    const sharedLink = await this.findManageableOrFail(auth, id, (link) =>
+      this.lockService().isSharedLinkHiddenByOwnLocks(auth, link),
+    );
     await this.sharedLinkRepository.remove(sharedLink.id);
   }
 
@@ -157,12 +165,19 @@ export class SharedLinkService extends BaseService {
 
   /**
    * Fork (audit 1): authenticated management of an existing link. A link exposing content hidden for the manager is
-   * unreachable by id (spec §15.3: elevation bypasses only the manager's own locks, never another owner's).
+   * unreachable by id (spec §15.3: elevation bypasses only the manager's own locks, never another owner's), and is
+   * refused exactly like a non-existent id (ruling R32: no existence or lock-state oracle).
    */
-  private async findManageableOrFail(auth: AuthDto, id: string) {
-    const sharedLink = await this.findOrFail(auth.user.id, id);
-    await this.lockService().assertSharedLinkVisibleForViewer(auth, sharedLink);
-    return sharedLink;
+  private findManageableOrFail(
+    auth: AuthDto,
+    id: string,
+    isHidden: (link: SharedLinkLockTarget) => Promise<boolean> = (link) =>
+      this.lockService().isSharedLinkHiddenForViewer(auth, link),
+  ) {
+    return findOrFail(async () => {
+      const sharedLink = await this.sharedLinkRepository.get(auth.user.id, id);
+      return sharedLink && (await isHidden(sharedLink)) ? undefined : sharedLink;
+    }, 'Shared link');
   }
 
   private lockService() {
@@ -177,13 +192,18 @@ export class SharedLinkService extends BaseService {
 
     const existingAssetIds = new Set(sharedLink.assets.map((asset) => asset.id));
     const notPresentAssetIds = dto.assetIds.filter((assetId) => !existingAssetIds.has(assetId));
-    // Fork (audit 1): adding a hidden asset would make the key a route to it
-    await this.lockService().assertAssetsShareableForViewer(auth, notPresentAssetIds);
-    const allowedAssetIds = await this.checkAccess({
-      auth,
-      permission: Permission.AssetShare,
-      ids: notPresentAssetIds,
-    });
+    const allowedAssetIds = new Set(
+      await this.checkAccess({
+        auth,
+        permission: Permission.AssetShare,
+        ids: notPresentAssetIds,
+      }),
+    );
+    // Fork (audit 1): adding a hidden asset would make the key a route to it. Reported exactly like a missing asset
+    // (ruling R32: no lock-state oracle).
+    for (const assetId of await this.lockService().getUnshareableHiddenAssetIds(auth, [...allowedAssetIds])) {
+      allowedAssetIds.delete(assetId);
+    }
 
     const results: AssetIdsResponseDto[] = [];
     for (const assetId of dto.assetIds) {

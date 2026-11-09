@@ -444,7 +444,9 @@ describe('/shared-links', () => {
 describe('/shared-links and locks', () => {
   const PIN = '123456';
   const ALBUM_READ_ERROR = 'Not found or no album.read access';
-  const ASSET_ERROR = 'Not found or no asset access';
+  // Ruling R32: hidden content fails exactly like missing content on every link-management path
+  const LINK_NOT_FOUND = 'Shared link not found';
+  const ASSET_SHARE_ERROR = 'Not found or no asset.share access';
 
   let admin: LoginResponseDto;
   // B, the manager: `plain` is a non-elevated session, `elevated` a PIN-unlocked one
@@ -470,6 +472,7 @@ describe('/shared-links and locks', () => {
     | 'allHidden'
     | 'mixed'
     | 'partnerX'
+    | 'partnerXRevoke'
     | 'partnerY',
     SharedLinkResponseDto
   >;
@@ -561,6 +564,7 @@ describe('/shared-links and locks', () => {
       allHidden: await individual([hiddenA.id, hiddenB.id]),
       mixed: await individual([visibleAsset.id, hiddenA.id]),
       partnerX: await individual([photoX.id]),
+      partnerXRevoke: await individual([photoX.id]),
       partnerY: await individual([photoY.id]),
     };
     hiddenLinks = [links.regular, links.smart, links.inFolder, links.underAncestor, links.allHidden, links.mixed];
@@ -587,7 +591,7 @@ describe('/shared-links and locks', () => {
     for (const link of hiddenLinks) {
       const get = await request(app).get(`/shared-links/${link.id}`).set(as(plain));
       expect(get.status).toBe(400);
-      expect(get.body).toEqual(errorDto.badRequest(ALBUM_READ_ERROR));
+      expect(get.body).toEqual(errorDto.badRequest(LINK_NOT_FOUND));
       for (const edit of [
         { password: 'secret' },
         { expiresAt: '2099-01-01T00:00:00.000Z' },
@@ -596,11 +600,11 @@ describe('/shared-links and locks', () => {
       ]) {
         const patch = await request(app).patch(`/shared-links/${link.id}`).set(as(plain)).send(edit);
         expect(patch.status).toBe(400);
-        expect(patch.body).toEqual(errorDto.badRequest(ALBUM_READ_ERROR));
+        expect(patch.body).toEqual(errorDto.badRequest(LINK_NOT_FOUND));
       }
       const del = await request(app).delete(`/shared-links/${link.id}`).set(as(plain));
       expect(del.status).toBe(400);
-      expect(del.body).toEqual(errorDto.badRequest(ALBUM_READ_ERROR));
+      expect(del.body).toEqual(errorDto.badRequest(LINK_NOT_FOUND));
     }
   });
 
@@ -619,14 +623,15 @@ describe('/shared-links and locks', () => {
         .set(as(plain))
         .send({ type: SharedLinkType.Individual, assetIds });
       expect(status).toBe(400);
-      expect(body).toEqual(errorDto.badRequest(ASSET_ERROR));
+      expect(body).toEqual(errorDto.badRequest(ASSET_SHARE_ERROR));
     }
+    // a hidden asset is reported exactly like a missing one, and not added
     const { status, body } = await request(app)
       .put(`/shared-links/${links.visibleIndividual.id}/assets`)
       .set(as(plain))
       .send({ assetIds: [hiddenA.id] });
-    expect(status).toBe(400);
-    expect(body).toEqual(errorDto.badRequest(ASSET_ERROR));
+    expect(status).toBe(200);
+    expect(body).toEqual([{ assetId: hiddenA.id, success: false, error: 'no_permission' }]);
   });
 
   it("elevated direct-by-id management is allowed when only the manager's own locks hide the content", async () => {
@@ -663,11 +668,11 @@ describe('/shared-links and locks', () => {
 
     const get = await request(app).get(`/shared-links/${links.partnerX.id}`).set(as(elevated));
     expect(get.status).toBe(400);
-    expect(get.body).toEqual(errorDto.badRequest(ALBUM_READ_ERROR));
+    expect(get.body).toEqual(errorDto.badRequest(LINK_NOT_FOUND));
     for (const edit of [{ expiresAt: '2099-01-01T00:00:00.000Z' }, { password: 'secret' }, { allowDownload: true }]) {
       const patch = await request(app).patch(`/shared-links/${links.partnerX.id}`).set(as(elevated)).send(edit);
       expect(patch.status).toBe(400);
-      expect(patch.body).toEqual(errorDto.badRequest(ALBUM_READ_ERROR));
+      expect(patch.body).toEqual(errorDto.badRequest(LINK_NOT_FOUND));
     }
     for (const assetIds of [[visibleAsset.id], [photoX.id]]) {
       const add = await request(app)
@@ -675,7 +680,7 @@ describe('/shared-links and locks', () => {
         .set(as(elevated))
         .send({ assetIds });
       expect(add.status).toBe(400);
-      expect(add.body).toEqual(errorDto.badRequest(ALBUM_READ_ERROR));
+      expect(add.body).toEqual(errorDto.badRequest(LINK_NOT_FOUND));
     }
   });
 
@@ -728,5 +733,75 @@ describe('/shared-links and locks', () => {
     expect(status).toBe(200);
     const asset = await request(app).get(`/assets/${hiddenA.id}`).query({ key: links.allHidden.key });
     expect(asset.status).toBe(200);
+  });
+
+  it('a hidden id and a non-existent id produce identical errors on each path', async () => {
+    const missing = uuidDto.notFound;
+    const pairs: [string, string][] = [
+      [links.regular.id, missing],
+      [links.partnerX.id, missing],
+    ];
+    for (const [hiddenId, missingId] of pairs) {
+      for (const session of hiddenId === links.regular.id ? [plain] : [plain, elevated]) {
+        for (const send of [
+          (id: string) => request(app).get(`/shared-links/${id}`).set(as(session)),
+          (id: string) => request(app).patch(`/shared-links/${id}`).set(as(session)).send({ allowDownload: true }),
+          (id: string) =>
+            request(app)
+              .put(`/shared-links/${id}/assets`)
+              .set(as(session))
+              .send({ assetIds: [visibleAsset.id] }),
+          (id: string) =>
+            request(app)
+              .delete(`/shared-links/${id}/assets`)
+              .set(as(session))
+              .send({ assetIds: [hiddenA.id] }),
+        ]) {
+          const hidden = await send(hiddenId);
+          const absent = await send(missingId);
+          expect(hidden.status).toBe(400);
+          expect({ status: hidden.status, body: hidden.body }).toEqual({ status: absent.status, body: absent.body });
+        }
+      }
+    }
+    const hiddenMint = await request(app)
+      .post('/shared-links')
+      .set(as(plain))
+      .send({ type: SharedLinkType.Individual, assetIds: [hiddenA.id] });
+    const absentMint = await request(app)
+      .post('/shared-links')
+      .set(as(plain))
+      .send({ type: SharedLinkType.Individual, assetIds: [missing] });
+    expect(hiddenMint.status).toBe(400);
+    expect({ status: hiddenMint.status, body: hiddenMint.body }).toEqual({
+      status: absentMint.status,
+      body: absentMint.body,
+    });
+  });
+
+  it("revoking a link hidden by the manager's own lock requires elevation", async () => {
+    const plainDelete = await request(app).delete(`/shared-links/${links.regular.id}`).set(as(plain));
+    expect(plainDelete.status).toBe(400);
+    expect(plainDelete.body).toEqual(errorDto.badRequest(LINK_NOT_FOUND));
+    const elevatedDelete = await request(app).delete(`/shared-links/${links.regular.id}`).set(as(elevated));
+    expect(elevatedDelete.status).toBe(204);
+  });
+
+  it("link owner can revoke a link hidden only by a partner's lock, elevated or not", async () => {
+    const get = await request(app).get(`/shared-links/${links.partnerX.id}`).set(as(plain));
+    expect(get.status).toBe(400);
+    const plainDelete = await request(app).delete(`/shared-links/${links.partnerX.id}`).set(as(plain));
+    expect(plainDelete.status).toBe(204);
+    const gone = await request(app).get('/shared-links/me').query({ key: links.partnerX.key });
+    expect(gone.status).toBe(401);
+  });
+
+  it("link owner can revoke a link hidden by a former partner's lock", async () => {
+    const unpartner = await request(app).delete(`/partners/${plain.userId}`).set(as(partnerA));
+    expect(unpartner.status).toBe(204);
+    const { ids } = await listIds(plain);
+    expect(ids).not.toContain(links.partnerXRevoke.id);
+    const plainDelete = await request(app).delete(`/shared-links/${links.partnerXRevoke.id}`).set(as(plain));
+    expect(plainDelete.status).toBe(204);
   });
 });
