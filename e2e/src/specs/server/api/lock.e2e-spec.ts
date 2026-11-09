@@ -550,7 +550,7 @@ describe('/albums/:id/lock', () => {
       assetIds: [faceAsset.id],
     });
     const person = await utils.createPerson(owner.accessToken, { name: 'Locked Face Person' });
-    await utils.createFace({ assetId: faceAsset.id, personId: person.id });
+    await utils.createFace({ assetId: faceAsset.id, personGroupId: person.id });
 
     // Visible while the album is unlocked.
     const before = await request(app).get('/people').set('Authorization', `Bearer ${owner.accessToken}`);
