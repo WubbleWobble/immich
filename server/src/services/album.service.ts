@@ -180,6 +180,8 @@ export class AlbumService extends BaseService {
 
     return {
       ...mapAlbum(album),
+      // A shared-link visitor is authenticated as the link owner but holds no role of their own (review T4).
+      viewerRole: auth.sharedLink ? null : (album.viewerRole ?? null),
       albumThumbnailAssetId: isSmart ? (album.cachedThumbnailAssetId ?? null) : album.albumThumbnailAssetId,
       startDate: asDateTimeString((isSmart ? album.cachedStartDate : albumMetadataForIds?.startDate) ?? undefined),
       endDate: asDateTimeString((isSmart ? album.cachedEndDate : albumMetadataForIds?.endDate) ?? undefined),

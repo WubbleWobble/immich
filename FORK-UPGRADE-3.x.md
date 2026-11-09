@@ -91,6 +91,7 @@ commits.
 | Album shared link to a smart album | `allowUpload` defaults to `false`; explicit `true` returns 400 `Smart albums do not accept uploads` |
 | Stack create (mobile auto-stack) | May return 400 `Asset stack not found` when the target stack holds a hidden member |
 | Per-asset `visibility=locked` | Retired and rejected; enforced by a DB CHECK constraint |
+| Album responses (`AlbumResponseDto`) | New required field `viewerRole` (`owner`, `editor`, `viewer` or `null`): the requesting user's effective role, the strongest of their direct album role and any role inherited from a shared ancestor folder. `albumUsers` still lists direct members only; the folder share graph is not exposed. `null` for shared-link visitors |
 | Upload duplicate of an asset hidden for a non-elevated session (R49) | `x-immich-checksum` pre-check falls through; `bulk-upload-check` answers `accept`; the upload answers `201 { id: <fresh uuid>, status: created }` and stores nothing. Elevated sessions get the real `duplicate` + id |
 | Asset bytes (thumbnail, preview, original, video playback, asset files, HLS segments) (R50) | `Cache-Control: private, no-cache, no-transform` (was `private, max-age=86400, ... stale-while-revalidate=2592000, stale-if-error=2592000`) |
 

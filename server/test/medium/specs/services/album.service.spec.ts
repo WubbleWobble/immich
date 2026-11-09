@@ -123,6 +123,25 @@ const hiddenDestination = async (
 const albumsIn = (ctx: Ctx, containerId: string) =>
   ctx.database.selectFrom('album').select('id').where('containerId', '=', containerId).execute();
 
+// Fork (review T4) fixtures: an album two folders below a shared folder, and the role both album reads report.
+const newFolderAlbum = async (ctx: Ctx) => {
+  const { user: owner } = await ctx.newUser();
+  const { user: sharee } = await ctx.newUser();
+  const folders = ctx.get(AlbumContainerRepository);
+  const parent = await folders.create({ ownerId: owner.id, name: 'Shared', parentId: null });
+  const child = await folders.create({ ownerId: owner.id, name: 'Inner', parentId: parent.id });
+  const { album } = await ctx.newAlbum({ ownerId: owner.id, containerId: child.id });
+  return { owner, sharee, album, parent, folders };
+};
+const roleSeenBy = async (sut: AlbumService, user: { id: string }, albumId: string) => {
+  const auth = factory.auth({ user });
+  const single = await sut.get(auth, albumId);
+  const albums = await sut.getAll(auth, {});
+  const listed = albums.find(({ id }) => id === albumId);
+  expect(listed?.viewerRole).toEqual(single.viewerRole);
+  return single.viewerRole;
+};
+
 describe(AlbumService.name, () => {
   describe('removeAssets', () => {
     it('should not remove assets from an album of another user', async () => {
@@ -473,6 +492,52 @@ describe(AlbumService.name, () => {
       await expect(
         ctx.database.selectFrom('album_user').selectAll().where('albumId', '=', album.id).execute(),
       ).resolves.toEqual([]);
+    });
+  });
+
+  /**
+   * Fork (review T4): the album response carries the viewer's effective role - the strongest of their direct album
+   * role and any role inherited from a shared ancestor folder (Owner > Editor > Viewer) - without exposing the folder
+   * share graph.
+   */
+  describe('viewerRole (T4)', () => {
+    it('owner -> owner; a folder-only Viewer -> viewer', async () => {
+      const { sut, ctx } = setup();
+      const { owner, sharee, album, parent, folders } = await newFolderAlbum(ctx);
+      await folders.addUser(parent.id, sharee.id, AlbumUserRole.Viewer);
+
+      await expect(roleSeenBy(sut, owner, album.id)).resolves.toEqual(AlbumUserRole.Owner);
+      await expect(roleSeenBy(sut, sharee, album.id)).resolves.toEqual(AlbumUserRole.Viewer);
+    });
+
+    it('direct Viewer + folder Editor -> editor', async () => {
+      const { sut, ctx } = setup();
+      const { sharee, album, parent, folders } = await newFolderAlbum(ctx);
+      await ctx.newAlbumUser({ albumId: album.id, userId: sharee.id, role: AlbumUserRole.Viewer });
+      await folders.addUser(parent.id, sharee.id, AlbumUserRole.Editor);
+
+      await expect(roleSeenBy(sut, sharee, album.id)).resolves.toEqual(AlbumUserRole.Editor);
+    });
+
+    it('direct Editor + folder Viewer -> editor', async () => {
+      const { sut, ctx } = setup();
+      const { sharee, album, parent, folders } = await newFolderAlbum(ctx);
+      await ctx.newAlbumUser({ albumId: album.id, userId: sharee.id, role: AlbumUserRole.Editor });
+      await folders.addUser(parent.id, sharee.id, AlbumUserRole.Viewer);
+
+      await expect(roleSeenBy(sut, sharee, album.id)).resolves.toEqual(AlbumUserRole.Editor);
+    });
+
+    it('a direct Viewer with no folder grant -> viewer; the response never lists folder sharees', async () => {
+      const { sut, ctx } = setup();
+      const { owner, sharee, album, parent, folders } = await newFolderAlbum(ctx);
+      await ctx.newAlbumUser({ albumId: album.id, userId: sharee.id, role: AlbumUserRole.Viewer });
+      const { user: folderOnly } = await ctx.newUser();
+      await folders.addUser(parent.id, folderOnly.id, AlbumUserRole.Editor);
+
+      await expect(roleSeenBy(sut, sharee, album.id)).resolves.toEqual(AlbumUserRole.Viewer);
+      const response = await sut.get(factory.auth({ user: owner }), album.id);
+      expect(response.albumUsers.map(({ user }) => user.id)).toEqual([owner.id, sharee.id]);
     });
   });
 });

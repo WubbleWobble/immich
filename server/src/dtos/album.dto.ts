@@ -203,6 +203,9 @@ export const AlbumResponseSchema = z
     kind: AlbumKindSchema.describe('Album kind'),
     filter: SmartAlbumFilterSchema.nullable().describe('Filter for smart albums'),
     containerId: z.string().nullable().describe('Containing folder ID, or null if at root'),
+    viewerRole: AlbumUserRoleSchema.nullable().describe(
+      "The requesting user's effective role on the album: the strongest of their direct album role and any role inherited from a shared ancestor folder (owner > editor > viewer); null when they hold no role (for example a shared-link visitor)",
+    ),
   })
   .meta({ id: 'AlbumResponseDto' });
 
@@ -254,6 +257,8 @@ export type MapAlbumDto = {
   cacheRevision?: number;
   cachedRevision?: number | null;
   containerId: string | null;
+  /** Fork (review T4): the requesting user's effective role, computed by the repository (null when unknown). */
+  viewerRole?: AlbumUserRole | null;
 };
 
 export const mapAlbum = (entity: MaybeDehydrated<MapAlbumDto>): AlbumResponseDto => {
@@ -300,5 +305,6 @@ export const mapAlbum = (entity: MaybeDehydrated<MapAlbumDto>): AlbumResponseDto
     kind: entity.kind,
     filter: entity.filter,
     containerId: entity.containerId ?? null,
+    viewerRole: entity.viewerRole ?? null,
   };
 };

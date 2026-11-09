@@ -48,6 +48,42 @@ const withAlbumUsers = (authUserId?: string) => (eb: ExpressionBuilder<DB, 'albu
     .$notNull()
     .as('albumUsers');
 
+/**
+ * Fork (review T4): the requesting user's effective role on the album - the strongest of their direct album_user role
+ * and any album_container_user role on an ancestor folder (through the closure; the cascade rule of
+ * buildAlbumBaseQuery), ranked owner > editor > viewer; null without a viewer or when they hold no role. Only the role
+ * is exposed, never the folder share graph.
+ */
+const withViewerRole = (authUserId?: string) => (eb: ExpressionBuilder<DB, 'album'>) => {
+  if (!authUserId) {
+    return sql<AlbumUserRole | null>`null`.as('viewerRole');
+  }
+  return eb
+    .selectFrom(
+      eb
+        .selectFrom('album_user')
+        .select('album_user.role')
+        .whereRef('album_user.albumId', '=', 'album.id')
+        .where('album_user.userId', '=', authUserId)
+        .union(
+          eb
+            .selectFrom('album_container_closure as c')
+            .innerJoin('album_container_user as acu', 'acu.albumContainerId', 'c.id_ancestor')
+            .select('acu.role')
+            .whereRef('c.id_descendant', '=', 'album.containerId')
+            .where('acu.userId', '=', authUserId),
+        )
+        .as('viewer_role'),
+    )
+    .select('viewer_role.role')
+    .orderBy(
+      sql`case ${sql.ref('viewer_role.role')} when ${sql.lit(AlbumUserRole.Owner)} then 0 when ${sql.lit(AlbumUserRole.Editor)} then 1 else 2 end`,
+    )
+    .limit(1)
+    .$castTo<AlbumUserRole | null>()
+    .as('viewerRole');
+};
+
 const withSharedLink = (eb: ExpressionBuilder<DB, 'album'>) =>
   jsonArrayFrom(
     eb.selectFrom('shared_link').selectAll('shared_link').whereRef('shared_link.albumId', '=', 'album.id'),
@@ -105,6 +141,7 @@ export class AlbumRepository {
       .where('album.id', '=', id)
       .where('album.deletedAt', 'is', null)
       .select(withAlbumUsers(authUserId))
+      .select(withViewerRole(authUserId))
       .select(withSharedLink)
       .$if(options.withAssets, (eb) => eb.select(withAssets))
       .$narrowType<{ assets: NotNull }>()
@@ -128,6 +165,7 @@ export class AlbumRepository {
       .where('album_asset.assetId', '=', assetId)
       .where('album.deletedAt', 'is', null)
       .select(withAlbumUsers(ownerId))
+      .select(withViewerRole(ownerId))
       .orderBy('album.createdAt', 'desc')
       .execute();
   }
@@ -192,6 +230,7 @@ export class AlbumRepository {
       .selectFrom('album')
       .selectAll('album')
       .select(withAlbumUsers(ownerId))
+      .select(withViewerRole(ownerId))
       .where('album.id', 'in', matchingIds)
       .where('album.deletedAt', 'is', null)
       .orderBy('album.createdAt', 'desc')
@@ -342,6 +381,7 @@ export class AlbumRepository {
     return this.buildAlbumBaseQuery(ownerId, options)
       .selectAll('album')
       .select(withAlbumUsers(ownerId))
+      .select(withViewerRole(ownerId))
       .select(withSharedLink)
       .$if(!!options.id, (qb) => qb.where('album.id', '=', options.id!))
       .$if(!!options.name, (qb) => qb.where('album.albumName', '=', options.name!))
@@ -485,6 +525,7 @@ export class AlbumRepository {
       .selectFrom('album')
       .selectAll('album')
       .select(withAlbumUsers(authUserId))
+      .select(withViewerRole(authUserId))
       .select(withAssets)
       .$narrowType<{ assets: NotNull }>()
       .executeTakeFirstOrThrow();
@@ -505,6 +546,7 @@ export class AlbumRepository {
         .returningAll('album')
         .returning(withSharedLink)
         .returning(withAlbumUsers(authUserId))
+        .returning(withViewerRole(authUserId))
         .executeTakeFirstOrThrow()
     );
   }

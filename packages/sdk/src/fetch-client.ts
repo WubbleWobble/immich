@@ -988,6 +988,8 @@ export type AlbumResponseDto = {
     startDate?: string;
     /** Last update date */
     updatedAt: string;
+    /** The requesting user's effective role on the album: the strongest of their direct album role and any role inherited from a shared ancestor folder (owner > editor > viewer); null when they hold no role (for example a shared-link visitor) */
+    viewerRole: (AlbumUserRole) | null;
 };
 export type AlbumUserCreateDto = {
     role: AlbumUserRole;

@@ -20716,6 +20716,15 @@
             "description": "Last update date",
             "format": "date-time",
             "type": "string"
+          },
+          "viewerRole": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AlbumUserRole"
+              }
+            ],
+            "description": "The requesting user's effective role on the album: the strongest of their direct album role and any role inherited from a shared ancestor folder (owner > editor > viewer); null when they hold no role (for example a shared-link visitor)",
+            "nullable": true
           }
         },
         "required": [
@@ -20732,7 +20741,8 @@
           "isActivityEnabled",
           "kind",
           "shared",
-          "updatedAt"
+          "updatedAt",
+          "viewerRole"
         ],
         "type": "object"
       },

@@ -518,6 +518,7 @@ describe('/albums', () => {
         kind: AlbumKind.Regular,
         filter: null,
         containerId: null,
+        viewerRole: AlbumUserRole.Owner,
       });
     });
 

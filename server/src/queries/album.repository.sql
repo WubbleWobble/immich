@@ -51,6 +51,37 @@ select
   ) as "albumUsers",
   (
     select
+      "viewer_role"."role"
+    from
+      (
+        select
+          "album_user"."role"
+        from
+          "album_user"
+        where
+          "album_user"."albumId" = "album"."id"
+          and "album_user"."userId" = $3
+        union
+        select
+          "acu"."role"
+        from
+          "album_container_closure" as "c"
+          inner join "album_container_user" as "acu" on "acu"."albumContainerId" = "c"."id_ancestor"
+        where
+          "c"."id_descendant" = "album"."containerId"
+          and "acu"."userId" = $4
+      ) as "viewer_role"
+    order by
+      case "viewer_role"."role"
+        when 'owner' then 0
+        when 'editor' then 1
+        else 2
+      end
+    limit
+      $5
+  ) as "viewerRole",
+  (
+    select
       coalesce(json_agg(agg), '[]')
     from
       (
@@ -85,7 +116,7 @@ select
 from
   "album"
 where
-  "album"."id" = $3
+  "album"."id" = $6
   and "album"."deletedAt" is null
 
 -- AlbumRepository.getByAssetId
@@ -127,7 +158,38 @@ select
           "album_user"."userId" = $1 desc,
           "user"."name" asc
       ) as agg
-  ) as "albumUsers"
+  ) as "albumUsers",
+  (
+    select
+      "viewer_role"."role"
+    from
+      (
+        select
+          "album_user"."role"
+        from
+          "album_user"
+        where
+          "album_user"."albumId" = "album"."id"
+          and "album_user"."userId" = $2
+        union
+        select
+          "acu"."role"
+        from
+          "album_container_closure" as "c"
+          inner join "album_container_user" as "acu" on "acu"."albumContainerId" = "c"."id_ancestor"
+        where
+          "c"."id_descendant" = "album"."containerId"
+          and "acu"."userId" = $3
+      ) as "viewer_role"
+    order by
+      case "viewer_role"."role"
+        when 'owner' then 0
+        when 'editor' then 1
+        else 2
+      end
+    limit
+      $4
+  ) as "viewerRole"
 from
   "album"
   inner join "album_asset" on "album_asset"."albumId" = "album"."id"
@@ -138,9 +200,9 @@ where
       "album_user"
     where
       "album_user"."albumId" = "album"."id"
-      and "album_user"."userId" = $2
+      and "album_user"."userId" = $5
   )
-  and "album_asset"."assetId" = $3
+  and "album_asset"."assetId" = $6
   and "album"."deletedAt" is null
 order by
   "album"."createdAt" desc
@@ -227,6 +289,37 @@ select
   ) as "albumUsers",
   (
     select
+      "viewer_role"."role"
+    from
+      (
+        select
+          "album_user"."role"
+        from
+          "album_user"
+        where
+          "album_user"."albumId" = "album"."id"
+          and "album_user"."userId" = $2
+        union
+        select
+          "acu"."role"
+        from
+          "album_container_closure" as "c"
+          inner join "album_container_user" as "acu" on "acu"."albumContainerId" = "c"."id_ancestor"
+        where
+          "c"."id_descendant" = "album"."containerId"
+          and "acu"."userId" = $3
+      ) as "viewer_role"
+    order by
+      case "viewer_role"."role"
+        when 'owner' then 0
+        when 'editor' then 1
+        else 2
+      end
+    limit
+      $4
+  ) as "viewerRole",
+  (
+    select
       coalesce(json_agg(agg), '[]')
     from
       (
@@ -249,7 +342,7 @@ where
         "album_user"
       where
         "album_user"."albumId" = "album"."id"
-        and "album_user"."userId" = $2
+        and "album_user"."userId" = $5
     )
     or exists (
       select
@@ -258,7 +351,7 @@ where
         inner join "album_container_user" as "acu" on "acu"."albumContainerId" = "c"."id_ancestor"
       where
         "c"."id_descendant" = "album"."containerId"
-        and "acu"."userId" = $3
+        and "acu"."userId" = $6
     )
   )
   and exists (
@@ -267,7 +360,7 @@ where
       "album_user"
     where
       "album_user"."albumId" = "album"."id"
-      and "album_user"."userId" = $4
+      and "album_user"."userId" = $7
       and "album_user"."role" = 'owner'
   )
   and (
@@ -463,6 +556,7 @@ select
           "user"."name" asc
       ) as agg
   ) as "albumUsers",
+  null as "viewerRole",
   (
     select
       json_agg("asset") as "assets"
