@@ -32,6 +32,7 @@ import { BaseService } from 'src/services/base.service.js';
 import { getAssetFiles } from 'src/utils/asset.util.js';
 import { isAssetChecksumConstraint } from 'src/utils/database.js';
 import { mergeTimeZone } from 'src/utils/date.js';
+import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
 import { mimeTypes } from 'src/utils/mime-types.js';
 import { batched, isFaceImportEnabled } from 'src/utils/misc.js';
 import { upsertTags } from 'src/utils/tag.js';
@@ -194,6 +195,13 @@ export class MetadataService extends BaseService {
     }
 
     const [photoAsset, motionAsset] = asset.type === AssetType.Image ? [asset, match] : [match, asset];
+    if (await this.isLinkHiddenMotionToVisibleStill(asset.ownerId, photoAsset.id, motionAsset.id)) {
+      // Fork (§15.2): linking would hide the motion asset and drop it from every album - including the locked one
+      // that hides it, after which it is judged with the visible still (7A.2) and becomes visible. Job context is
+      // never elevated, so leave both untouched.
+      this.logger.debug(`Not linking live photo ${photoAsset.id}: its motion part is hidden by the owner's locks`);
+      return;
+    }
     await Promise.all([
       this.assetRepository.update({ id: photoAsset.id, livePhotoVideoId: motionAsset.id }),
       this.assetRepository.update({ id: motionAsset.id, visibility: AssetVisibility.Hidden }),
@@ -201,6 +209,24 @@ export class MetadataService extends BaseService {
     ]);
 
     await this.eventRepository.emit('AssetHide', { assetId: motionAsset.id, userId: motionAsset.ownerId });
+  }
+
+  /**
+   * Fork (§15.2): whether the owner's motion asset is hidden by the owner's own locks while the still is not - judged in
+   * job context (never elevated, no reveal), the direct-access rule. Both hidden or both visible link as upstream.
+   */
+  private async isLinkHiddenMotionToVisibleStill(ownerId: string, stillId: string, motionId: string) {
+    const entries = await this.lockRepository.getOwnerLockVisibility({
+      viewerId: ownerId,
+      ownerIds: [ownerId],
+      revealed: NO_REVEALED_LOCKS,
+      isElevated: false,
+    });
+    if (entries.length === 0) {
+      return false;
+    }
+    const visible = await this.lockRepository.getVisibleAssetIds([stillId, motionId], entries);
+    return !visible.has(motionId) && visible.has(stillId);
   }
 
   private isOrientationSidewards(orientation: ExifOrientation | number): boolean {

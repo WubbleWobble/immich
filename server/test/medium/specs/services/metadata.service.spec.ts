@@ -1,12 +1,16 @@
 import { Kysely } from 'kysely';
+import { randomUUID } from 'node:crypto';
 import { Stats } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { AssetType, AssetVisibility } from 'src/enum.js';
+import { AlbumRepository } from 'src/repositories/album.repository.js';
 import { AssetJobRepository } from 'src/repositories/asset-job.repository.js';
 import { AssetRepository } from 'src/repositories/asset.repository.js';
 import { ConfigRepository } from 'src/repositories/config.repository.js';
 import { EventRepository } from 'src/repositories/event.repository.js';
+import { LockRepository } from 'src/repositories/lock.repository.js';
 import { LoggingRepository } from 'src/repositories/logging.repository.js';
 import { MetadataRepository } from 'src/repositories/metadata.repository.js';
 import { StorageRepository } from 'src/repositories/storage.repository.js';
@@ -34,9 +38,11 @@ const setup = (db?: Kysely<DB>) => {
   const { sut, ctx } = newMediumService(MetadataService, {
     database: db || defaultDatabase,
     real: [
+      AlbumRepository,
       AssetRepository,
       AssetJobRepository,
       ConfigRepository,
+      LockRepository,
       MetadataRepository,
       SystemMetadataRepository,
       TagRepository,
@@ -66,6 +72,59 @@ const createTestFile = async (exifData: Record<string, any>) => {
 beforeAll(async () => {
   defaultDatabase = await getKyselyDB();
 });
+
+/** A still and a motion video sharing a livePhotoCID, each in its own album (optionally locked). */
+const setupLivePhoto = async ({ lockStill, lockMotion }: { lockStill: boolean; lockMotion: boolean }) => {
+  const { sut, ctx } = setup();
+  ctx.getMock(EventRepository).emit.mockResolvedValue();
+  const cid = randomUUID().toUpperCase();
+
+  const { user } = await ctx.newUser();
+  const { asset: still } = await ctx.newAsset({ ownerId: user.id, type: AssetType.Image });
+  await ctx.newExif({ assetId: still.id, livePhotoCID: cid });
+  const { asset: motion } = await ctx.newAsset({
+    ownerId: user.id,
+    type: AssetType.Video,
+    visibility: AssetVisibility.Timeline,
+  });
+  await ctx.newExif({ assetId: motion.id, livePhotoCID: cid });
+  const { album: stillAlbum } = await ctx.newAlbum({ ownerId: user.id }, [still.id]);
+  const { album: motionAlbum } = await ctx.newAlbum({ ownerId: user.id }, [motion.id]);
+  if (lockStill) {
+    await ctx.get(LockRepository).lockAlbum(user.id, stillAlbum.id);
+  }
+  if (lockMotion) {
+    await ctx.get(LockRepository).lockAlbum(user.id, motionAlbum.id);
+  }
+
+  const state = async () => {
+    const rows = await ctx.database
+      .selectFrom('asset')
+      .select(['id', 'livePhotoVideoId', 'visibility'])
+      .where('id', 'in', [still.id, motion.id])
+      .execute();
+    const motionAlbums = await ctx.database
+      .selectFrom('album_asset')
+      .select('albumId')
+      .where('assetId', '=', motion.id)
+      .execute();
+    return {
+      livePhotoVideoId: rows.find(({ id }) => id === still.id)?.livePhotoVideoId,
+      motionVisibility: rows.find(({ id }) => id === motion.id)?.visibility,
+      motionAlbums,
+    };
+  };
+  // the job step that runs once the still's metadata (with its livePhotoCID) is extracted
+  // (the still's or the motion's, whichever is extracted second)
+  const link = (from: 'still' | 'motion') => {
+    const asset = from === 'still' ? still : motion;
+    return sut['linkLivePhotos'](
+      { id: asset.id, type: asset.type, ownerId: user.id, libraryId: null },
+      { assetId: asset.id, livePhotoCID: cid },
+    );
+  };
+  return { ctx, still, motion, motionAlbum, state, link };
+};
 
 describe(MetadataService.name, () => {
   afterEach(() => {
@@ -223,5 +282,41 @@ describe(MetadataService.name, () => {
         .select('lensModel')
         .executeTakeFirstOrThrow(),
     ).resolves.toEqual({ lensModel: '1.8' });
+  });
+
+  describe('live photo auto-linking and locks', () => {
+    it("does not link a visible still to a motion asset hidden by the owner's locks, nor touch it", async () => {
+      for (const from of ['still', 'motion'] as const) {
+        const { ctx, motionAlbum, state, link } = await setupLivePhoto({ lockStill: false, lockMotion: true });
+
+        await link(from);
+
+        await expect(state()).resolves.toEqual({
+          livePhotoVideoId: null,
+          motionVisibility: AssetVisibility.Timeline,
+          motionAlbums: [{ albumId: motionAlbum.id }],
+        });
+        expect(ctx.getMock(EventRepository).emit).not.toHaveBeenCalledWith('AssetHide', expect.anything());
+      }
+    });
+
+    it.each([
+      { lockStill: false, lockMotion: false, title: 'both visible' },
+      { lockStill: true, lockMotion: true, title: 'both hidden' },
+    ])('links as upstream when $title', async ({ lockStill, lockMotion }) => {
+      const { ctx, motion, state, link } = await setupLivePhoto({ lockStill, lockMotion });
+
+      await link('still');
+
+      await expect(state()).resolves.toEqual({
+        livePhotoVideoId: motion.id,
+        motionVisibility: AssetVisibility.Hidden,
+        motionAlbums: [],
+      });
+      expect(ctx.getMock(EventRepository).emit).toHaveBeenCalledWith('AssetHide', {
+        assetId: motion.id,
+        userId: motion.ownerId,
+      });
+    });
   });
 });
