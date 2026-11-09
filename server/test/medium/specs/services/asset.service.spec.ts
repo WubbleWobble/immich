@@ -213,6 +213,36 @@ const withSessions = async (ctx: ReturnType<typeof setup>['ctx'], userId: string
   return session.id;
 };
 
+/** Fork (R58, round 4): a user who locked an album, with one notification about it and one about an open album. */
+const newNotifications = async (ctx: ReturnType<typeof setup>['ctx']) => {
+  const { user } = await ctx.newUser();
+  const { album: locked } = await ctx.newAlbum({ ownerId: user.id });
+  const { album: open } = await ctx.newAlbum({ ownerId: user.id });
+  await ctx.get(LockRepository).lockAlbum(user.id, locked.id);
+  const notifications = ctx.get(NotificationRepository);
+  const hiddenNotice = await notifications.create({
+    userId: user.id,
+    title: 'locked',
+    data: JSON.stringify({ albumId: locked.id }),
+  });
+  const openNotice = await notifications.create({
+    userId: user.id,
+    title: 'open',
+    data: JSON.stringify({ albumId: open.id }),
+  });
+  return { user, hiddenNotice, openNotice };
+};
+
+/** How an action on `id` fails (or 'resolved'), to compare refusals (ruling R32). */
+const failure = async (action: (id: string) => Promise<unknown>, id: string) => {
+  try {
+    await action(id);
+  } catch (error: any) {
+    return { type: error.constructor.name, status: error.getStatus(), response: error.getResponse() };
+  }
+  return 'resolved';
+};
+
 beforeAll(async () => {
   defaultDatabase = await getKyselyDB();
 });
@@ -1892,7 +1922,29 @@ describe(AssetService.name, () => {
         ).resolves.toEqual(sorted([{ albumId: locked.id }, { albumId: open.id }, { assetId: hiddenAsset.id }]));
         await expect(
           sut.update(factory.auth({ user: sharee }), assetNotice.id, { readAt: new Date() }),
-        ).rejects.toThrow('Notification not found');
+        ).rejects.toThrow('Not found or no notification.update access');
+      });
+
+      it('a notification about hidden content fails exactly like a missing id on get, update and delete (round 4)', async () => {
+        const { ctx } = setup();
+        const { sut } = albumNotifier();
+        const { user, hiddenNotice } = await newNotifications(ctx);
+        const ordinary = factory.auth({ user });
+        const actions = [
+          (id: string) => sut.get(ordinary, id),
+          (id: string) => sut.update(ordinary, id, { readAt: new Date() }),
+        ];
+        for (const action of actions) {
+          const missing = await failure(action, factory.uuid());
+          expect(missing).toMatchObject({ status: 400 });
+          await expect(failure(action, hiddenNotice.id)).resolves.toEqual(missing);
+        }
+        const [stored] = await ctx.database
+          .selectFrom('notification')
+          .select('readAt')
+          .where('id', '=', hiddenNotice.id)
+          .execute();
+        expect(stored.readAt).toBeNull();
       });
 
       it('a user without locks gets album updates and notifications unchanged', async () => {

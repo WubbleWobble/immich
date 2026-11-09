@@ -54,6 +54,18 @@ export class NotificationRepository {
       .execute();
   }
 
+  /** Fork (R58): the user's own live notifications among `ids`, with the data their lock judgement reads. */
+  @GenerateSql({ params: [DummyValue.UUID, [DummyValue.UUID]] })
+  getByIds(userId: string, ids: string[]) {
+    return this.db
+      .selectFrom('notification')
+      .select(['id', 'data'])
+      .where('userId', '=', userId)
+      .where('id', 'in', ids)
+      .where('deletedAt', 'is', null)
+      .execute();
+  }
+
   create(notification: Insertable<NotificationTable>) {
     return this.db
       .insertInto('notification')

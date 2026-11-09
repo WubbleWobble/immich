@@ -38,3 +38,14 @@ where
   and "deletedAt" is null
 order by
   "createdAt" desc
+
+-- NotificationRepository.getByIds
+select
+  "id",
+  "data"
+from
+  "notification"
+where
+  "userId" = $1
+  and "id" in ($2)
+  and "deletedAt" is null

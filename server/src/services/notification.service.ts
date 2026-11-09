@@ -48,14 +48,25 @@ export class NotificationService extends BaseService {
     return items.filter(({ id }) => !hidden.has(id)).map((item) => mapNotification(item));
   }
 
-  /** Fork (R58): a notification about hidden content reads as missing outside elevation (ruling R32). */
-  private async assertNotificationVisible(auth: AuthDto, item: { id: string; data: unknown }) {
-    if (auth.session?.hasElevatedPermission) {
-      return;
+  /**
+   * Fork (R58, §15.2): the caller's notifications among `ids` that are about hidden content, for an ordinary session
+   * (always empty when elevated). Single-id endpoints refuse them exactly like a missing id (ruling R32); bulk
+   * endpoints skip them silently.
+   */
+  private async getHiddenOwnNotificationIds(auth: AuthDto, ids: string[]): Promise<Set<string>> {
+    if (auth.session?.hasElevatedPermission || ids.length === 0) {
+      return new Set();
     }
-    const hidden = await this.lockService().getHiddenNotificationIds(auth.user.id, [item]);
-    if (hidden.has(item.id)) {
-      throw new BadRequestException('Notification not found');
+    const items = await this.notificationRepository.getByIds(auth.user.id, ids);
+    return this.lockService().getHiddenNotificationIds(auth.user.id, items);
+  }
+
+  /** The single-id access check, with a notification about hidden content failing exactly like a missing one. */
+  private async requireVisibleNotification(auth: AuthDto, id: string, permission: Permission) {
+    await this.requireAccess({ auth, ids: [id], permission });
+    const hidden = await this.getHiddenOwnNotificationIds(auth, [id]);
+    if (hidden.has(id)) {
+      throw new BadRequestException(`Not found or no ${permission} access`);
     }
   }
 
@@ -83,21 +94,16 @@ export class NotificationService extends BaseService {
   }
 
   async get(auth: AuthDto, id: string) {
-    await this.requireAccess({ auth, ids: [id], permission: Permission.NotificationRead });
+    await this.requireVisibleNotification(auth, id, Permission.NotificationRead);
     const item = await this.notificationRepository.get(id);
     if (!item) {
       throw new BadRequestException('Notification not found');
     }
-    await this.assertNotificationVisible(auth, item);
     return mapNotification(item);
   }
 
   async update(auth: AuthDto, id: string, dto: NotificationUpdateDto) {
-    await this.requireAccess({ auth, ids: [id], permission: Permission.NotificationUpdate });
-    const [existing] = await this.notificationRepository.search(auth.user.id, { id });
-    if (existing) {
-      await this.assertNotificationVisible(auth, existing);
-    }
+    await this.requireVisibleNotification(auth, id, Permission.NotificationUpdate);
     const item = await this.notificationRepository.update(id, {
       readAt: dto.readAt,
     });
