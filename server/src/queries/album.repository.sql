@@ -501,6 +501,15 @@ group by
 order by
   "assetCount" desc
 
+-- AlbumRepository.getSmartAlbumIds
+select
+  "album"."id"
+from
+  "album"
+where
+  "album"."id" in ($1)
+  and "album"."kind" = 'smart'
+
 -- AlbumRepository.getSmartAlbumsForOwner
 select
   "album"."id",
@@ -543,18 +552,47 @@ where
 -- AlbumRepository.markCacheInvalidated
 update "album"
 set
-  "cacheInvalidatedAt" = $1
+  "cacheRevision" = "album"."cacheRevision" + 1,
+  "cacheInvalidatedAt" = now()
 where
-  "album"."id" in ($2)
+  "album"."id" in ($1)
 
 -- AlbumRepository.markAllSmartAlbumsWithPersonFilterInvalidated
 update "album"
 set
-  "cacheInvalidatedAt" = $1
+  "cacheRevision" = "album"."cacheRevision" + 1,
+  "cacheInvalidatedAt" = now()
 where
   "album"."kind" = 'smart'
   and "album"."deletedAt" is null
   and album.filter ? 'personIds'
+
+-- AlbumRepository.getSmartAlbumCacheSource
+select
+  "album"."filter",
+  "album"."cacheRevision",
+  "owner"."userId" as "ownerId"
+from
+  "album"
+  left join "album_user" as "owner" on "owner"."albumId" = "album"."id"
+  and "owner"."role" = 'owner'
+where
+  "album"."id" = $1
+  and "album"."kind" = 'smart'
+  and "album"."deletedAt" is null
+
+-- AlbumRepository.updateCachedMetadata
+update "album"
+set
+  "cachedAssetCount" = $1,
+  "cachedThumbnailAssetId" = $2,
+  "cachedStartDate" = $3,
+  "cachedEndDate" = $4,
+  "cachedRevision" = $5,
+  "cacheComputedAt" = now()
+where
+  "album"."id" = $6
+  and "album"."cacheRevision" = $7
 
 -- AlbumRepository.copyAlbums
 insert into

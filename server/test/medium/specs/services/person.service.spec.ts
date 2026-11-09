@@ -118,17 +118,14 @@ const expectWithheld = async (sut: PersonService, auth: AuthDto, personGroupId: 
   await expect(sut.getThumbnail(auth, personGroupId), label).rejects.toBeInstanceOf(NotFoundException);
 };
 
-const getCacheInvalidatedAt = async (ctx: Ctx, albumId: string) => {
-  const { cacheInvalidatedAt } = await ctx.database
+const getCacheRevision = async (ctx: Ctx, albumId: string) => {
+  const { cacheRevision } = await ctx.database
     .selectFrom('album')
-    .select('cacheInvalidatedAt')
+    .select('cacheRevision')
     .where('id', '=', albumId)
     .executeTakeFirstOrThrow();
-  return cacheInvalidatedAt;
+  return cacheRevision;
 };
-
-const resetCacheInvalidatedAt = (ctx: Ctx, albumId: string) =>
-  ctx.database.updateTable('album').set({ cacheInvalidatedAt: null }).where('id', '=', albumId).execute();
 
 const getFilter = async (ctx: Ctx, albumId: string) => {
   const { filter } = await ctx.database
@@ -2076,25 +2073,26 @@ describe(PersonService.name, () => {
       });
       const { face } = await newFaceOn(ctx, { ownerId: user.id, personGroupId: source.personGroupId });
 
-      // reassign
-      await resetCacheInvalidatedAt(ctx, album.id);
+      // each path bumps the album's cache revision in SQL (R3); a bumped revision makes the cache stale
+      let revision = await getCacheRevision(ctx, album.id);
+      const expectInvalidated = async (label: string) => {
+        const next = await getCacheRevision(ctx, album.id);
+        expect(next, label).toBeGreaterThan(revision);
+        revision = next;
+      };
+
       await sut.reassignFacesById(auth, target.personGroupId, { id: face.id });
-      expect(await getCacheInvalidatedAt(ctx, album.id), 'reassign').not.toBeNull();
+      await expectInvalidated('reassign');
 
-      // merge
-      await resetCacheInvalidatedAt(ctx, album.id);
       await sut.mergePeople(auth, { ids: [target.personGroupId, source.personGroupId] });
-      expect(await getCacheInvalidatedAt(ctx, album.id), 'merge').not.toBeNull();
+      await expectInvalidated('merge');
 
-      // delete
-      await resetCacheInvalidatedAt(ctx, album.id);
       await sut.deleteAll(auth, { ids: [toDelete.personGroupId] });
-      expect(await getCacheInvalidatedAt(ctx, album.id), 'delete').not.toBeNull();
+      await expectInvalidated('delete');
 
       // cluster reassignment (leaving remaps the leaver's shared person groups to new ids)
-      await resetCacheInvalidatedAt(ctx, album.id);
       await BaseService.create(ClusterGroupService, sut).leave(auth, user.clusterGroupId);
-      expect(await getCacheInvalidatedAt(ctx, album.id), 'cluster reassignment').not.toBeNull();
+      await expectInvalidated('cluster reassignment');
 
       // D12: none of these rewrote the filter - the merged-away and deleted ids stay in place, dangling, and zero-match
       await expect(getFilter(ctx, album.id)).resolves.toHaveProperty('personIds', [

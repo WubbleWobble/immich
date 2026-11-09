@@ -52,11 +52,15 @@ describe(AlbumContainerService.name, () => {
         {
           id: smartAlbumId,
           filter: { isFavorite: true },
-          ownerId: owner.id,
-          cacheComputedAt: null,
-          cacheInvalidatedAt: null,
+          cacheRevision: 0,
+          cachedRevision: null,
         },
       ]);
+      mocks.album.getSmartAlbumCacheSource.mockResolvedValue({
+        filter: { isFavorite: true },
+        cacheRevision: 0,
+        ownerId: owner.id,
+      });
       mocks.search.searchStatistics.mockResolvedValue({ total: 1 });
       mocks.search.searchDateRange.mockResolvedValue({ startDate: null, endDate: null });
       mocks.search.searchMetadata.mockResolvedValue({ items: [], hasNextPage: false });
@@ -66,6 +70,7 @@ describe(AlbumContainerService.name, () => {
       expect(mocks.albumContainer.getSmartAlbumsForContainers).toHaveBeenCalledWith([containerId]);
       expect(mocks.album.updateCachedMetadata).toHaveBeenCalledWith(
         smartAlbumId,
+        0,
         expect.objectContaining({ cachedAssetCount: 1 }),
       );
     });
@@ -78,10 +83,14 @@ describe(AlbumContainerService.name, () => {
       const staleRow = {
         id: smartAlbumId,
         filter: { isFavorite: true },
-        ownerId: owner.id,
-        cacheComputedAt: null,
-        cacheInvalidatedAt: null,
+        cacheRevision: 0,
+        cachedRevision: null,
       };
+      mocks.album.getSmartAlbumCacheSource.mockResolvedValue({
+        filter: { isFavorite: true },
+        cacheRevision: 0,
+        ownerId: owner.id,
+      });
       mocks.albumContainer.getForUser.mockResolvedValue([
         {
           id: containerId,

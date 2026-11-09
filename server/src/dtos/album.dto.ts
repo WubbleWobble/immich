@@ -251,6 +251,8 @@ export type MapAlbumDto = {
   cachedEndDate?: string | null;
   cacheComputedAt?: Date | string | null;
   cacheInvalidatedAt?: Date | string | null;
+  cacheRevision?: number;
+  cachedRevision?: number | null;
   containerId: string | null;
 };
 

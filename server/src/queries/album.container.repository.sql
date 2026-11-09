@@ -199,9 +199,8 @@ where
 select distinct
   on ("album"."id") "album"."id",
   "album"."filter",
-  "album"."cacheComputedAt",
-  "album"."cacheInvalidatedAt",
-  "owner"."userId" as "ownerId"
+  "album"."cacheRevision",
+  "album"."cachedRevision"
 from
   "album_container_closure" as "closure"
   inner join "album" on "album"."containerId" = "closure"."id_descendant"

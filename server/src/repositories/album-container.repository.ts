@@ -328,13 +328,7 @@ export class AlbumContainerRepository {
         // The closure yields one row per requested ancestor; when containerIds holds both a
         // parent and its child, the same descendant album matches once per ancestor.
         .distinctOn('album.id')
-        .select([
-          'album.id',
-          'album.filter',
-          'album.cacheComputedAt',
-          'album.cacheInvalidatedAt',
-          'owner.userId as ownerId',
-        ])
+        .select(['album.id', 'album.filter', 'album.cacheRevision', 'album.cachedRevision'])
         .execute()
     );
   }

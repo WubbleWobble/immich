@@ -903,7 +903,7 @@ describe(PersonService.name, () => {
       expect(mocks.album.getSmartAlbumsForOwnerByPersonIds).toHaveBeenCalledWith(person.ownerId, [
         person.personGroupId,
       ]);
-      expect(mocks.album.markCacheInvalidated).toHaveBeenCalledWith(['smart-album'], expect.any(Date));
+      expect(mocks.album.markCacheInvalidated).toHaveBeenCalledWith(['smart-album']);
     });
 
     it('does not propagate smart-album invalidation failures', async () => {
@@ -1025,7 +1025,7 @@ describe(PersonService.name, () => {
       await sut.handleQueueDetectFaces({ force: true });
 
       expect(mocks.album.markAllSmartAlbumsWithPersonFilterInvalidated).toHaveBeenCalledTimes(1);
-      expect(mocks.album.markAllSmartAlbumsWithPersonFilterInvalidated).toHaveBeenCalledWith(expect.any(Date));
+      expect(mocks.album.markAllSmartAlbumsWithPersonFilterInvalidated).toHaveBeenCalledWith();
     });
 
     it('should NOT invalidate smart album caches when not forced', async () => {
@@ -1239,7 +1239,7 @@ describe(PersonService.name, () => {
       await sut.handleQueueRecognizeFaces({ force: true });
 
       expect(mocks.album.markAllSmartAlbumsWithPersonFilterInvalidated).toHaveBeenCalledTimes(1);
-      expect(mocks.album.markAllSmartAlbumsWithPersonFilterInvalidated).toHaveBeenCalledWith(expect.any(Date));
+      expect(mocks.album.markAllSmartAlbumsWithPersonFilterInvalidated).toHaveBeenCalledWith();
     });
 
     it('should NOT invalidate smart album caches when not forced', async () => {
@@ -1733,7 +1733,7 @@ describe(PersonService.name, () => {
         auth.user.id,
         expect.arrayContaining([source.personGroupId, target.personGroupId]),
       );
-      expect(mocks.album.markCacheInvalidated).toHaveBeenCalledWith(['smart-album'], expect.any(Date));
+      expect(mocks.album.markCacheInvalidated).toHaveBeenCalledWith(['smart-album']);
     });
 
     it('should not invalidate smart-album caches when the merge fails', async () => {

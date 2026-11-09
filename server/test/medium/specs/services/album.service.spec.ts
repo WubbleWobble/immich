@@ -1,4 +1,5 @@
 import { Kysely } from 'kysely';
+import { AuthDto } from 'src/dtos/auth.dto.js';
 import { AlbumKind, AlbumUserRole, AssetVisibility } from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { AlbumContainerRepository } from 'src/repositories/album-container.repository.js';
@@ -48,6 +49,63 @@ const newSmartAlbum = async (ctx: ReturnType<typeof setup>['ctx'], ownerId: stri
   });
   return album;
 };
+
+type Ctx = ReturnType<typeof setup>['ctx'];
+
+const deferred = () => {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => (resolve = done));
+  return { promise, resolve };
+};
+
+/**
+ * Counts smart-album recomputes (one searchStatistics call each) and can hold the next one after its searches ran
+ * but before it publishes, so a test can land a concurrent change in that window.
+ */
+const watchRecomputes = (ctx: Ctx) => {
+  const search = ctx.get(SearchRepository);
+  const original = search.searchStatistics.bind(search);
+  const spy = vi.spyOn(search, 'searchStatistics');
+  return {
+    count: () => spy.mock.calls.length,
+    holdNext: () => {
+      const reached = deferred();
+      const released = deferred();
+      spy.mockImplementationOnce(async (...args) => {
+        const result = await original(...args);
+        reached.resolve();
+        await released.promise;
+        return result;
+      });
+      return { reached: reached.promise, release: released.resolve };
+    },
+  };
+};
+
+const getCacheState = (ctx: Ctx, albumId: string) =>
+  ctx.database
+    .selectFrom('album')
+    .select([
+      'cacheRevision',
+      'cachedRevision',
+      'cachedAssetCount',
+      'cachedThumbnailAssetId',
+      'cachedStartDate',
+      'cachedEndDate',
+    ])
+    .where('id', '=', albumId)
+    .executeTakeFirstOrThrow();
+
+/** The asset count the Albums list shows `auth` for `albumId` (served from, or recomputed into, the cache). */
+const listedAssetCount = async (sut: AlbumService, auth: AuthDto, albumId: string) => {
+  const albums = await sut.getAll(auth, {});
+  return albums.find(({ id }) => id === albumId)?.assetCount;
+};
+
+const takenAt = (day: string) => ({ fileCreatedAt: new Date(day), localDateTime: new Date(day) });
+
+const favorite = (ctx: Ctx, assetId: string) =>
+  ctx.database.updateTable('asset').set({ isFavorite: true }).where('id', '=', assetId).execute();
 
 describe(AlbumService.name, () => {
   describe('removeAssets', () => {
@@ -200,6 +258,134 @@ describe(AlbumService.name, () => {
       const fetched = await sut.get(auth, album.id);
       expect(fetched.kind).toBe(AlbumKind.Smart);
       expect(fetched.description).toBe('');
+    });
+  });
+
+  describe('smart album cache revision', () => {
+    it('asset write during recompute leaves the cache stale', async () => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser();
+      const auth = factory.auth({ user });
+      await ctx.newAsset({ ownerId: user.id, isFavorite: true });
+      const { asset: later } = await ctx.newAsset({ ownerId: user.id });
+      const album = await newSmartAlbum(ctx, user.id);
+      const recomputes = watchRecomputes(ctx);
+
+      const held = recomputes.holdNext();
+      const listing = listedAssetCount(sut, auth, album.id);
+      await held.reached;
+      // the asset write (and its invalidation) lands between the recompute's searches and its publish
+      await favorite(ctx, later.id);
+      await sut.invalidateSmartAlbumsForAssetsSafe(user.id, [later.id]);
+      held.release();
+      await expect(listing).resolves.toBe(1);
+
+      const before = recomputes.count();
+      await expect(listedAssetCount(sut, auth, album.id)).resolves.toBe(2);
+      expect(recomputes.count(), 'the next list read recomputes').toBe(before + 1);
+      const state = await getCacheState(ctx, album.id);
+      expect(state).toMatchObject({ cachedAssetCount: 2, cachedRevision: state.cacheRevision });
+    });
+
+    it('filter edit during recompute leaves the cache stale', async () => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser();
+      const auth = factory.auth({ user });
+      await ctx.newAsset({ ownerId: user.id, isFavorite: true });
+      await ctx.newAsset({ ownerId: user.id });
+      await ctx.newAsset({ ownerId: user.id });
+      const album = await newSmartAlbum(ctx, user.id);
+      const recomputes = watchRecomputes(ctx);
+
+      const held = recomputes.holdNext();
+      const listing = listedAssetCount(sut, auth, album.id);
+      await held.reached;
+      await sut.update(auth, album.id, { filter: { isFavorite: false } });
+      held.release();
+      await expect(listing).resolves.toBe(1);
+
+      const before = recomputes.count();
+      await expect(listedAssetCount(sut, auth, album.id)).resolves.toBe(2);
+      expect(recomputes.count(), 'the next list read recomputes').toBe(before + 1);
+      const state = await getCacheState(ctx, album.id);
+      expect(state).toMatchObject({ cachedAssetCount: 2, cachedRevision: state.cacheRevision });
+    });
+
+    it('repeated invalidations within one millisecond each make the cache stale', async () => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser();
+      const auth = factory.auth({ user });
+      await ctx.newAsset({ ownerId: user.id, isFavorite: true });
+      const { asset: later } = await ctx.newAsset({ ownerId: user.id });
+      const album = await newSmartAlbum(ctx, user.id);
+      const recomputes = watchRecomputes(ctx);
+
+      vi.useFakeTimers({ now: new Date('2026-11-09T12:00:00.000Z'), toFake: ['Date'] });
+      try {
+        await sut.invalidateAllSmartAlbumsForOwnerSafe(user.id);
+        await expect(listedAssetCount(sut, auth, album.id)).resolves.toBe(1);
+
+        await favorite(ctx, later.id);
+        await sut.invalidateAllSmartAlbumsForOwnerSafe(user.id);
+
+        const before = recomputes.count();
+        await expect(listedAssetCount(sut, auth, album.id)).resolves.toBe(2);
+        expect(recomputes.count(), 'the list read recomputes').toBe(before + 1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('the publish compare-and-set succeeds when nothing changed', async () => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser();
+      const auth = factory.auth({ user });
+      await ctx.newAsset({ ownerId: user.id, isFavorite: true });
+      const album = await newSmartAlbum(ctx, user.id);
+      const recomputes = watchRecomputes(ctx);
+
+      await expect(listedAssetCount(sut, auth, album.id)).resolves.toBe(1);
+      await expect(getCacheState(ctx, album.id)).resolves.toMatchObject({ cacheRevision: 0, cachedRevision: 0 });
+      let before = recomputes.count();
+      await expect(listedAssetCount(sut, auth, album.id)).resolves.toBe(1);
+      expect(recomputes.count(), 'served from the published cache').toBe(before);
+
+      await sut.invalidateAllSmartAlbumsForOwnerSafe(user.id);
+      await expect(listedAssetCount(sut, auth, album.id)).resolves.toBe(1);
+      await expect(getCacheState(ctx, album.id)).resolves.toMatchObject({ cacheRevision: 1, cachedRevision: 1 });
+      before = recomputes.count();
+      await expect(listedAssetCount(sut, auth, album.id)).resolves.toBe(1);
+      expect(recomputes.count(), 'served from the republished cache').toBe(before);
+    });
+
+    it("filter edit between the caller's album read and recompute start is not published under the new revision", async () => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser();
+      const auth = factory.auth({ user });
+      await ctx.newAsset({ ownerId: user.id, isFavorite: true, ...takenAt('2020-01-01T12:00:00Z') });
+      await ctx.newAsset({ ownerId: user.id, ...takenAt('2021-03-04T12:00:00Z') });
+      await ctx.newAsset({ ownerId: user.id, ...takenAt('2022-05-06T12:00:00Z') });
+      const album = await newSmartAlbum(ctx, user.id);
+
+      // the caller (the Albums list) loads S with filter F1 at revision r; the owner then edits it to F2 (r + 1)
+      const repository = ctx.get(AlbumRepository);
+      const getAll = repository.getAll.bind(repository);
+      let readRevision: number | undefined;
+      vi.spyOn(repository, 'getAll').mockImplementationOnce(async (...args) => {
+        const albums = await getAll(...args);
+        readRevision = albums.find(({ id }) => id === album.id)?.cacheRevision;
+        await sut.update(auth, album.id, { filter: { isFavorite: false } });
+        return albums;
+      });
+      await sut.getAll(auth, {});
+      const published = await getCacheState(ctx, album.id);
+
+      expect(published.cachedAssetCount, "F2's count, never F1's").toBe(2);
+      expect(readRevision).toBe(0);
+      expect(published).toMatchObject({ cacheRevision: 1, cachedRevision: 1 });
+      // identical to a fresh evaluation of F2 (the single-album view always recomputes)
+      await sut.get(auth, album.id);
+      await expect(getCacheState(ctx, album.id)).resolves.toEqual(published);
     });
   });
 

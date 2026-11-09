@@ -34,7 +34,6 @@ interface SmartAlbumCachedMetadata {
   cachedThumbnailAssetId: string | null;
   cachedStartDate: string | null;
   cachedEndDate: string | null;
-  cacheComputedAt: Date;
 }
 
 const toDateOnly = (d: Date) => d.toISOString().slice(0, 10);
@@ -49,25 +48,11 @@ const emptySmartAlbumDisplayMetadata = {
   cachedEndDate: null,
 };
 
-const isSmartAlbumCacheStale = (album: {
-  cacheComputedAt?: Date | string | null;
-  cacheInvalidatedAt?: Date | string | null;
-}) => {
-  if (album.cacheComputedAt === null || album.cacheComputedAt === undefined) {
-    return true;
-  }
-  if (album.cacheInvalidatedAt === null || album.cacheInvalidatedAt === undefined) {
-    return false;
-  }
-  // After hydration from a JSON-shallow context, timestamps may be strings.
-  const computed =
-    album.cacheComputedAt instanceof Date ? album.cacheComputedAt.getTime() : Date.parse(album.cacheComputedAt);
-  const invalidated =
-    album.cacheInvalidatedAt instanceof Date
-      ? album.cacheInvalidatedAt.getTime()
-      : Date.parse(album.cacheInvalidatedAt);
-  return invalidated > computed;
-};
+// Fresh iff the cache was published under the album's current revision. Every invalidation increments
+// cacheRevision in SQL and a recompute publishes only under the revision it read, so no timestamp (millisecond
+// precision, driver truncation) is involved. NULL cachedRevision means never published, i.e. stale.
+const isSmartAlbumCacheStale = (album: { cacheRevision?: number; cachedRevision?: number | null }) =>
+  album.cachedRevision === null || album.cachedRevision === undefined || album.cachedRevision !== album.cacheRevision;
 
 @Injectable()
 export class AlbumService extends BaseService {
@@ -140,7 +125,7 @@ export class AlbumService extends BaseService {
       if (!isSmartAlbumCacheStale(album)) {
         continue;
       }
-      const fresh = await this.recomputeSmartAlbumCache(album.id, albumOwnerId, album.filter);
+      const fresh = await this.recomputeSmartAlbumCache(album.id);
       Object.assign(album, fresh);
     }
 
@@ -181,7 +166,7 @@ export class AlbumService extends BaseService {
       if (album.filter && ownerId) {
         // recomputeSmartAlbumCache itself fails closed (persists zeros) for an
         // unevaluable filter.
-        const fresh = await this.recomputeSmartAlbumCache(album.id, ownerId, album.filter);
+        const fresh = await this.recomputeSmartAlbumCache(album.id);
         Object.assign(album, fresh);
       } else {
         // No filter / no resolvable owner: present as empty rather than serve whatever
@@ -376,11 +361,8 @@ export class AlbumService extends BaseService {
       auth.user.id,
     );
 
-    if (dto.filter !== undefined) {
-      // The list view serves cached metadata; a changed filter means the cached count,
-      // thumbnail, and date range no longer describe the album.
-      await this.albumRepository.markCacheInvalidated([album.id], new Date());
-    }
+    // A filter write also invalidates the list-view cache: AlbumRepository.update bumps cacheRevision in the same
+    // UPDATE, so no recompute can publish the old filter's count, thumbnail or date range as fresh.
 
     return mapAlbum({ ...updatedAlbum, assets: album.assets });
   }
@@ -650,22 +632,12 @@ export class AlbumService extends BaseService {
   }
 
   /**
-   * Recompute smart-album list-view metadata against the live search index and persist
-   * the result on the album row. Returns the freshly computed values.
-   */
-  /**
    * Refresh the list-view cache of any stale smart albums in the batch. Used by surfaces
    * that read cachedThumbnailAssetId without going through the album list (e.g. folder
    * mosaics, which the web loads concurrently with - not after - the album list).
    */
   async warmSmartAlbumCaches(
-    albums: {
-      id: string;
-      filter: SmartAlbumFilter | null;
-      ownerId: string;
-      cacheComputedAt: Date | string | null;
-      cacheInvalidatedAt: Date | string | null;
-    }[],
+    albums: { id: string; filter: SmartAlbumFilter | null; cacheRevision: number; cachedRevision: number | null }[],
   ): Promise<void> {
     // Defensive dedupe: an overlapping batch (e.g. a folder subtree queried per ancestor)
     // must not recompute the same album more than once.
@@ -675,29 +647,43 @@ export class AlbumService extends BaseService {
         continue;
       }
       seen.add(album.id);
-      // recomputeSmartAlbumCache fails closed (persists zeros) for unevaluable filters.
-      await this.recomputeSmartAlbumCache(album.id, album.ownerId, album.filter);
+      // recomputeSmartAlbumCache reads the album's current filter itself and fails closed for unevaluable ones.
+      await this.recomputeSmartAlbumCache(album.id);
     }
   }
 
-  private async recomputeSmartAlbumCache(
-    albumId: string,
-    ownerId: string,
-    filter: SmartAlbumFilter,
+  /**
+   * Recompute smart-album list-view metadata against the live search index and publish it on the album row.
+   *
+   * The filter, owner and cache revision are read together in one statement at the start - never taken from the
+   * caller, whose copy of the filter may predate an edit - and the result is published compare-and-set on that
+   * revision. If anything invalidated the cache meanwhile (an asset write, a filter edit), the publish matches no
+   * row and is discarded: the album stays stale and the next read recomputes. The computed values are still
+   * returned for the current response, which is no staler than a read that finished just before the change.
+   */
+  private async recomputeSmartAlbumCache(albumId: string): Promise<SmartAlbumCachedMetadata> {
+    const source = await this.albumRepository.getSmartAlbumCacheSource(albumId);
+    if (!source) {
+      return { ...emptySmartAlbumDisplayMetadata };
+    }
+
+    const fresh = await this.computeSmartAlbumCachedMetadata(source.ownerId, source.filter);
+    const published = await this.albumRepository.updateCachedMetadata(albumId, source.cacheRevision, fresh);
+    if (!published) {
+      this.logger.debug(`Discarded a superseded smart-album cache recompute for album ${albumId}`);
+    }
+    return fresh;
+  }
+
+  private async computeSmartAlbumCachedMetadata(
+    ownerId: string | null,
+    filter: SmartAlbumFilter | null,
   ): Promise<SmartAlbumCachedMetadata> {
-    // Fail closed: an unevaluable filter (e.g. a legacy row whose only fields were
+    // Fail closed: no resolvable owner or an unevaluable filter (e.g. a legacy row whose only fields were
     // sanitized away) matches nothing, not the owner's entire timeline.
-    const evaluable = toEvaluableSmartAlbumFilter(filter);
-    if (!evaluable) {
-      const empty: SmartAlbumCachedMetadata = {
-        cachedAssetCount: 0,
-        cachedThumbnailAssetId: null,
-        cachedStartDate: null,
-        cachedEndDate: null,
-        cacheComputedAt: new Date(),
-      };
-      await this.albumRepository.updateCachedMetadata(albumId, empty);
-      return empty;
+    const evaluable = filter ? toEvaluableSmartAlbumFilter(filter) : null;
+    if (!ownerId || !evaluable) {
+      return { ...emptySmartAlbumDisplayMetadata };
     }
 
     const options = { ...evaluable, userIds: [ownerId] };
@@ -715,15 +701,12 @@ export class AlbumService extends BaseService {
       const date = raw instanceof Date ? raw : new Date(raw);
       return Number.isNaN(date.getTime()) ? null : toDateOnly(date);
     };
-    const fresh: SmartAlbumCachedMetadata = {
+    return {
       cachedAssetCount: Number(total),
       cachedThumbnailAssetId: items[0]?.id ?? null,
       cachedStartDate: toDateOnlyOrNull(range.startDate),
       cachedEndDate: toDateOnlyOrNull(range.endDate),
-      cacheComputedAt: new Date(),
     };
-    await this.albumRepository.updateCachedMetadata(albumId, fresh);
-    return fresh;
   }
 
   /**
@@ -755,10 +738,7 @@ export class AlbumService extends BaseService {
       if (smartAlbums.length === 0) {
         return;
       }
-      await this.albumRepository.markCacheInvalidated(
-        smartAlbums.map((a) => a.id),
-        new Date(),
-      );
+      await this.albumRepository.markCacheInvalidated(smartAlbums.map((a) => a.id));
     } catch (error: unknown) {
       this.logger.warn(
         `Failed to invalidate smart-album caches for owner ${ownerId}: ${(error as Error)?.message ?? error}`,
@@ -802,10 +782,7 @@ export class AlbumService extends BaseService {
     if (albums.length === 0) {
       return;
     }
-    await this.albumRepository.markCacheInvalidated(
-      albums.map((a) => a.id),
-      new Date(),
-    );
+    await this.albumRepository.markCacheInvalidated(albums.map((a) => a.id));
   }
 
   /**
@@ -829,7 +806,7 @@ export class AlbumService extends BaseService {
    * album may have shifted membership.
    */
   async invalidateAllSmartAlbumsByPersonFilter(): Promise<void> {
-    await this.albumRepository.markAllSmartAlbumsWithPersonFilterInvalidated(new Date());
+    await this.albumRepository.markAllSmartAlbumsWithPersonFilterInvalidated();
   }
 
   /**

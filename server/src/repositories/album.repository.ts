@@ -74,6 +74,15 @@ const withAssets = (eb: ExpressionBuilder<DB, 'album'>) => {
     .as('assets');
 };
 
+/**
+ * Invalidates a smart-album cache: `cacheRevision` is incremented by the statement itself, never set from a value
+ * read into JS, so concurrent invalidations cannot collapse. `cacheInvalidatedAt` is for display/debugging only.
+ */
+const bumpCacheRevision = (eb: ExpressionBuilder<DB, 'album'>) => ({
+  cacheRevision: eb('album.cacheRevision', '+', sql.lit(1)),
+  cacheInvalidatedAt: sql<Date>`now()`,
+});
+
 const isAlbumOwned = (ownerId: string) => (eb: ExpressionBuilder<DB, 'album'>) =>
   eb.exists(
     eb
@@ -350,7 +359,13 @@ export class AlbumRepository {
   }
 
   async restoreAll(userId: string): Promise<void> {
-    await this.db.updateTable('album').set({ deletedAt: null }).where(isAlbumOwned(userId)).execute();
+    // Invalidation skips soft-deleted albums, so a restored smart album's cache may have missed changes.
+    await this.db
+      .updateTable('album')
+      .set({ deletedAt: null })
+      .set(bumpCacheRevision)
+      .where(isAlbumOwned(userId))
+      .execute();
   }
 
   async softDeleteAll(userId: string): Promise<void> {
@@ -476,14 +491,19 @@ export class AlbumRepository {
   }
 
   update(id: string, album: Updateable<AlbumTable>, authUserId: string) {
-    return this.db
-      .updateTable('album')
-      .set(album)
-      .where('album.id', '=', id)
-      .returningAll('album')
-      .returning(withSharedLink)
-      .returning(withAlbumUsers(authUserId))
-      .executeTakeFirstOrThrow();
+    return (
+      this.db
+        .updateTable('album')
+        .set(album)
+        // A filter write invalidates the smart-album cache in the same statement, so a recompute that reads
+        // (filter, cacheRevision) together never sees the new filter under the old revision.
+        .$if(album.filter !== undefined, (qb) => qb.set(bumpCacheRevision))
+        .where('album.id', '=', id)
+        .returningAll('album')
+        .returning(withSharedLink)
+        .returning(withAlbumUsers(authUserId))
+        .executeTakeFirstOrThrow()
+    );
   }
 
   async delete(id: string): Promise<void> {
@@ -642,28 +662,28 @@ export class AlbumRepository {
   }
 
   /**
-   * Bump `cacheInvalidatedAt` on the given album ids so the next read recomputes the cache.
+   * Invalidate the smart-album cache of the given album ids: increment `cacheRevision` in SQL, so any recompute that
+   * read an older revision can no longer publish (see `updateCachedMetadata`). `cacheInvalidatedAt` is display only.
    * No-op when `albumIds` is empty.
    */
-  @GenerateSql({ params: [[DummyValue.UUID], DummyValue.DATE] })
-  async markCacheInvalidated(albumIds: string[], at: Date): Promise<void> {
+  @GenerateSql({ params: [[DummyValue.UUID]] })
+  async markCacheInvalidated(albumIds: string[]): Promise<void> {
     if (albumIds.length === 0) {
       return;
     }
-    await this.db.updateTable('album').set({ cacheInvalidatedAt: at }).where('album.id', 'in', albumIds).execute();
+    await this.db.updateTable('album').set(bumpCacheRevision).where('album.id', 'in', albumIds).execute();
   }
 
   /**
-   * Bump `cacheInvalidatedAt` on every active smart album whose stored `filter` JSONB
-   * contains a `personIds` key, regardless of owner. Used by system-wide face-reset
-   * jobs (force-detect / force-recognize) where every user's person-filtered smart
-   * album can be affected and the specific person ids are not known.
+   * Invalidate (see `markCacheInvalidated`) every active smart album whose stored `filter` JSONB contains a
+   * `personIds` key, regardless of owner. Used by system-wide face-reset jobs (force-detect / force-recognize) where
+   * every user's person-filtered smart album can be affected and the specific person ids are not known.
    */
-  @GenerateSql({ params: [DummyValue.DATE] })
-  async markAllSmartAlbumsWithPersonFilterInvalidated(invalidatedAt: Date): Promise<void> {
+  @GenerateSql()
+  async markAllSmartAlbumsWithPersonFilterInvalidated(): Promise<void> {
     await this.db
       .updateTable('album')
-      .set({ cacheInvalidatedAt: invalidatedAt })
+      .set(bumpCacheRevision)
       .where('album.kind', '=', sql.lit(AlbumKind.Smart))
       .where('album.deletedAt', 'is', null)
       .where(sql<boolean>`album.filter ? 'personIds'`)
@@ -671,16 +691,51 @@ export class AlbumRepository {
   }
 
   /**
-   * Store freshly computed smart-album list-view metadata on the album row.
+   * The inputs of a smart-album cache recompute, read in ONE statement: the filter to evaluate, the owner whose
+   * library it runs against, and the cache revision they belong to. Filter writes bump the revision in the same
+   * UPDATE, so the pair is consistent. Undefined for a missing, deleted or non-smart album.
    */
+  @GenerateSql({ params: [DummyValue.UUID] })
+  getSmartAlbumCacheSource(id: string) {
+    return this.db
+      .selectFrom('album')
+      .leftJoin('album_user as owner', (join) =>
+        join.onRef('owner.albumId', '=', 'album.id').on('owner.role', '=', sql.lit(AlbumUserRole.Owner)),
+      )
+      .select(['album.filter', 'album.cacheRevision', 'owner.userId as ownerId'])
+      .where('album.id', '=', id)
+      .where('album.kind', '=', sql.lit(AlbumKind.Smart))
+      .where('album.deletedAt', 'is', null)
+      .executeTakeFirst();
+  }
+
+  /**
+   * Publish freshly computed smart-album list-view metadata, compare-and-set on the revision it was computed for:
+   * the row is written (and marked fresh, `cachedRevision = revision`) only if no invalidation happened since.
+   * Returns false when the result was superseded and therefore discarded.
+   */
+  @GenerateSql({
+    params: [
+      DummyValue.UUID,
+      0,
+      { cachedAssetCount: 0, cachedThumbnailAssetId: null, cachedStartDate: null, cachedEndDate: null },
+    ],
+  })
   async updateCachedMetadata(
     id: string,
+    revision: number,
     values: Pick<
       Updateable<AlbumTable>,
-      'cachedAssetCount' | 'cachedThumbnailAssetId' | 'cachedStartDate' | 'cachedEndDate' | 'cacheComputedAt'
+      'cachedAssetCount' | 'cachedThumbnailAssetId' | 'cachedStartDate' | 'cachedEndDate'
     >,
-  ): Promise<void> {
-    await this.db.updateTable('album').set(values).where('album.id', '=', id).execute();
+  ): Promise<boolean> {
+    const result = await this.db
+      .updateTable('album')
+      .set({ ...values, cachedRevision: revision, cacheComputedAt: sql`now()` })
+      .where('album.id', '=', id)
+      .where('album.cacheRevision', '=', revision)
+      .executeTakeFirst();
+    return result.numUpdatedRows > 0n;
   }
 
   @GenerateSql({ params: [{ sourceAssetId: DummyValue.UUID, targetAssetId: DummyValue.UUID }] })

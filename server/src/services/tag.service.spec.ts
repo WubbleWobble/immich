@@ -232,7 +232,7 @@ describe(TagService.name, () => {
       // D12: the dangling tag id stays in the filter and zero-matches; no filter is rewritten
       expect(mocks.album.update).not.toHaveBeenCalled();
       expect(mocks.album.getSmartAlbumsForOwner).toHaveBeenCalledWith('owner-1');
-      expect(mocks.album.markCacheInvalidated).toHaveBeenCalledWith(['smart-album'], expect.any(Date));
+      expect(mocks.album.markCacheInvalidated).toHaveBeenCalledWith(['smart-album']);
     });
 
     it('does not propagate smart-album invalidation failures', async () => {

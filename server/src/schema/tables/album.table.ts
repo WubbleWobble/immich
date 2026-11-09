@@ -82,11 +82,21 @@ export class AlbumTable {
   @Column({ type: 'date', nullable: true })
   cachedEndDate!: string | null;
 
+  // Display/debugging only: freshness is the revision pair below, never these timestamps.
   @Column({ type: 'timestamp with time zone', nullable: true })
   cacheComputedAt!: Date | null;
 
   @Column({ type: 'timestamp with time zone', nullable: true })
   cacheInvalidatedAt!: Date | null;
+
+  // Smart-album cache freshness: every invalidation (asset write, filter edit, ...) increments cacheRevision in SQL;
+  // a recompute publishes only if cacheRevision still equals the revision it read with the filter, recording it in
+  // cachedRevision. Fresh <=> cachedRevision = cacheRevision; NULL (never published) is stale.
+  @Column({ type: 'integer', default: 0 })
+  cacheRevision!: Generated<number>;
+
+  @Column({ type: 'integer', nullable: true })
+  cachedRevision!: number | null;
 
   @ForeignKeyColumn(() => AlbumContainerTable, { nullable: true, onUpdate: 'CASCADE', onDelete: 'SET NULL' })
   containerId!: string | null;
