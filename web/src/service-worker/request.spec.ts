@@ -14,6 +14,18 @@ const textOf = async (pending: Promise<Response>) => {
   return response.text();
 };
 
+/** A response body the test feeds chunk by chunk; it errors when the request is aborted, like a network body. */
+const streamingBody = (signal: AbortSignal) => {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({
+    start: (streamController) => {
+      controller = streamController;
+      signal.addEventListener('abort', () => streamController.error(signal.reason));
+    },
+  });
+  return { stream, push: (text: string) => controller.enqueue(new TextEncoder().encode(text)) };
+};
+
 /** A fetch whose responses the test releases one by one, recording each request's abort signal. */
 const controlledFetch = () => {
   const calls: { request: Request; signal: AbortSignal; release: (response: Response) => void }[] = [];
@@ -186,7 +198,7 @@ describe('service worker asset requests (R50)', () => {
       await expect(second).resolves.toMatchObject({ status: 204 });
     });
 
-    it('a cancel from a client with no consumer, or after settling, aborts nothing', async () => {
+    it('a cancel from a client with no consumer, or after the body completed, aborts nothing', async () => {
       const { calls } = controlledFetch();
 
       const pending = handleFetch(new Request(url), 'tab-a');
@@ -194,8 +206,59 @@ describe('service worker asset requests (R50)', () => {
       expect(calls[0].signal.aborted).toBe(false);
 
       calls[0].release(new Response('bytes', { status: 200 }));
-      await pending;
+      await expect(textOf(pending)).resolves.toBe('bytes');
       handleCancel(new URL(url), 'tab-a');
+      expect(calls[0].signal.aborted).toBe(false);
+    });
+
+    it('cancel after the headers arrived still aborts the body download once the last consumer is gone', async () => {
+      const { calls } = controlledFetch();
+
+      const first = handleFetch(new Request(url), 'tab-a');
+      const second = handleFetch(new Request(url), 'tab-b');
+      const body = streamingBody(calls[0].signal);
+      calls[0].release(new Response(body.stream, { status: 200 }));
+      const [a, b] = await Promise.all([first, second]);
+      body.push('first chunk');
+
+      // one consumer goes away mid-download: the other keeps receiving bytes
+      handleCancel(new URL(url), 'tab-a');
+      expect(calls[0].signal.aborted).toBe(false);
+      const reader = b.body!.getReader();
+      await expect(reader.read()).resolves.toMatchObject({ done: false });
+
+      // the last one goes away: the download is aborted
+      handleCancel(new URL(url), 'tab-b');
+      expect(calls[0].signal.aborted).toBe(true);
+      await expect(reader.read()).rejects.toBeDefined();
+      void a.body?.cancel().catch(() => {});
+    });
+
+    it('a stale consumer still cannot abort the download of a request started after its own settled', async () => {
+      const { calls } = controlledFetch();
+
+      const old = handleFetch(new Request(url), 'tab-a');
+      calls[0].release(new Response('old', { status: 200 }));
+      await expect(textOf(old)).resolves.toBe('old');
+
+      const fresh = handleFetch(new Request(url), 'tab-b');
+      const body = streamingBody(calls[1].signal);
+      calls[1].release(new Response(body.stream, { status: 200 }));
+      await fresh;
+
+      handleCancel(new URL(url), 'tab-a');
+      expect(calls[1].signal.aborted).toBe(false);
+    });
+
+    it('a completed download is forgotten: neither cancel nor purge touches it', async () => {
+      const { calls } = controlledFetch();
+
+      const pending = handleFetch(new Request(url), 'tab-a');
+      calls[0].release(new Response('all bytes', { status: 200 }));
+      await expect(textOf(pending)).resolves.toBe('all bytes');
+
+      handleCancel(new URL(url), 'tab-a');
+      handlePurge();
       expect(calls[0].signal.aborted).toBe(false);
     });
 
