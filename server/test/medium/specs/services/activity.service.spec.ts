@@ -357,5 +357,45 @@ describe(ActivityService.name, () => {
         expect.objectContaining({ duplicate: false }),
       );
     });
+
+    it('non-elevated locker cannot delete an activity on a hidden album; elevated can', async () => {
+      const { sut, ctx } = setup();
+      const { album, owner, sharedWith } = await ctx.newSharedAlbum();
+      const ownerAuth = factory.auth({ user: owner });
+      const sharedWithAuth = factory.auth({ user: sharedWith });
+      const { value: ownLike } = await sut.create(ownerAuth, { albumId: album.id, type: ReactionType.LIKE });
+      const { value: shareeComment } = await sut.create(sharedWithAuth, {
+        albumId: album.id,
+        type: ReactionType.COMMENT,
+        comment: 'hi',
+      });
+      const { value: shareeLike } = await sut.create(sharedWithAuth, { albumId: album.id, type: ReactionType.LIKE });
+
+      await ctx.get(LockRepository).lockAlbum(owner.id, album.id);
+      const activityIds = async () => {
+        const rows = await ctx.database.selectFrom('activity').select('id').where('albumId', '=', album.id).execute();
+        return new Set(rows.map(({ id }) => id));
+      };
+
+      // refused exactly like a missing activity (ruling R32), reveal header or not: neither the locker's own activity
+      // nor one they may delete as the album owner
+      const MISSING_ERROR = 'Not found or no activity.delete access';
+      await expect(sut.delete(ownerAuth, newUuid())).rejects.toThrow(MISSING_ERROR);
+      const revealingUnelevated = { ...ownerAuth, revealedLocks: { albumIds: [album.id], containerIds: [] } };
+      for (const auth of [ownerAuth, revealingUnelevated]) {
+        await expect(sut.delete(auth, ownLike.id)).rejects.toThrow(MISSING_ERROR);
+        await expect(sut.delete(auth, shareeComment.id)).rejects.toThrow(MISSING_ERROR);
+      }
+      await expect(activityIds()).resolves.toEqual(new Set([ownLike.id, shareeComment.id, shareeLike.id]));
+
+      // the owner's lock never binds the sharee (spec §4)
+      await expect(sut.delete(sharedWithAuth, shareeLike.id)).resolves.toBeUndefined();
+
+      // an elevated session bypasses the guard (direct-by-id, spec §15.3)
+      const elevated = factory.auth({ user: owner, session: { hasElevatedPermission: true } });
+      await expect(sut.delete(elevated, ownLike.id)).resolves.toBeUndefined();
+      await expect(sut.delete(elevated, shareeComment.id)).resolves.toBeUndefined();
+      await expect(activityIds()).resolves.toEqual(new Set());
+    });
   });
 });

@@ -66,6 +66,12 @@ export class ActivityRepository {
     await this.db.deleteFrom('activity').where('id', '=', asUuid(id)).execute();
   }
 
+  @GenerateSql({ params: [DummyValue.UUID] })
+  async getAlbumId(id: string): Promise<string | undefined> {
+    const row = await this.db.selectFrom('activity').select('albumId').where('id', '=', asUuid(id)).executeTakeFirst();
+    return row?.albumId;
+  }
+
   @GenerateSql({ params: [{ albumId: DummyValue.UUID, assetId: DummyValue.UUID }] })
   async getStatistics({
     albumId,

@@ -334,14 +334,19 @@ export class LockService extends BaseService {
    * map): an effectively-hidden album is unreachable for its locker - even by known id -
    * unless the session is elevated. Shared-link visitors are not the locker and are never
    * blocked; other users are unaffected by construction (the hidden check is per-viewer).
-   * Indistinguishable from a no-access error so the response does not confirm existence.
+   * Indistinguishable from a no-access error so the response does not confirm existence;
+   * `message` lets a caller reuse its own missing-content error (ruling R32).
    */
-  async assertAlbumVisibleForViewer(auth: AuthDto, albumId: string): Promise<void> {
+  async assertAlbumVisibleForViewer(
+    auth: AuthDto,
+    albumId: string,
+    message = 'Not found or no album.read access',
+  ): Promise<void> {
     if (auth.sharedLink || auth.session?.hasElevatedPermission) {
       return;
     }
     if (await this.lockRepository.isAlbumHiddenForViewer(auth.user.id, albumId)) {
-      throw new BadRequestException('Not found or no album.read access');
+      throw new BadRequestException(message);
     }
   }
 

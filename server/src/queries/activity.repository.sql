@@ -60,6 +60,14 @@ delete from "activity"
 where
   "id" = $1::uuid
 
+-- ActivityRepository.getAlbumId
+select
+  "albumId"
+from
+  "activity"
+where
+  "id" = $1::uuid
+
 -- ActivityRepository.getStatistics
 select
   count(*) filter (

@@ -74,6 +74,16 @@ export class ActivityService extends BaseService {
 
   async delete(auth: AuthDto, id: string): Promise<void> {
     await this.requireAccess({ auth, permission: Permission.ActivityDelete, ids: [id] });
+    // Fork (7A.8b): an activity on an album hidden for the viewer is hidden content, so deleting it is write-protected
+    // outside elevation (spec §15.2) - refused with the missing-activity error (ruling R32), mirroring create.
+    const albumId = await this.activityRepository.getAlbumId(id);
+    if (albumId) {
+      await BaseService.create(LockService, this).assertAlbumVisibleForViewer(
+        auth,
+        albumId,
+        `Not found or no ${Permission.ActivityDelete} access`,
+      );
+    }
     await this.activityRepository.delete(id);
   }
 }

@@ -167,6 +167,8 @@ describe(ActivityService.name, () => {
       const activity = ActivityFactory.create();
 
       mocks.access.activity.checkOwnerAccess.mockResolvedValue(new Set([activity.id]));
+      mocks.activity.getAlbumId.mockResolvedValue(activity.albumId);
+      mocks.lock.isAlbumHiddenForViewer.mockResolvedValue(false);
       mocks.activity.delete.mockResolvedValue();
 
       await sut.delete(AuthFactory.create(), activity.id);
@@ -178,11 +180,27 @@ describe(ActivityService.name, () => {
       const activity = ActivityFactory.create();
 
       mocks.access.activity.checkAlbumOwnerAccess.mockResolvedValue(new Set([activity.id]));
+      mocks.activity.getAlbumId.mockResolvedValue(activity.albumId);
+      mocks.lock.isAlbumHiddenForViewer.mockResolvedValue(false);
       mocks.activity.delete.mockResolvedValue();
 
       await sut.delete(AuthFactory.create(), activity.id);
 
       expect(mocks.activity.delete).toHaveBeenCalledWith(activity.id);
+    });
+
+    it('should not delete an activity on an album hidden for the viewer', async () => {
+      const activity = ActivityFactory.create();
+
+      mocks.access.activity.checkOwnerAccess.mockResolvedValue(new Set([activity.id]));
+      mocks.activity.getAlbumId.mockResolvedValue(activity.albumId);
+      mocks.lock.isAlbumHiddenForViewer.mockResolvedValue(true);
+
+      await expect(sut.delete(AuthFactory.create(), activity.id)).rejects.toThrow(
+        'Not found or no activity.delete access',
+      );
+
+      expect(mocks.activity.delete).not.toHaveBeenCalled();
     });
   });
 });
