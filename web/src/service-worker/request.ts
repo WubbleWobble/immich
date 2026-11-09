@@ -4,6 +4,7 @@
 /// <reference lib="webworker" />
 
 type PendingRequest = {
+  url: string;
   controller: AbortController;
   promise: Promise<Response>;
 };
@@ -24,6 +25,27 @@ const activeControllers = new Map<string, Set<AbortController>>();
 
 const getRequestKey = (request: URL | Request): string => (request instanceof URL ? request.href : request.url);
 
+/** Request headers that carry credentials or change what the server authorizes (cookies are not visible here). */
+const AUTHORIZATION_HEADERS = [
+  'authorization',
+  'x-api-key',
+  'x-immich-user-token',
+  'x-immich-session-token',
+  'x-immich-share-key',
+  'x-immich-share-slug',
+  'x-immich-revealed-albums',
+  'x-immich-revealed-containers',
+];
+
+/** In-flight requests are shared only between requests for the same URL with the same explicit credentials. */
+const getPendingKey = (request: URL | Request): string => {
+  const url = getRequestKey(request);
+  if (request instanceof URL) {
+    return url;
+  }
+  return JSON.stringify([url, ...AUTHORIZATION_HEADERS.map((name) => request.headers.get(name))]);
+};
+
 const CANCELATION_MESSAGE = 'Request canceled by application';
 const CLEANUP_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -37,7 +59,8 @@ const forgetController = (requestKey: string, controller: AbortController) => {
 
 export const handleFetch = async (request: URL | Request): Promise<Response> => {
   const requestKey = getRequestKey(request);
-  const existing = pendingRequests.get(requestKey);
+  const pendingKey = getPendingKey(request);
+  const existing = pendingRequests.get(pendingKey);
 
   if (existing) {
     // Clone the response since response bodies can only be read once
@@ -46,8 +69,12 @@ export const handleFetch = async (request: URL | Request): Promise<Response> => 
   }
 
   const controller = new AbortController();
-  const pendingRequest: PendingRequest = { controller, promise: undefined as unknown as Promise<Response> };
-  pendingRequests.set(requestKey, pendingRequest);
+  const pendingRequest: PendingRequest = {
+    url: requestKey,
+    controller,
+    promise: undefined as unknown as Promise<Response>,
+  };
+  pendingRequests.set(pendingKey, pendingRequest);
   const controllers = activeControllers.get(requestKey) ?? new Set<AbortController>();
   controllers.add(controller);
   activeControllers.set(requestKey, controllers);
@@ -64,8 +91,8 @@ export const handleFetch = async (request: URL | Request): Promise<Response> => 
     })
     .finally(() => {
       // Settled: stop sharing it (a purge or a newer request may already have replaced the entry)
-      if (pendingRequests.get(requestKey) === pendingRequest) {
-        pendingRequests.delete(requestKey);
+      if (pendingRequests.get(pendingKey) === pendingRequest) {
+        pendingRequests.delete(pendingKey);
       }
       // Keep the controller a while so the body stream can still be aborted
       setTimeout(() => forgetController(requestKey, controller), CLEANUP_TIMEOUT_MS);
@@ -78,7 +105,11 @@ export const handleFetch = async (request: URL | Request): Promise<Response> => 
 export const handleCancel = (url: URL) => {
   const requestKey = getRequestKey(url);
 
-  pendingRequests.delete(requestKey);
+  for (const [pendingKey, pendingRequest] of pendingRequests) {
+    if (pendingRequest.url === requestKey) {
+      pendingRequests.delete(pendingKey);
+    }
+  }
   for (const controller of activeControllers.get(requestKey) ?? []) {
     controller.abort(CANCELATION_MESSAGE);
   }

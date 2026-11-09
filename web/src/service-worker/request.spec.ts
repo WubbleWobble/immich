@@ -71,6 +71,31 @@ describe('service worker asset requests (R50)', () => {
     await expect(textOf(third)).resolves.toBe('fresh');
   });
 
+  it('does not share an in-flight request between different explicit credentials', async () => {
+    const { fetchMock, calls } = controlledFetch();
+
+    const elevated = handleFetch(new Request(url, { headers: { Authorization: 'Bearer elevated' } }));
+    const ordinary = handleFetch(new Request(url, { headers: { Authorization: 'Bearer ordinary' } }));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    calls[0].release(new Response('privileged photo bytes', { status: 200 }));
+    calls[1].release(new Response('access denied', { status: 400 }));
+    await expect(textOf(elevated)).resolves.toBe('privileged photo bytes');
+    await expect(textOf(ordinary)).resolves.toBe('access denied');
+  });
+
+  it('cancel aborts every in-flight request for the URL', async () => {
+    const { calls } = controlledFetch();
+
+    const first = handleFetch(new Request(url, { headers: { Authorization: 'Bearer a' } }));
+    const second = handleFetch(new Request(url, { headers: { Authorization: 'Bearer b' } }));
+    handleCancel(new URL(url));
+
+    expect(calls.map(({ signal }) => signal.aborted)).toEqual([true, true]);
+    await expect(first).resolves.toMatchObject({ status: 204 });
+    await expect(second).resolves.toMatchObject({ status: 204 });
+  });
+
   it('a failed request is not reused either', async () => {
     const fetchMock = vi
       .fn()
