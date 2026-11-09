@@ -116,9 +116,14 @@ State these plainly to users.
   a fresh upload, but the phantom id leads nowhere: follow-up actions on it
   (add to album, stack) fail, and the "uploaded" photo never appears. There
   is no websocket `on_upload_success`, and quota usage does not grow. The
-  owner's phone backup is not affected. It decides what to upload from its
+  admin job-queue counts also differ: a real upload queues metadata
+  extraction, a phantom does not. The owner's phone backup is not affected. It decides what to upload from its
   synced asset table, and the owner's own sync is unfiltered, so hidden
   photos still count as backed up.
+- **CLI and API-key uploads re-send hidden files every run (R49).** API-key
+  sessions are never elevated. So `immich-cli` and `immich-go` see an
+  already-hidden file as new each time, upload it again and get a phantom
+  `created`. Their `--album` adds for those files fail.
 - **Media is revalidated on every view (R50).** Asset bytes are sent as
   `private, no-cache`. The browser keeps them but asks the server each time,
   and the server runs the access check before answering. A photo hidden
@@ -128,11 +133,21 @@ State these plainly to users.
   lock/unlock, reveal changes and move-to-locked. Cost: scrolling the
   timeline makes one `304` round trip per thumbnail instead of serving the
   thumbnail from cache for 24 hours.
-  Two gaps remain. First, media that browsers cached **before this deploy**
-  keeps its old lifetime: fresh for up to 24 hours, then stale-while-
-  revalidate. Clearing the site's cached data removes it at once. Second,
-  within one open page, the browser's in-memory image list can re-show an
-  image it already decoded. Reloading the page clears that list.
+  Remaining gaps:
+  - Media that browsers cached **before this deploy** keeps its old
+    lifetime: fresh for up to 24 hours, then stale-while-revalidate. Each
+    user clears Immich site data once after the deploy (R52, deploy
+    checklist).
+  - Within one open page, the browser's in-memory image list can re-show an
+    image it already decoded. Reloading the page clears that list.
+  - The back/forward cache and history traversal (Back, Forward, restored
+    tabs) may reuse subresources without revalidation despite `no-cache`.
+    Only `no-store` prevents that, and we chose `no-cache` for performance.
+    A lock takes full effect on a fresh navigation.
+  - A purge reaches the service worker only from a page it controls. A tab
+    opened with a hard reload (Shift+Reload) is not controlled, so locking
+    an album from it purges nothing. The exposure is limited to requests
+    already in flight; nothing completed is reused.
 
 ## Deploy checklist
 
@@ -152,7 +167,12 @@ Deploy only inside a window the user has confirmed.
    `IMMICH_SERVER_IMAGE=ghcr.io/wubblewobble/immich-server:v3.3.6-wobble.1`.
 6. `docker compose pull && docker compose up -d`. Leave it alone for the
    geodata import and thumbnail regeneration (see above).
-7. Repeat the rehearsal checks:
+7. **Ask every user to clear Immich site data (cookies and cache) once in
+   every browser they use (R52).** Media cached before the deploy keeps its
+   old lifetime (24 hours fresh, then stale-while-revalidate), so it could
+   still be shown without a fresh access check. Clearing cookies also signs
+   the user out, which is expected.
+8. Repeat the rehearsal checks:
    - `kysely_migrations` = 110 rows with exact names and order (94 old rows
      unchanged, then 13 upstream, then 3 fork);
    - asset count and person count unchanged;
