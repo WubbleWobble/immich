@@ -1,4 +1,5 @@
 import {
+  AlbumKind,
   AssetJobName,
   AssetMediaSize,
   AssetTypeEnum,
@@ -87,7 +88,8 @@ export const getAssetBulkActions = ($t: MessageFormatter, album?: AlbumResponseD
     title: $t('remove_from_album'),
     icon: mdiImageRemoveOutline,
     shortcuts: [{ key: 'l', shift: true }],
-    $if: () => !!album && (isAlbumOwner || assetMultiSelectManager.isAllUserOwned),
+    // Smart albums have no album_asset rows to remove: their content is the filter's result.
+    $if: () => !!album && album.kind !== AlbumKind.Smart && (isAlbumOwner || assetMultiSelectManager.isAllUserOwned),
     onAction: () => handleBulkRemoveAssetsFromAlbum(assetIds, album!),
   };
 
@@ -239,7 +241,7 @@ export const getAssetActions = (
     title: $t('remove_from_album'),
     icon: mdiImageRemoveOutline,
     shortcuts: [{ key: 'l', shift: true }],
-    $if: () => !!album && (isOwner || isAlbumOwner),
+    $if: () => !!album && album.kind !== AlbumKind.Smart && (isOwner || isAlbumOwner),
     onAction: () => handleRemoveAssetsFromAlbum([asset.id], album!),
   };
 

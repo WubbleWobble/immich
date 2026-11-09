@@ -10,17 +10,20 @@
   import SearchButton from './SearchButton.svelte';
   import { getSearchTagsTitle } from './search-bar-utils';
   import { searchManager } from '$lib/managers/search-manager.svelte';
+  import type { SearchFilter } from '$lib/types';
 
   interface Props {
     title: string | undefined;
     parentPromise: Promise<TagResponseDto[]> | undefined;
+    /** Edit this filter instead of the search bar's (searchManager.filter), e.g. in a smart-album editor. */
+    filter?: SearchFilter;
   }
 
   // eslint-disable-next-line no-useless-assignment
-  let { title = $bindable(), parentPromise }: Props = $props();
+  let { title = $bindable(), parentPromise, filter = $bindable() }: Props = $props();
 
   let container = $state<HTMLDivElement>();
-  let selectedTags = $derived(searchManager.filter.tagIds);
+  let selectedTags = $derived((filter ?? searchManager.filter).tagIds);
   let allTags: TagResponseDto[] = $state([]);
   let tagMap = $derived(Object.fromEntries(allTags.map((tag) => [tag.id, tag])));
   let selectedOption = $state(undefined);
@@ -57,7 +60,7 @@
   const handleToggleUntagged = () => {
     const isSearchUntagged = selectedTags === null;
 
-    searchManager.filter.tagIds = isSearchUntagged ? new SvelteSet() : null;
+    (filter ?? searchManager.filter).tagIds = isSearchUntagged ? new SvelteSet() : null;
     title = isSearchUntagged ? undefined : $t('untagged');
   };
 </script>

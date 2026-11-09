@@ -7,7 +7,6 @@
   import ControlAppBar from '$lib/components/shared-components/ControlAppBar.svelte';
   import GalleryViewer from '$lib/components/shared-components/gallery-viewer/GalleryViewer.svelte';
   import SearchBar from '$lib/components/shared-components/search-bar/SearchBar.svelte';
-  import { metadataSearchToSmartAlbumFilter } from '$lib/components/album-page/SmartAlbumFilterForm.svelte';
   import SaveSmartAlbumModal from '$lib/modals/SaveSmartAlbumModal.svelte';
   import ArchiveAction from '$lib/components/timeline/actions/ArchiveAction.svelte';
   import ChangeDate from '$lib/components/timeline/actions/ChangeDateAction.svelte';
@@ -26,8 +25,9 @@
   import { Route } from '$lib/route';
   import { getAssetBulkActions } from '$lib/services/asset.service';
   import { lang, locale } from '$lib/stores/preferences.store';
-  import { handlePromiseError } from '$lib/utils';
+  import { handlePromiseError, isEnabled } from '$lib/utils';
   import { parseUtcDate } from '$lib/utils/date-time';
+  import { isEmptySmartAlbumFilter, searchTermsToSmartAlbumFilter } from '$lib/utils/smart-album-filter';
   import { handleError } from '$lib/utils/handle-error';
   import { isAlbumsRoute, isPeopleRoute } from '$lib/utils/navigation';
   import { toTimelineAsset } from '$lib/utils/timeline-util';
@@ -50,6 +50,7 @@
     IconButton,
     LoadingSpinner,
     modalManager,
+    type ActionItem,
   } from '@immich/ui';
   import { mdiArrowLeft, mdiAutoFix, mdiClose, mdiDotsVertical, mdiImageOffOutline, mdiSelectAll } from '@mdi/js';
   import { onMount, tick, untrack } from 'svelte';
@@ -255,20 +256,36 @@
     searchManager.setQuery(terms);
   }
 
-  // FORK-PORT: fork "Save as smart album" (SaveSmartAlbumModal + metadataSearchToSmartAlbumFilter over `terms`). Upstream's
-  // new search UI (394996eb5) routes the query through searchManager.setQuery(terms); confirm `terms` is still the legacy
-  // flat metadata shape that smart-album filters store (D11), and that the action is placed in upstream's menus.
-  const openSaveAsSmartAlbum = () =>
-    modalManager.show(SaveSmartAlbumModal, {
-      initialFilter: terms as unknown as Record<string, unknown>,
-      initialName: terms.query ?? '',
-    });
-
-  // A smart album can only store metadata criteria; a pure semantic-query search converts
-  // to an empty filter, which would match the whole library. Hide the action in that case.
-  const canSaveAsSmartAlbum = $derived(
-    Object.keys(metadataSearchToSmartAlbumFilter(terms as unknown as Record<string, unknown>)).length > 0,
+  // "Save as smart album" stores the search as a legacy (v1/flat) smart-album filter (D11). The
+  // search UI only produces flat terms, but a URL can carry criteria the legacy shape cannot
+  // express (semantic query, full path, the structured `filter` with `or` branches, ...).
+  // Saving without them would store a broader album than the search, so saving is refused
+  // with an explanation instead.
+  const smartAlbumFromSearch = $derived(searchTermsToSmartAlbumFilter(terms as unknown as Record<string, unknown>));
+  const smartAlbumUnsupported = $derived(
+    smartAlbumFromSearch.unsupported.map((key) =>
+      key === 'filter'
+        ? $t('advanced_filters')
+        : key === 'visibility'
+          ? $t('visibility')
+          : getHumanReadableSearchKey(key as keyof SearchTerms),
+    ),
   );
+
+  // A pure semantic search has nothing a smart album could store: offer nothing rather than a
+  // permanently disabled entry on every context search.
+  const showSmartAlbumUnsupported = $derived(
+    smartAlbumFromSearch.unsupported.length > 0 &&
+      (!isEmptySmartAlbumFilter(smartAlbumFromSearch.filter) ||
+        smartAlbumFromSearch.unsupported.some((key) => key !== 'query' && key !== 'queryAssetId')),
+  );
+
+  const SaveAsSmartAlbum: ActionItem = $derived({
+    title: $t('smart_album_save_as'),
+    icon: mdiAutoFix,
+    $if: () => smartAlbumUnsupported.length === 0 && !isEmptySmartAlbumFilter(smartAlbumFromSearch.filter),
+    onAction: () => modalManager.show(SaveSmartAlbumModal, { initialFilter: smartAlbumFromSearch.filter }),
+  });
 
   onMount(() => searchManager.setQuery(terms));
 </script>
@@ -276,13 +293,29 @@
 <svelte:window bind:scrollY />
 
 <OnEvents {onAlbumAddAssets} />
+<CommandPaletteDefaultProvider name={$t('search')} actions={[SaveAsSmartAlbum]} />
 
 {#if searchTermKeys.length > 0}
   <section id="search-chips" class="mx-auto mt-24 w-full max-w-7xl px-4 sm:px-8 lg:px-12">
-    {#if canSaveAsSmartAlbum}
-      <div class="mb-3 flex w-full place-content-end">
-        <Button size="small" variant="ghost" color="secondary" leadingIcon={mdiAutoFix} onclick={openSaveAsSmartAlbum}>
+    {#if showSmartAlbumUnsupported}
+      <div class="mb-3 flex w-full flex-col place-items-end gap-1">
+        <Button size="small" variant="ghost" color="secondary" leadingIcon={mdiAutoFix} disabled>
           {$t('smart_album_save_as')}
+        </Button>
+        <p class="text-end text-xs text-immich-fg/70 dark:text-immich-dark-fg/70" data-testid="smart-album-unsupported">
+          {$t('smart_album_save_unsupported', { values: { criteria: smartAlbumUnsupported.join(', ') } })}
+        </p>
+      </div>
+    {:else if isEnabled(SaveAsSmartAlbum)}
+      <div class="mb-3 flex w-full place-content-end">
+        <Button
+          size="small"
+          variant="ghost"
+          color="secondary"
+          leadingIcon={mdiAutoFix}
+          onclick={(event: Event) => SaveAsSmartAlbum.onAction({ event, action: SaveAsSmartAlbum })}
+        >
+          {SaveAsSmartAlbum.title}
         </Button>
       </div>
     {/if}

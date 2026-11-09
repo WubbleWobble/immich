@@ -1,19 +1,21 @@
 <script lang="ts">
   import { authManager } from '$lib/managers/auth-manager.svelte';
-  import { getContextMenuPositionFromEvent, type ContextMenuPosition } from '$lib/utils/context-menu';
-  import { getAssetMediaUrl } from '$lib/utils';
+  import { getAssetMediaUrl, isEnabled } from '$lib/utils';
   import { type AlbumContainerResponseDto } from '@immich/sdk';
-  import { Icon, IconButton } from '@immich/ui';
-  import { mdiDotsVertical, mdiFolderOutline, mdiShareVariantOutline } from '@mdi/js';
+  import { ContextMenuButton, Icon, type ActionItem } from '@immich/ui';
+  import { mdiFolderOutline, mdiShareVariantOutline } from '@mdi/js';
   import { t } from 'svelte-i18n';
 
   interface Props {
     folder: AlbumContainerResponseDto;
     childCount?: number;
-    onShowContextMenu?: ((position: ContextMenuPosition) => unknown) | undefined;
+    contextMenuItems?: ActionItem[];
   }
 
-  let { folder, childCount = 0, onShowContextMenu }: Props = $props();
+  let { folder, childCount = 0, contextMenuItems = [] }: Props = $props();
+
+  // No dead-end menu: the button only shows when an entry applies (e.g. owners, or any reader while elevated).
+  const hasContextMenu = $derived(contextMenuItems.some((item) => isEnabled(item)));
 
   const isShared = $derived(
     (folder.albumContainerUsers && folder.albumContainerUsers.length > 0) || folder.ownerId !== authManager.user.id,
@@ -21,33 +23,24 @@
 
   const thumbnailIds = $derived(folder.thumbnailAssetIds ?? []);
   const hasThumbnails = $derived(thumbnailIds.length > 0);
-
-  const showFolderContextMenu = (e: MouseEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
-    onShowContextMenu?.(getContextMenuPositionFromEvent(e));
-  };
 </script>
 
 <div
   class="group relative rounded-2xl border border-transparent p-5 hover:border-gray-200 hover:bg-gray-100 dark:hover:border-gray-800 dark:hover:bg-gray-900"
   data-testid="folder-card"
 >
-  {#if onShowContextMenu}
+  {#if hasContextMenu}
     <div
       id="folder-icon-{folder.id}"
       class="absolute inset-e-6 top-6 opacity-0 group-hover:opacity-100 focus-within:opacity-100"
       data-testid="folder-context-button-parent"
     >
-      <IconButton
-        color="secondary"
-        aria-label={$t('show_album_options')}
-        icon={mdiDotsVertical}
-        shape="round"
+      <ContextMenuButton
+        translations={{ open_menu: $t('show_album_options') }}
+        position="top-left"
         variant="filled"
-        size="medium"
         class="icon-white-drop-shadow"
-        onclick={showFolderContextMenu}
+        items={contextMenuItems}
       />
     </div>
   {/if}

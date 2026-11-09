@@ -9,16 +9,19 @@
   import { mdiArrowRight, mdiCheck, mdiClose } from '@mdi/js';
   import { t } from 'svelte-i18n';
   import { searchManager } from '$lib/managers/search-manager.svelte';
+  import type { SearchFilter } from '$lib/types';
 
   interface Props {
     title: string | undefined;
     parentPromise: Promise<PersonResponseDto[]> | undefined;
+    /** Edit this filter instead of the search bar's (searchManager.filter), e.g. in a smart-album editor. */
+    filter?: SearchFilter;
   }
 
   // eslint-disable-next-line no-useless-assignment
-  let { title = $bindable(), parentPromise }: Props = $props();
+  let { title = $bindable(), parentPromise, filter = $bindable() }: Props = $props();
 
-  let selectedPeople = $derived(searchManager.filter.personIds);
+  let selectedPeople = $derived((filter ?? searchManager.filter).personIds);
   let peoplePromise = parentPromise ?? getPeople(selectedPeople);
   let showAllPeople = $state(false);
   let name = $state('');

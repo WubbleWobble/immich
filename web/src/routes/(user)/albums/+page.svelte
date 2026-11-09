@@ -5,32 +5,22 @@
   import FolderBreadcrumb from '$lib/components/album-page/FolderBreadcrumb.svelte';
   import FolderCard from '$lib/components/album-page/FolderCard.svelte';
   import UserPageLayout from '$lib/components/layouts/UserPageLayout.svelte';
-  import MenuOption from '$lib/components/shared-components/context-menu/MenuOption.svelte';
-  import RightClickContextMenu from '$lib/components/shared-components/context-menu/RightClickContextMenu.svelte';
   import EmptyPlaceholder from '$lib/components/shared-components/EmptyPlaceholder.svelte';
   import GroupTab from '$lib/elements/GroupTab.svelte';
   import SearchBar from '$lib/elements/SearchBar.svelte';
-  import MoveToFolderModal from '$lib/modals/MoveToFolderModal.svelte';
-  import ShareFolderModal from '$lib/modals/ShareFolderModal.svelte';
+  import Portal from '$lib/elements/Portal.svelte';
   import { authManager } from '$lib/managers/auth-manager.svelte';
   import { Route } from '$lib/route';
   import { AlbumFilter, albumViewSettings } from '$lib/stores/preferences.store';
   import { getDirectChildCount, getDirectChildFolders } from '$lib/utils/album-folder-utils';
   import { createAlbumAndRedirect } from '$lib/utils/album-utils';
-  import type { ContextMenuPosition } from '$lib/utils/context-menu';
   import { lockManager } from '$lib/managers/lock-manager.svelte';
-  import { handleError } from '$lib/utils/handle-error';
+  import { getAlbumFolderActions } from '$lib/services/album.service';
+  import { isEnabled } from '$lib/utils';
   import { normalizeSearchString } from '$lib/utils/string-utils';
-  import { deleteAlbumContainer, type AlbumContainerResponseDto } from '@immich/sdk';
-  import { goto, invalidateAll } from '$app/navigation';
-  import { modalManager, toastManager } from '@immich/ui';
-  import {
-    mdiDeleteOutline,
-    mdiFolderMoveOutline,
-    mdiLockOffOutline,
-    mdiLockOutline,
-    mdiShareVariantOutline,
-  } from '@mdi/js';
+  import { type AlbumContainerResponseDto } from '@immich/sdk';
+  import { goto } from '$app/navigation';
+  import { menuManager, type ActionItem } from '@immich/ui';
   import { t } from 'svelte-i18n';
   import type { PageData } from './$types';
 
@@ -78,88 +68,17 @@
     void lockManager.refresh();
   });
 
-  // Folder context menu state.
-  let folderContextMenuPosition: ContextMenuPosition = $state({ x: 0, y: 0 });
-  let selectedFolder: AlbumContainerResponseDto | undefined = $state();
-  let isFolderMenuOpen = $state(false);
+  // Folder context menu (right-click): @immich/ui menu anchored at the pointer, like album cards.
+  let contextMenuAnchor: HTMLDivElement | undefined = $state();
+  const folderMenuItems = (folder: AlbumContainerResponseDto) => Object.values(getAlbumFolderActions($t, folder));
 
-  const showFolderContextMenu = (position: ContextMenuPosition, folder: AlbumContainerResponseDto) => {
-    // Move / Share / Delete are owner-only on the server; don't surface a dead-end menu for cascade recipients.
-    if (folder.ownerId !== currentUserId) {
+  const onFolderContextMenu = async (event: MouseEvent, items: ActionItem[]) => {
+    event.preventDefault();
+    if (items.every((item) => !isEnabled(item))) {
       return;
     }
-    selectedFolder = folder;
-    folderContextMenuPosition = position;
-    isFolderMenuOpen = true;
-  };
-
-  const closeFolderMenu = () => {
-    isFolderMenuOpen = false;
-  };
-
-  const handleMoveFolder = async () => {
-    const folder = selectedFolder;
-    closeFolderMenu();
-    if (!folder) {
-      return;
-    }
-    const moved = await modalManager.show(MoveToFolderModal, {
-      kind: 'folder',
-      sourceId: folder.id,
-      currentParentId: folder.parentId,
-    });
-    if (moved) {
-      await invalidateAll();
-    }
-  };
-
-  const handleShareFolder = async () => {
-    const folder = selectedFolder;
-    closeFolderMenu();
-    if (!folder) {
-      return;
-    }
-    const changed = await modalManager.show(ShareFolderModal, { folder });
-    if (changed) {
-      await invalidateAll();
-    }
-  };
-
-  const handleToggleFolderLock = async () => {
-    const folder = selectedFolder;
-    closeFolderMenu();
-    if (!folder) {
-      return;
-    }
-    try {
-      await (lockManager.lockedContainerIds.has(folder.id)
-        ? lockManager.unlockContainer(folder.id)
-        : lockManager.lockContainer(folder.id));
-      await invalidateAll();
-    } catch (error) {
-      handleError(error, $t('errors.unable_to_save_settings'));
-    }
-  };
-
-  const handleDeleteFolder = async () => {
-    const folder = selectedFolder;
-    closeFolderMenu();
-    if (!folder) {
-      return;
-    }
-    const confirmed = await modalManager.showDialog({
-      prompt: $t('confirm_delete_folder', { values: { name: folder.name } }),
-    });
-    if (!confirmed) {
-      return;
-    }
-    try {
-      await deleteAlbumContainer({ id: folder.id });
-      toastManager.primary();
-      await invalidateAll();
-    } catch (error) {
-      handleError(error, $t('errors.unable_to_delete_album'));
-    }
+    contextMenuAnchor?.setAttribute('style', `left: ${event.x}px; top: ${event.y}px;`);
+    await menuManager.show({ target: contextMenuAnchor ?? (event.currentTarget as HTMLElement), items });
   };
 </script>
 
@@ -194,21 +113,13 @@
     </h2>
     <div class="mt-2 mb-6 grid grid-auto-fill-56 gap-y-4">
       {#each filteredFolders as folder (folder.id)}
+        {@const items = folderMenuItems(folder)}
         <a
           href={Route.albums({ folder: folder.id })}
           class="h-fit"
-          oncontextmenu={(event) => {
-            event.preventDefault();
-            showFolderContextMenu({ x: event.x, y: event.y }, folder);
-          }}
+          oncontextmenu={(event) => onFolderContextMenu(event, items)}
         >
-          <FolderCard
-            {folder}
-            childCount={childCountFor(folder)}
-            onShowContextMenu={folder.ownerId === currentUserId
-              ? (position) => showFolderContextMenu(position, folder)
-              : undefined}
-          />
+          <FolderCard {folder} childCount={childCountFor(folder)} contextMenuItems={items} />
         </a>
       {/each}
     </div>
@@ -234,20 +145,6 @@
   </Albums>
 </UserPageLayout>
 
-<RightClickContextMenu
-  title={$t('folder')}
-  {...folderContextMenuPosition}
-  isOpen={isFolderMenuOpen}
-  onClose={closeFolderMenu}
->
-  <MenuOption icon={mdiFolderMoveOutline} text={$t('move_to_folder')} onClick={handleMoveFolder} />
-  <MenuOption icon={mdiShareVariantOutline} text={$t('share')} onClick={handleShareFolder} />
-  {#if lockManager.isElevated && selectedFolder}
-    <MenuOption
-      icon={lockManager.lockedContainerIds.has(selectedFolder.id) ? mdiLockOffOutline : mdiLockOutline}
-      text={lockManager.lockedContainerIds.has(selectedFolder.id) ? $t('unlock_for_me') : $t('lock_for_me')}
-      onClick={handleToggleFolderLock}
-    />
-  {/if}
-  <MenuOption icon={mdiDeleteOutline} text={$t('delete')} onClick={handleDeleteFolder} />
-</RightClickContextMenu>
+<Portal>
+  <div bind:this={contextMenuAnchor} class="absolute"></div>
+</Portal>

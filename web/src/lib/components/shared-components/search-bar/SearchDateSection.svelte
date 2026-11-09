@@ -4,9 +4,17 @@
   import { DateTime } from 'luxon';
   import { t } from 'svelte-i18n';
   import { searchManager } from '$lib/managers/search-manager.svelte';
+  import type { SearchFilter } from '$lib/types';
   import SearchButton from './SearchButton.svelte';
 
-  let filters = $derived(searchManager.filter.date);
+  interface Props {
+    /** Edit this filter instead of the search bar's (searchManager.filter), e.g. in a smart-album editor. */
+    filter?: SearchFilter;
+  }
+
+  let { filter = $bindable() }: Props = $props();
+
+  let filters = $derived((filter ?? searchManager.filter).date);
   let invalid = $derived(filters.takenAfter && filters.takenBefore && filters.takenAfter > filters.takenBefore);
 
   let currentPreset = $derived(getSearchDatePreset(filters.takenAfter, filters.takenBefore));

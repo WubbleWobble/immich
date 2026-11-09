@@ -1,14 +1,15 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import SmartAlbumFilterForm, {
-    isEmptySmartAlbumFilter,
-    searchFilterToSmartAlbumFilter,
-    smartAlbumFilterToSearchFilter,
-  } from '$lib/components/album-page/SmartAlbumFilterForm.svelte';
+  import SmartAlbumFilterForm from '$lib/components/album-page/SmartAlbumFilterForm.svelte';
   import { eventManager } from '$lib/managers/event-manager.svelte';
   import { Route } from '$lib/route';
   import type { SearchFilter } from '$lib/types';
   import { handleError } from '$lib/utils/handle-error';
+  import {
+    isEmptySmartAlbumFilter,
+    searchFilterToSmartAlbumFilter,
+    smartAlbumFilterToSearchFilter,
+  } from '$lib/utils/smart-album-filter';
   import { AlbumKind, createAlbum, type AlbumResponseDto } from '@immich/sdk';
   import { FormModal } from '@immich/ui';
   import { mdiAutoFix } from '@mdi/js';

@@ -1,10 +1,18 @@
 <script lang="ts">
   import SearchButton from './SearchButton.svelte';
   import { searchManager } from '$lib/managers/search-manager.svelte';
+  import type { SearchFilter } from '$lib/types';
   import { Text } from '@immich/ui';
   import { t } from 'svelte-i18n';
 
-  let filters = $derived(searchManager.filter.display);
+  interface Props {
+    /** Edit this filter instead of the search bar's (searchManager.filter), e.g. in a smart-album editor. */
+    filter?: SearchFilter;
+  }
+
+  let { filter = $bindable() }: Props = $props();
+
+  let filters = $derived((filter ?? searchManager.filter).display);
 </script>
 
 <div id="display-options-selection">

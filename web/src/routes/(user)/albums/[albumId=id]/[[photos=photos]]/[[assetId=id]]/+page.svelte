@@ -33,14 +33,15 @@
   import { featureFlagsManager } from '$lib/managers/feature-flags-manager.svelte';
   import { TimelineManager } from '$lib/managers/timeline-manager/timeline-manager.svelte';
   import type { TimelineAsset } from '$lib/managers/timeline-manager/types';
-  import EditSmartAlbumFilterModal from '$lib/modals/EditSmartAlbumFilterModal.svelte';
   import { Route } from '$lib/route';
   import {
     getAlbumActions,
     getAlbumAssetsActions,
     handleDeleteAlbum,
+    handleUpdateAlbum,
     isAlbumEditor,
     isAlbumOwner,
+    isSmartAlbum,
   } from '$lib/services/album.service';
   import { getGlobalActions } from '$lib/services/app.service';
   import { getAssetBulkActions } from '$lib/services/asset.service';
@@ -48,17 +49,21 @@
   import { handlePromiseError } from '$lib/utils';
   import { handleError } from '$lib/utils/handle-error';
   import { isAlbumsRoute, navigate, type AssetGridRouteSearchParams } from '$lib/utils/navigation';
-  import { AlbumKind, AlbumUserRole, AssetVisibility, updateAlbumInfo, type AlbumResponseDto } from '@immich/sdk';
-  import { ActionButton, CommandPaletteDefaultProvider, Icon, IconButton, modalManager, toastManager } from '@immich/ui';
+  import { isEmptySmartAlbumFilter } from '$lib/utils/smart-album-filter';
+  import {
+    findDanglingSmartAlbumReferences,
+    removeSmartAlbumReferences,
+    type DanglingSmartAlbumReferences,
+  } from '$lib/utils/smart-album-references';
+  import SmartAlbumDanglingReferences from '$lib/components/album-page/SmartAlbumDanglingReferences.svelte';
+  import { AlbumUserRole, AssetVisibility, updateAlbumInfo, type AlbumResponseDto } from '@immich/sdk';
+  import { ActionButton, CommandPaletteDefaultProvider, Icon, IconButton, toastManager } from '@immich/ui';
   import {
     mdiAccountEye,
     mdiAccountEyeOutline,
     mdiArrowLeft,
-    mdiAutoFix,
     mdiDotsHorizontal,
     mdiDotsVertical,
-    mdiLockOffOutline,
-    mdiLockOutline,
     mdiImageOutline,
     mdiImagePlusOutline,
     mdiLink,
@@ -257,28 +262,49 @@
 
   const isOwned = $derived(isAlbumOwner(album));
 
-  // Elevation-gated lock toggle: the menu item only exists during an elevated session
-  // (plausible deniability - no lock affordance is visible to a shoulder-surfer).
+  // The Lock/Unlock actions only exist during an elevated session (plausible deniability - no
+  // lock affordance is visible to a shoulder-surfer); refresh elevation and the lock set.
   $effect(() => {
     void lockManager.refresh();
   });
 
-  const handleToggleLock = async () => {
-    try {
-      await (lockManager.lockedAlbumIds.has(album.id)
-        ? lockManager.unlockAlbum(album.id)
-        : lockManager.lockAlbum(album.id));
-    } catch (error) {
-      handleError(error, $t('errors.unable_to_save_settings'));
-    }
-  };
-  const isSmart = $derived(album.kind === AlbumKind.Smart);
+  const isSmart = $derived(isSmartAlbum(album));
 
-  const handleEditFilter = async () => {
-    const updated = await modalManager.show(EditSmartAlbumFilterModal, { album });
-    if (updated) {
-      await refreshAlbum();
+  // D12: a smart filter can keep ids of deleted people/tags; they match nothing. Only the owner
+  // can resolve them (they are the owner's people/tags) and only the owner can repair the filter.
+  let danglingReferences = $state<DanglingSmartAlbumReferences>({ personIds: [], tagIds: [] });
+  // Re-resolve only when the referenced ids change, not on every album refresh.
+  const referencedIds = $derived(
+    isSmart && isOwned && album.filter
+      ? JSON.stringify({ personIds: album.filter.personIds ?? [], tagIds: album.filter.tagIds ?? [] })
+      : '',
+  );
+  $effect(() => {
+    danglingReferences = { personIds: [], tagIds: [] };
+    if (!referencedIds) {
+      return;
     }
+    let cancelled = false;
+    void findDanglingSmartAlbumReferences(JSON.parse(referencedIds)).then((references) => {
+      if (!cancelled) {
+        danglingReferences = references;
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  const handleRemoveDanglingReferences = async (references: DanglingSmartAlbumReferences) => {
+    if (!album.filter) {
+      return;
+    }
+    const filter = removeSmartAlbumReferences(album.filter, references);
+    if (isEmptySmartAlbumFilter(filter)) {
+      toastManager.danger($t('smart_album_filter_empty_error'));
+      return;
+    }
+    await handleUpdateAlbum(album, { filter });
   };
 
   let showActivityStatus = $derived(
@@ -365,11 +391,8 @@
   onAlbumUpdate={(album) => refreshAlbum(album)}
   onAssetsDelete={() => refreshAlbum()}
 />
-<!-- FORK-PORT: smart albums cannot take manual adds/uploads, so the fork's palette was [Close] when isSmart. -->
-<CommandPaletteDefaultProvider
-  name={$t('album')}
-  actions={isSmart ? [Close, ...Object.values(Actions)] : [AddAssets, Upload, Close, ...Object.values(Actions)]}
-/>
+<!-- AddAssets/Upload hide themselves for smart albums (read-only). -->
+<CommandPaletteDefaultProvider name={$t('album')} actions={[AddAssets, Upload, Close, ...Object.values(Actions)]} />
 
 <div class="flex overflow-hidden" use:scrollMemoryClearer={{ routeStartsWith: Route.albums() }}>
   <div class="relative w-full shrink">
@@ -399,6 +422,15 @@
                 {isEditor}
                 onUpdate={(albumName) => (album = { ...album, albumName })}
               />
+
+              {#if isSmart && isOwned}
+                <div class="my-2">
+                  <SmartAlbumDanglingReferences
+                    references={danglingReferences}
+                    onRemove={handleRemoveDanglingReferences}
+                  />
+                </div>
+              {/if}
 
               {#if album.assetCount > 0}
                 <AlbumSummary {album} />
@@ -518,11 +550,7 @@
           {/if}
 
           <ActionMenuItem action={Actions.Tag} />
-          <!-- FORK-PORT: smart albums have no album_asset rows, so the fork hid "Remove from album" when isSmart;
-          re-applied here as a wrapper, move into the RemoveFromAlbum action's visibility (Task 8). -->
-          {#if !isSmart}
-            <ActionMenuItem action={Actions.RemoveFromAlbum} />
-          {/if}
+          <ActionMenuItem action={Actions.RemoveFromAlbum} />
           {#if assetMultiSelectManager.isAllUserOwned}
             <DeleteAssets menuItem onAssetDelete={handleRemoveAssets} onUndoDelete={handleUndoRemoveAssets} />
           {/if}
@@ -571,23 +599,16 @@
             {/if}
             <ActionButton action={Actions.Download} />
 
-            <!-- FORK-PORT: fork also shows the album options menu in an elevated session (lockManager.isElevated) so
-            any viewer with album.read can "Lock for me"/"Unlock for me" (handleToggleLock); upstream's condition is
-            isOwned || album.albumUsers.length > 1. Lock toggle stays a MenuOption until moved to Actions (Task 8). -->
-            {#if isOwned || album.albumUsers.length > 1 || lockManager.isElevated}
+            <!-- An elevated session shows the menu to any reader so they can lock/unlock the album for themselves. -->
+            {#if isOwned || album.albumUsers.length > 1 || containsEditors || lockManager.isElevated}
               <ButtonContextMenu
                 icon={mdiDotsVertical}
                 title={$t('album_options')}
                 color="secondary"
                 offset={{ x: 175, y: 25 }}
               >
-                {#if lockManager.isElevated}
-                  <MenuOption
-                    icon={lockManager.lockedAlbumIds.has(album.id) ? mdiLockOffOutline : mdiLockOutline}
-                    text={lockManager.lockedAlbumIds.has(album.id) ? $t('unlock_for_me') : $t('lock_for_me')}
-                    onClick={handleToggleLock}
-                  />
-                {/if}
+                <ActionMenuItem action={Actions.Lock} />
+                <ActionMenuItem action={Actions.Unlock} />
                 {#if containsEditors}
                   <MenuOption
                     icon={showAlbumUsers ? mdiAccountEye : mdiAccountEyeOutline}
@@ -604,12 +625,8 @@
                   />
                 {/if}
 
-                <!-- FORK-PORT: fork owner-only "Edit smart album filter" entry kept as a MenuOption; upstream album
-                menus are now Actions from getAlbumActions() - move it there (Task 8). The fork's own owner-only
-                delete MenuOption is replaced by upstream's Actions.Delete / Actions.Leave. -->
-                {#if isOwned && isSmart}
-                  <MenuOption icon={mdiAutoFix} text={$t('smart_album_edit_filter')} onClick={handleEditFilter} />
-                {/if}
+                <ActionMenuItem action={Actions.EditSmartFilter} />
+                <ActionMenuItem action={Actions.MoveToFolder} />
 
                 <ActionMenuItem action={Actions.Delete} />
                 <ActionMenuItem action={Actions.Leave} />

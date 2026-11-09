@@ -1,12 +1,22 @@
 <script lang="ts">
   import Combobox, { asComboboxOptions, asSelectedOption } from '$lib/components/shared-components/Combobox.svelte';
   import { searchManager } from '$lib/managers/search-manager.svelte';
+  import type { SearchFilter } from '$lib/types';
   import { handlePromiseError } from '$lib/utils';
   import { SearchSuggestionType, getSearchSuggestions } from '@immich/sdk';
   import { Text } from '@immich/ui';
   import { t } from 'svelte-i18n';
 
-  let filters = $derived(searchManager.filter.camera);
+  interface Props {
+    /** Edit this filter instead of the search bar's (searchManager.filter), e.g. in a smart-album editor. */
+    filter?: SearchFilter;
+    /** Keep a selected value that is not among the suggestions instead of clearing it (a stored filter must not change on its own). */
+    keepUnlisted?: boolean;
+  }
+
+  let { filter = $bindable(), keepUnlisted = false }: Props = $props();
+
+  let filters = $derived((filter ?? searchManager.filter).camera);
 
   let makes: string[] = $state([]);
   let models: string[] = $state([]);
@@ -20,7 +30,7 @@
 
     makes = results.map((result) => result ?? '');
 
-    if (filters.make && !makes.includes(filters.make)) {
+    if (!keepUnlisted && filters.make && !makes.includes(filters.make)) {
       filters.make = undefined;
     }
   }
@@ -34,7 +44,7 @@
 
     models = results.map((result) => result ?? '');
 
-    if (filters.model && !models.includes(filters.model)) {
+    if (!keepUnlisted && filters.model && !models.includes(filters.model)) {
       filters.model = undefined;
     }
   }
@@ -49,7 +59,7 @@
 
     lensModels = results.map((result) => result ?? '');
 
-    if (filters.lensModel && !lensModels.includes(filters.lensModel)) {
+    if (!keepUnlisted && filters.lensModel && !lensModels.includes(filters.lensModel)) {
       filters.lensModel = undefined;
     }
   }

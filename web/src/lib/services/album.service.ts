@@ -2,13 +2,16 @@ import {
   addAssetsToAlbum as addToAlbum,
   addAssetsToAlbums as addToAlbums,
   addUsersToAlbum,
+  AlbumKind,
   AlbumUserRole,
   BulkIdErrorReason,
   deleteAlbum,
+  deleteAlbumContainer,
   moveAssetsToLockedAlbum as moveToLockedAlbum,
   removeUserFromAlbum,
   updateAlbumInfo,
   updateAlbumUser,
+  type AlbumContainerResponseDto,
   type AlbumResponseDto,
   type AlbumsAddAssetsResponseDto,
   type AssetResponseDto,
@@ -18,9 +21,14 @@ import {
 } from '@immich/sdk';
 import { modalManager, toastManager, type ActionItem } from '@immich/ui';
 import {
+  mdiAutoFix,
+  mdiDeleteOutline,
   mdiDownload,
+  mdiFolderMoveOutline,
   mdiImageOutline,
   mdiLink,
+  mdiLockOffOutline,
+  mdiLockOutline,
   mdiPlus,
   mdiPlusBoxOutline,
   mdiRenameOutline,
@@ -31,13 +39,17 @@ import {
   mdiCogOutline,
 } from '@mdi/js';
 import { type MessageFormatter } from 'svelte-i18n';
-import { goto } from '$app/navigation';
+import { goto, invalidateAll } from '$app/navigation';
 import { authManager } from '$lib/managers/auth-manager.svelte';
 import { eventManager } from '$lib/managers/event-manager.svelte';
+import { lockManager } from '$lib/managers/lock-manager.svelte';
 import type { TimelineAsset } from '$lib/managers/timeline-manager/types';
 import AddUsersModal from '$lib/modals/AddUsersModal.svelte';
 import AlbumEditModal from '$lib/modals/AlbumEditModal.svelte';
 import AlbumOptionsModal from '$lib/modals/AlbumOptionsModal.svelte';
+import EditSmartAlbumFilterModal from '$lib/modals/EditSmartAlbumFilterModal.svelte';
+import MoveToFolderModal from '$lib/modals/MoveToFolderModal.svelte';
+import ShareFolderModal from '$lib/modals/ShareFolderModal.svelte';
 import SharedLinkCreateModal from '$lib/modals/SharedLinkCreateModal.svelte';
 import { Route } from '$lib/route';
 import { userInteraction } from '$lib/stores/user.svelte';
@@ -48,6 +60,8 @@ import { handleError } from '$lib/utils/handle-error';
 import { getFormatter } from '$lib/utils/i18n';
 
 export const isAlbumOwner = (album: AlbumResponseDto) => album.albumUsers[0].user.id === authManager.user.id;
+/** Smart albums are read-only: their content is the filter's result, never manual adds/uploads/removals. */
+export const isSmartAlbum = (album: AlbumResponseDto) => album.kind === AlbumKind.Smart;
 export const isAlbumEditor = (album: AlbumResponseDto) =>
   isAlbumOwner(album) ||
   album.albumUsers.find(({ user: { id } }) => id === authManager.user.id)?.role === AlbumUserRole.Editor;
@@ -62,12 +76,10 @@ export const getAlbumsActions = ($t: MessageFormatter) => {
   return { Create };
 };
 
-// FORK-PORT: fork album menus (albums list right-click and album page) also offered "Move to folder"
-// (MoveToFolderModal, kind 'album', owner-only) and smart-album/lock entries; upstream now builds album menus from
-// these actions, so the fork entries belong here (Task 8).
 export const getAlbumActions = ($t: MessageFormatter, album: AlbumResponseDto) => {
   const isOwned = isAlbumOwner(album);
   const isEditor = isAlbumEditor(album);
+  const isSmart = isSmartAlbum(album);
 
   const AddUsers: ActionItem = {
     title: $t('add_user'),
@@ -102,6 +114,14 @@ export const getAlbumActions = ($t: MessageFormatter, album: AlbumResponseDto) =
     onAction: () => handleDownloadAlbum(album),
   };
 
+  // Only the owner can change a smart album's filter (server-enforced).
+  const EditSmartFilter: ActionItem = {
+    title: $t('smart_album_edit_filter'),
+    icon: mdiAutoFix,
+    $if: () => isOwned && isSmart,
+    onAction: () => modalManager.show(EditSmartAlbumFilterModal, { album }),
+  };
+
   const Edit: ActionItem = {
     title: $t('edit_album'),
     icon: mdiRenameOutline,
@@ -114,6 +134,30 @@ export const getAlbumActions = ($t: MessageFormatter, album: AlbumResponseDto) =
     icon: mdiExitToApp,
     $if: () => !isOwned,
     onAction: () => handleLeaveAlbum(album),
+  };
+
+  // Locking is per user: any reader can hide the album from their own view, but only in an
+  // elevated session - no lock affordance is visible otherwise (plausible deniability).
+  const Lock: ActionItem = {
+    title: $t('lock_for_me'),
+    icon: mdiLockOutline,
+    $if: () => lockManager.isElevated && !lockManager.lockedAlbumIds.has(album.id),
+    onAction: () => handleSetAlbumLocked(album, true),
+  };
+
+  const Unlock: ActionItem = {
+    title: $t('unlock_for_me'),
+    icon: mdiLockOffOutline,
+    $if: () => lockManager.isElevated && lockManager.lockedAlbumIds.has(album.id),
+    onAction: () => handleSetAlbumLocked(album, false),
+  };
+
+  // Only the owner can file an album into a folder (server-enforced).
+  const MoveToFolder: ActionItem = {
+    title: $t('move_to_folder'),
+    icon: mdiFolderMoveOutline,
+    $if: () => isOwned,
+    onAction: () => handleMoveAlbumToFolder(album),
   };
 
   const Options: ActionItem = {
@@ -130,7 +174,111 @@ export const getAlbumActions = ($t: MessageFormatter, album: AlbumResponseDto) =
     onAction: () => modalManager.show(AlbumOptionsModal, { album }),
   };
 
-  return { AddUsers, CreateSharedLink, Delete, Download, Edit, Leave, Options, Share };
+  return {
+    AddUsers,
+    CreateSharedLink,
+    Delete,
+    Download,
+    Edit,
+    EditSmartFilter,
+    Leave,
+    Lock,
+    MoveToFolder,
+    Options,
+    Share,
+    Unlock,
+  };
+};
+
+/** Album folder (album container) menu entries. Move/share/delete are owner-only on the server. */
+export const getAlbumFolderActions = ($t: MessageFormatter, folder: AlbumContainerResponseDto) => {
+  const isOwned = folder.ownerId === authManager.user.id;
+
+  const Move: ActionItem = {
+    title: $t('move_to_folder'),
+    icon: mdiFolderMoveOutline,
+    $if: () => isOwned,
+    onAction: () => handleMoveFolder(folder),
+  };
+
+  const Share: ActionItem = {
+    title: $t('share'),
+    icon: mdiShareVariantOutline,
+    $if: () => isOwned,
+    onAction: () => handleShareFolder(folder),
+  };
+
+  // Like albums, any reader can lock a folder for their own view, only in an elevated session.
+  const Lock: ActionItem = {
+    title: $t('lock_for_me'),
+    icon: mdiLockOutline,
+    $if: () => lockManager.isElevated && !lockManager.lockedContainerIds.has(folder.id),
+    onAction: () => handleSetFolderLocked(folder, true),
+  };
+
+  const Unlock: ActionItem = {
+    title: $t('unlock_for_me'),
+    icon: mdiLockOffOutline,
+    $if: () => lockManager.isElevated && lockManager.lockedContainerIds.has(folder.id),
+    onAction: () => handleSetFolderLocked(folder, false),
+  };
+
+  const Delete: ActionItem = {
+    title: $t('delete'),
+    icon: mdiDeleteOutline,
+    $if: () => isOwned,
+    onAction: () => handleDeleteFolder(folder),
+  };
+
+  return { Move, Share, Lock, Unlock, Delete };
+};
+
+const handleMoveFolder = async (folder: AlbumContainerResponseDto) => {
+  const moved = await modalManager.show(MoveToFolderModal, {
+    kind: 'folder',
+    sourceId: folder.id,
+    currentParentId: folder.parentId,
+  });
+  if (moved) {
+    await invalidateAll();
+  }
+};
+
+const handleShareFolder = async (folder: AlbumContainerResponseDto) => {
+  const changed = await modalManager.show(ShareFolderModal, { folder });
+  if (changed) {
+    await invalidateAll();
+  }
+};
+
+const handleSetFolderLocked = async (folder: AlbumContainerResponseDto, locked: boolean) => {
+  const $t = await getFormatter();
+
+  try {
+    await (locked ? lockManager.lockContainer(folder.id) : lockManager.unlockContainer(folder.id));
+    await invalidateAll();
+  } catch (error) {
+    handleError(error, $t('errors.unable_to_save_settings'));
+  }
+};
+
+const handleDeleteFolder = async (folder: AlbumContainerResponseDto) => {
+  const $t = await getFormatter();
+
+  const confirmed = await modalManager.showDialog({
+    prompt: $t('confirm_delete_folder', { values: { name: folder.name } }),
+  });
+  if (!confirmed) {
+    return;
+  }
+
+  try {
+    await deleteAlbumContainer({ id: folder.id });
+    toastManager.primary();
+    await invalidateAll();
+  } catch (error) {
+    handleError(error, $t('errors.unable_to_delete_album'));
+  }
 };
 
 export const getAlbumAssetActions = ($t: MessageFormatter, album: AlbumResponseDto, asset: AssetResponseDto) => {
@@ -144,11 +292,13 @@ export const getAlbumAssetActions = ($t: MessageFormatter, album: AlbumResponseD
 };
 
 export const getAlbumAssetsActions = ($t: MessageFormatter, album: AlbumResponseDto, assets: TimelineAsset[]) => {
+  const isSmart = isSmartAlbum(album);
+
   const AddAssets: ActionItem = {
     title: $t('add_assets'),
     color: 'primary',
     icon: mdiPlusBoxOutline,
-    $if: () => assets.length > 0,
+    $if: () => !isSmart && assets.length > 0,
     onAction: () =>
       addAssetsToAlbums(
         [album.id],
@@ -161,6 +311,7 @@ export const getAlbumAssetsActions = ($t: MessageFormatter, album: AlbumResponse
     title: $t('select_from_computer'),
     description: $t('album_upload_assets'),
     icon: mdiUpload,
+    $if: () => !isSmart,
     onAction: () => void openFileUploadDialog({ albumId: album.id }),
   };
 
@@ -323,6 +474,35 @@ export const handleRemoveUserFromAlbum = async (album: AlbumResponseDto, albumUs
   }
 };
 
+export const handleSetAlbumLocked = async (album: AlbumResponseDto, locked: boolean) => {
+  const $t = await getFormatter();
+
+  try {
+    await (locked ? lockManager.lockAlbum(album.id) : lockManager.unlockAlbum(album.id));
+    return true;
+  } catch (error) {
+    handleError(error, $t('errors.unable_to_save_settings'));
+    return false;
+  }
+};
+
+export const handleMoveAlbumToFolder = async (album: AlbumResponseDto) => {
+  const moved = await modalManager.show(MoveToFolderModal, {
+    kind: 'album',
+    sourceId: album.id,
+    currentParentId: album.containerId ?? null,
+  });
+  if (moved) {
+    await invalidateAll();
+  }
+  return !!moved;
+};
+
+/**
+ * Leave a shared album. The server can refuse (e.g. a non-elevated session leaving an album it
+ * has locked: 400 "Not found or no album.read access"); that error is shown to the user and the
+ * album stays put - success is never assumed.
+ */
 export const handleLeaveAlbum = async (album: AlbumResponseDto) => {
   const $t = await getFormatter();
 

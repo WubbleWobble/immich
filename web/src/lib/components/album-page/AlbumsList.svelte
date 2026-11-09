@@ -162,10 +162,6 @@
     }
   });
 
-  // FORK-PORT: the fork's handleSelect gained a 'move' case: modalManager.show(MoveToFolderModal, { kind: 'album',
-  // sourceId: selectedAlbum.id, currentParentId: selectedAlbum.containerId ?? null }) then invalidateAll() when moved.
-  // Upstream removed showAlbumContextMenu/handleSelect in favour of getAlbumActions() (web album.service) + @immich/ui
-  // menus; re-add "move to folder" as an album action (owner-only, Task 8).
   const removeAlbumsIfEmpty = async () => {
     const albumsToRemove = ownedAlbums.filter((album) => album.assetCount === 0 && !album.albumName);
     await Promise.allSettled(albumsToRemove.map((album) => handleDeleteAlbum(album, { prompt: false, notify: false })));
@@ -217,7 +213,3 @@
   <!-- Empty Message -->
   {@render empty?.()}
 {/if}
-
-<!-- FORK-PORT: the fork's album right-click menu had a "Move to folder" entry (MenuOption icon=mdiFolderMoveOutline
-text=$t('move_to_folder'), shown with the owner-only Edit/Share entries via showFullContextMenu). Upstream replaced
-RightClickContextMenu with @immich/ui ContextMenuButton items from getAlbumActions(); add a MoveToFolder action there. -->

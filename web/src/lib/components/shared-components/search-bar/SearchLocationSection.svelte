@@ -1,13 +1,23 @@
 <script lang="ts">
   import Combobox, { asComboboxOptions, asSelectedOption } from '$lib/components/shared-components/Combobox.svelte';
   import { searchManager } from '$lib/managers/search-manager.svelte';
+  import type { SearchFilter } from '$lib/types';
   import { handlePromiseError } from '$lib/utils';
   import { getSearchSuggestions, SearchSuggestionType } from '@immich/sdk';
   import { Text } from '@immich/ui';
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
 
-  let filters = $derived(searchManager.filter.location);
+  interface Props {
+    /** Edit this filter instead of the search bar's (searchManager.filter), e.g. in a smart-album editor. */
+    filter?: SearchFilter;
+    /** Keep a selected value that is not among the suggestions instead of clearing it (a stored filter must not change on its own). */
+    keepUnlisted?: boolean;
+  }
+
+  let { filter = $bindable(), keepUnlisted = false }: Props = $props();
+
+  let filters = $derived((filter ?? searchManager.filter).location);
   let countries: string[] = $state([]);
   let states: string[] = $state([]);
   let cities: string[] = $state([]);
@@ -20,7 +30,7 @@
 
     countries = results.map((result) => result ?? '');
 
-    if (filters.country && !countries.includes(filters.country)) {
+    if (!keepUnlisted && filters.country && !countries.includes(filters.country)) {
       filters.country = undefined;
     }
   }
@@ -34,7 +44,7 @@
 
     states = results.map((result) => result ?? '');
 
-    if (filters.state && !states.includes(filters.state)) {
+    if (!keepUnlisted && filters.state && !states.includes(filters.state)) {
       filters.state = undefined;
     }
   }
@@ -48,7 +58,7 @@
 
     cities = results.map((result) => result ?? '');
 
-    if (filters.city && !cities.includes(filters.city)) {
+    if (!keepUnlisted && filters.city && !cities.includes(filters.city)) {
       filters.city = undefined;
     }
   }

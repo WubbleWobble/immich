@@ -1,12 +1,13 @@
 <script lang="ts">
-  import SmartAlbumFilterForm, {
-    carriedSmartAlbumFilterFields,
-    isEmptySmartAlbumFilter,
-    searchFilterToSmartAlbumFilter,
-    smartAlbumFilterToSearchFilter,
-  } from '$lib/components/album-page/SmartAlbumFilterForm.svelte';
+  import SmartAlbumFilterForm from '$lib/components/album-page/SmartAlbumFilterForm.svelte';
   import { handleUpdateAlbum } from '$lib/services/album.service';
   import type { SearchFilter } from '$lib/types';
+  import {
+    hiddenSmartAlbumFilterKeys,
+    isEmptySmartAlbumFilter,
+    mergeSmartAlbumFilter,
+    smartAlbumFilterToSearchFilter,
+  } from '$lib/utils/smart-album-filter';
   import { type AlbumResponseDto } from '@immich/sdk';
   import { FormModal } from '@immich/ui';
   import { mdiAutoFix } from '@mdi/js';
@@ -19,10 +20,10 @@
 
   let { album, onClose }: Props = $props();
 
-  // Criteria the form cannot edit (description, OCR, created/updated dates, ...) are merged
-  // back on save so editing never silently broadens the filter by dropping them.
-  const carriedFilter = carriedSmartAlbumFilterFields(album.filter);
-  const carriedKeys = Object.keys(carriedFilter);
+  // Criteria the form cannot show (description, OCR, created/updated dates, isFavorite: false,
+  // ...) are kept on save, as is every stored value of a field the user did not change, so
+  // editing never silently broadens the filter (mergeSmartAlbumFilter).
+  const carriedKeys = hiddenSmartAlbumFilterKeys(album.filter);
 
   // Name is shown read-only on the heading; only the filter is editable here.
   let name = $state(album.albumName);
@@ -30,7 +31,7 @@
   let errorMessage = $state('');
 
   const onSubmit = async () => {
-    const payload = { ...carriedFilter, ...searchFilterToSmartAlbumFilter(filter) };
+    const payload = mergeSmartAlbumFilter(album.filter, filter);
     if (isEmptySmartAlbumFilter(payload)) {
       errorMessage = $t('smart_album_filter_empty_error');
       return;
