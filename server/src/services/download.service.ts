@@ -15,6 +15,7 @@ import { ImmichReadStream } from 'src/repositories/storage.repository.js';
 import { BaseService } from 'src/services/base.service.js';
 import { LockService } from 'src/services/lock.service.js';
 import { HumanReadableSize } from 'src/utils/bytes.js';
+import { OwnerLockVisibility } from 'src/utils/database.js';
 import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
 import { getPreferences } from 'src/utils/preferences.js';
 
@@ -22,11 +23,16 @@ import { getPreferences } from 'src/utils/preferences.js';
 export class DownloadService extends BaseService {
   async getDownloadInfo(auth: AuthDto, dto: DownloadInfoDto): Promise<DownloadResponseDto> {
     let assets;
+    // Fork (R56): how a still's motion part is judged before its id enters the response - by the caller's direct read
+    // rule for requested ids, by the timeline's lock entries for a whole-user download, and not at all for an album,
+    // whose grant reaches a motion part through its still.
+    let motionRule: { direct: true } | { entries: OwnerLockVisibility[] } | undefined;
 
     if (dto.assetIds) {
       const assetIds = dto.assetIds;
       await this.requireAccess({ auth, permission: Permission.AssetDownload, ids: assetIds });
       assets = this.downloadRepository.downloadAssetIds(assetIds);
+      motionRule = { direct: true };
     } else if (dto.albumId) {
       const albumId = dto.albumId;
       await this.requireAccess({ auth, permission: Permission.AlbumDownload, ids: [albumId] });
@@ -56,6 +62,7 @@ export class DownloadService extends BaseService {
         isElevated: !!auth.session?.hasElevatedPermission,
       });
       assets = this.downloadRepository.downloadUserId(userId, lockVisibility);
+      motionRule = { entries: lockVisibility };
     } else {
       throw new BadRequestException('assetIds, albumId, or userId is required');
     }
@@ -63,7 +70,7 @@ export class DownloadService extends BaseService {
     const targetSize = dto.archiveSize || HumanReadableSize.GiB * 4;
     const metadata = await this.userRepository.getMetadata(auth.user.id);
     const preferences = getPreferences(metadata);
-    const motionIds = new Set<string>();
+    const stills: { ownerId: string; livePhotoVideoId: string | null }[] = [];
     const archives: DownloadArchiveInfo[] = [];
     let archive: DownloadArchiveInfo = { size: 0, assetIds: [] };
 
@@ -82,12 +89,18 @@ export class DownloadService extends BaseService {
     for await (const asset of assets) {
       // motion part of live photos
       if (asset.livePhotoVideoId) {
-        motionIds.add(asset.livePhotoVideoId);
+        stills.push(asset);
       }
 
       addToArchive(asset);
     }
 
+    const lockService = BaseService.create(LockService, this);
+    const reachableStills =
+      motionRule && 'direct' in motionRule
+        ? await lockService.withholdUnreachableMotionIds(auth, stills)
+        : await lockService.withholdHiddenMotionIds(stills, motionRule?.entries);
+    const motionIds = new Set(reachableStills.flatMap(({ livePhotoVideoId }) => livePhotoVideoId ?? []));
     if (motionIds.size > 0) {
       const motionAssets = this.downloadRepository.downloadMotionAssetIds([...motionIds]);
       for await (const motionAsset of motionAssets) {

@@ -8,6 +8,7 @@ import { DuplicateResolveDto, DuplicateResolveGroupDto, DuplicateResponseDto } f
 import { AssetStatus, AssetVisibility, JobName, JobStatus, Permission, QueueName } from 'src/enum.js';
 import { AssetDuplicateResult } from 'src/repositories/search.repository.js';
 import { BaseService } from 'src/services/base.service.js';
+import { LockService } from 'src/services/lock.service.js';
 import { OwnerLockVisibility } from 'src/utils/database.js';
 import { suggestDuplicateKeepAssetIds } from 'src/utils/duplicate.js';
 import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
@@ -72,7 +73,11 @@ export class DuplicateService extends BaseService {
     await this.duplicateRepository.cleanupSingletonGroups(auth.user.id);
 
     const lockVisibility = await this.getViewerLockVisibility(auth);
-    const duplicates = await this.duplicateRepository.getAll(auth.user.id, lockVisibility);
+    // Fork (R56): a listed member never enumerates a hidden motion part (same entries as the list).
+    const duplicates = await BaseService.create(LockService, this).withholdHiddenMotionIdsInGroups(
+      await this.duplicateRepository.getAll(auth.user.id, lockVisibility),
+      lockVisibility,
+    );
     return duplicates.map(({ duplicateId, assets }) => {
       const mappedAssets = assets.map((asset) => mapAsset(asset, { auth }));
       return {

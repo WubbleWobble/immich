@@ -1,5 +1,5 @@
 import { Kysely } from 'kysely';
-import { SyncEntityType, SyncRequestType } from 'src/enum.js';
+import { AssetType, AssetVisibility, SyncEntityType, SyncRequestType } from 'src/enum.js';
 import { LockRepository } from 'src/repositories/lock.repository.js';
 import { DB } from 'src/schema/index.js';
 import { SyncTestContext } from 'test/medium.factory.js';
@@ -139,5 +139,49 @@ describe('partner sync streams honour the partner owner locks', () => {
     expect(ids(response, SyncEntityType.StackV1, 'id')).toEqual(
       [library.hiddenStack.id, library.visibleStack.id].toSorted(),
     );
+  });
+
+  it("withholds a lock-hidden motion part's id from the partner's visible still, in upserts and backfill (R56)", async () => {
+    const { auth, ctx } = await setup();
+    const { user: partner } = await ctx.newUser();
+    const newLivePhoto = async () => {
+      const { asset: motion } = await ctx.newAsset({
+        ownerId: partner.id,
+        type: AssetType.Video,
+        visibility: AssetVisibility.Hidden,
+      });
+      const { asset: still } = await ctx.newAsset({ ownerId: partner.id, livePhotoVideoId: motion.id });
+      return { still, motion };
+    };
+    // the motion part is filed only into a locked album, its still is uncontained and visible
+    const hidden = await newLivePhoto();
+    const { album } = await ctx.newAlbum({ ownerId: partner.id }, [hidden.motion.id]);
+    await ctx.get(LockRepository).lockAlbum(partner.id, album.id);
+    // a Live Photo the lock does not touch keeps its motion id
+    const plain = await newLivePhoto();
+    const motionIdOf = (response: Array<{ type: string; data: unknown }>, type: SyncEntityType, id: string) =>
+      response
+        .filter((item) => item.type === type)
+        .map((item) => item.data as { id: string; livePhotoVideoId: string | null })
+        .find((data) => data.id === id)?.livePhotoVideoId;
+
+    await ctx.newPartner({ sharedById: partner.id, sharedWithId: auth.user.id });
+    const upserts = await ctx.syncStream(auth, [SyncRequestType.PartnerAssetsV2]);
+    expect(motionIdOf(upserts, SyncEntityType.PartnerAssetV2, hidden.still.id)).toBeNull();
+    expect(motionIdOf(upserts, SyncEntityType.PartnerAssetV2, plain.still.id)).toBe(plain.motion.id);
+    expect(JSON.stringify(upserts)).not.toContain(hidden.motion.id);
+
+    // a second viewer meets the same library through backfill (the partnership postdates its checkpoint)
+    await wait(2);
+    const { auth: lateAuth } = await ctx.newSyncAuthUser();
+    const { user: firstPartner } = await ctx.newUser();
+    await ctx.newAsset({ ownerId: firstPartner.id });
+    await ctx.newPartner({ sharedById: firstPartner.id, sharedWithId: lateAuth.user.id });
+    await ctx.syncAckAll(lateAuth, await ctx.syncStream(lateAuth, [SyncRequestType.PartnerAssetsV2]));
+    await ctx.newPartner({ sharedById: partner.id, sharedWithId: lateAuth.user.id });
+    const backfill = await ctx.syncStream(lateAuth, [SyncRequestType.PartnerAssetsV2]);
+    expect(motionIdOf(backfill, SyncEntityType.PartnerAssetBackfillV2, hidden.still.id)).toBeNull();
+    expect(motionIdOf(backfill, SyncEntityType.PartnerAssetBackfillV2, plain.still.id)).toBe(plain.motion.id);
+    expect(JSON.stringify(backfill)).not.toContain(hidden.motion.id);
   });
 });

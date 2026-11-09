@@ -1,7 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { Kysely } from 'kysely';
 import { AuthDto } from 'src/dtos/auth.dto.js';
-import { AssetVisibility, SharedLinkType } from 'src/enum.js';
+import { AssetType, AssetVisibility, SharedLinkType } from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { AlbumRepository } from 'src/repositories/album.repository.js';
 import { AssetRepository } from 'src/repositories/asset.repository.js';
@@ -267,6 +267,42 @@ describe(TimelineService.name, () => {
     expect(response).not.toEqual(expect.objectContaining({ city: expect.any(Array), country: expect.any(Array) }));
   });
   describe('person timelines and locks', () => {
+    it("a still granted through a shared album keeps its motion id although the owner's lock hides it (R56)", async () => {
+      const { sut, ctx } = setup();
+      const { viewer, other, personId } = await newPersonTimeline(ctx);
+      await ctx.newPartner({ sharedById: other.id, sharedWithId: viewer.id });
+      const newLivePhoto = async (localDateTime: string) => {
+        const { asset: motion } = await ctx.newAsset({
+          ownerId: other.id,
+          type: AssetType.Video,
+          visibility: AssetVisibility.Hidden,
+          localDateTime,
+        });
+        const { asset: still } = await ctx.newAsset({ ownerId: other.id, livePhotoVideoId: motion.id, localDateTime });
+        await ctx.newExif({ assetId: still.id, make: 'Canon' });
+        await ctx.newAssetFace({ assetId: still.id, personGroupId: personId });
+        return { still, motion };
+      };
+      const granted = await newLivePhoto('1970-02-15T00:00:00.000Z');
+      const partnerOnly = await newLivePhoto('1970-02-16T00:00:00.000Z');
+      const { album: locked } = await ctx.newAlbum({ ownerId: other.id }, [granted.motion.id, partnerOnly.motion.id]);
+      await ctx.get(LockRepository).lockAlbum(other.id, locked.id);
+      // the viewer's own album, which the owner is not a member of, grants one still (and its motion part)
+      await ctx.newAlbum({ ownerId: viewer.id }, [granted.still.id]);
+
+      const bucket = JSON.parse(
+        await sut.getTimeBucket(factory.auth({ user: viewer }), {
+          timeBucket: '1970-02-01',
+          personId,
+          withPartners: true,
+          visibility: AssetVisibility.Timeline,
+        }),
+      );
+      const motionOf = (id: string) => bucket.livePhotoVideoId[(bucket.id as string[]).indexOf(id)];
+      expect(motionOf(granted.still.id)).toBe(granted.motion.id);
+      expect(motionOf(partnerOnly.still.id)).toBeNull();
+    });
+
     it("shared-album assets follow album-grant rules: the owner's lock never hides them, the viewer's own does", async () => {
       const { sut, ctx } = setup();
       const { viewer, other, personId, newFaceAsset } = await newPersonTimeline(ctx);

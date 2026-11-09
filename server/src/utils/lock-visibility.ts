@@ -34,6 +34,29 @@ export async function hasAnyLocksQuery(db: Kysely<DB>, userId: string): Promise<
 }
 
 /**
+ * Fork (ruling R56): whether ANY of `userIds` holds a lock row - one indexed probe for the batched fast paths, so
+ * callers whose relevant owners hold no locks (the common case) skip the lock judgement entirely.
+ */
+export async function anyHasLocksQuery(db: Kysely<DB>, userIds: string[]): Promise<boolean> {
+  if (userIds.length === 0) {
+    return false;
+  }
+  const row = await db
+    .selectFrom('locked_album')
+    .select(sql`1`.as('one'))
+    .where('userId', '=', anyUuid(userIds))
+    .union((eb) =>
+      eb
+        .selectFrom('locked_container')
+        .select(sql`1`.as('one'))
+        .where('userId', '=', anyUuid(userIds)),
+    )
+    .limit(1)
+    .executeTakeFirst();
+  return row !== undefined;
+}
+
+/**
  * The user's effectively-hidden album ids: directly-locked albums (minus the revealed set)
  * plus every live album inside a folder subtree whose root is locked (minus revealed
  * folders). Reveal is subtracted BEFORE closure expansion, so revealing a parent folder

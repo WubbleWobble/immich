@@ -15,6 +15,7 @@ import {
 import { DatabaseLock, JobName, MemoryType, Permission, QueueName, SystemMetadataKey } from 'src/enum.js';
 import { type YearMonthDay } from 'src/repositories/asset.repository.js';
 import { BaseService } from 'src/services/base.service.js';
+import { LockService } from 'src/services/lock.service.js';
 import { addAssets, removeAssets } from 'src/utils/asset.util.js';
 import { OwnerLockVisibility } from 'src/utils/database.js';
 import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
@@ -187,6 +188,10 @@ export class MemoryService extends BaseService {
     await this.memoryRepository.cleanup();
   }
 
+  private lockService() {
+    return BaseService.create(LockService, this);
+  }
+
   /** Memories only contain the viewer's own assets, so the only relevant lock owner is the viewer. */
   private getViewerLockVisibility(auth: AuthDto) {
     return this.lockRepository.getOwnerLockVisibility({
@@ -198,7 +203,12 @@ export class MemoryService extends BaseService {
   }
 
   async search(auth: AuthDto, dto: MemorySearchDto) {
-    const memories = await this.memoryRepository.search(auth.user.id, dto, await this.getViewerLockVisibility(auth));
+    const lockVisibility = await this.getViewerLockVisibility(auth);
+    // Fork (R56): a memory's asset never enumerates a hidden motion part (same entries as the assets).
+    const memories = await this.lockService().withholdHiddenMotionIdsInGroups(
+      await this.memoryRepository.search(auth.user.id, dto, lockVisibility),
+      lockVisibility,
+    );
     return memories
       .filter((memory: Memory) => memory.assets && memory.assets.length > 0)
       .map((memory: Memory) => mapMemory(memory, auth));
@@ -233,7 +243,8 @@ export class MemoryService extends BaseService {
     await this.requireAccess({ auth, permission: Permission.MemoryRead, ids: [id] });
     const lockVisibility = await this.assertMemoryReachable(auth, id, Permission.MemoryRead);
     const memory = await this.findOrFail(id, lockVisibility);
-    return mapMemory(memory, auth);
+    const [visible] = await this.lockService().withholdHiddenMotionIdsInGroups([memory], lockVisibility);
+    return mapMemory(visible, auth);
   }
 
   async create(auth: AuthDto, dto: MemoryCreateDto) {
@@ -257,7 +268,9 @@ export class MemoryService extends BaseService {
       allowedAssetIds,
     );
 
-    return mapMemory(memory, auth);
+    // Fork (R56): the assets passed asset.update (the direct rule), so their motion parts are judged by it too.
+    const assets = await this.lockService().withholdUnreachableMotionIds(auth, memory.assets);
+    return mapMemory({ ...memory, assets }, auth);
   }
 
   async update(auth: AuthDto, id: string, dto: MemoryUpdateDto): Promise<MemoryResponseDto> {
@@ -274,7 +287,8 @@ export class MemoryService extends BaseService {
       lockVisibility,
     );
 
-    return mapMemory(memory, auth);
+    const [visible] = await this.lockService().withholdHiddenMotionIdsInGroups([memory], lockVisibility);
+    return mapMemory(visible, auth);
   }
 
   async remove(auth: AuthDto, id: string): Promise<void> {

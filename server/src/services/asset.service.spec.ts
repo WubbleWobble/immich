@@ -33,6 +33,14 @@ const statResponse: AssetStatsResponseDto = {
   total: 33,
 };
 
+/** Fork (R56): an owned Live Photo still returned by getById. */
+const livePhoto = (serviceMocks: ServiceMocks) => {
+  const motionId = newUuid();
+  const asset = AssetFactory.create({ ownerId: authStub.admin.user.id, livePhotoVideoId: motionId });
+  serviceMocks.asset.getById.mockResolvedValue(getForAsset(asset));
+  return { asset, motionId };
+};
+
 describe(AssetService.name, () => {
   let sut: AssetService;
   let mocks: ServiceMocks;
@@ -145,6 +153,45 @@ describe(AssetService.name, () => {
         authStub.adminSharedLink.sharedLink?.id,
         new Set([asset.id]),
       );
+    });
+
+    describe('Live Photo motion id (R56)', () => {
+      it('pays no access check for the motion part when no relevant owner holds a lock', async () => {
+        const { asset, motionId } = livePhoto(mocks);
+        mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set([asset.id]));
+        mocks.lock.anyHasLocks.mockResolvedValue(false);
+
+        await expect(sut.get(authStub.admin, asset.id)).resolves.toMatchObject({ livePhotoVideoId: motionId });
+
+        expect(mocks.lock.anyHasLocks).toHaveBeenCalledWith([authStub.admin.user.id]);
+        expect(mocks.access.asset.checkOwnerAccess).toHaveBeenCalledTimes(1);
+      });
+
+      it('skips even the lock probe for the elevated owner (their own locks never withhold a direct read)', async () => {
+        const { asset, motionId } = livePhoto(mocks);
+        mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set([asset.id]));
+
+        await expect(sut.get(authStub.adminWithElevatedPermission, asset.id)).resolves.toMatchObject({
+          livePhotoVideoId: motionId,
+        });
+
+        expect(mocks.lock.anyHasLocks).not.toHaveBeenCalled();
+        expect(mocks.access.asset.checkOwnerAccess).toHaveBeenCalledTimes(1);
+      });
+
+      it('withholds the id, in the stripped shared-link form too, when the caller cannot read the motion part', async () => {
+        const { asset } = livePhoto(mocks);
+        mocks.lock.anyHasLocks.mockResolvedValue(true);
+        mocks.access.asset.checkSharedLinkAccess.mockImplementation((_, ids) =>
+          Promise.resolve(new Set([...ids].filter((id) => id === asset.id))),
+        );
+        const auth = {
+          ...authStub.adminSharedLink,
+          sharedLink: { ...authStub.adminSharedLink.sharedLink!, showExif: false },
+        };
+
+        await expect(sut.get(auth, asset.id)).resolves.toMatchObject({ hasMetadata: false, livePhotoVideoId: null });
+      });
     });
 
     it('should allow partner sharing access', async () => {

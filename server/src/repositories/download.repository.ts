@@ -16,7 +16,7 @@ const builder = (db: Kysely<DB>) =>
   db
     .selectFrom('asset')
     .innerJoin('asset_exif', 'assetId', 'id')
-    .select(['asset.id', 'asset.livePhotoVideoId', 'asset_exif.fileSizeInByte as size'])
+    .select(['asset.id', 'asset.ownerId', 'asset.livePhotoVideoId', 'asset_exif.fileSizeInByte as size'])
     .where('asset.deletedAt', 'is', null);
 
 @Injectable()

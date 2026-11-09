@@ -8,11 +8,18 @@ import { DB } from 'src/schema/index.js';
 import { AlbumService } from 'src/services/album.service.js';
 import { BaseService } from 'src/services/base.service.js';
 import { requireElevatedPermission } from 'src/utils/access.js';
+import { OwnerLockVisibility } from 'src/utils/database.js';
 import { NO_REVEALED_LOCKS, RevealedLocks } from 'src/utils/lock-visibility.js';
 import { setDifference } from 'src/utils/set.js';
 
 /** The parts of a shared link that decide whether it exposes content hidden for its manager. */
 export type SharedLinkLockTarget = { id: string; type: SharedLinkType; albumId: string | null };
+
+/** R56: copies of `assets` whose motion part is not in `reachable` carry `livePhotoVideoId: null`. */
+const withheldMotionIds = <T extends { livePhotoVideoId: string | null }>(assets: T[], reachable: Set<string>): T[] =>
+  assets.map((asset) =>
+    asset.livePhotoVideoId && !reachable.has(asset.livePhotoVideoId) ? { ...asset, livePhotoVideoId: null } : asset,
+  );
 
 /**
  * How an authenticated surface consults the viewer's OWN locks (other owners' locks always apply, never revealed):
@@ -230,6 +237,80 @@ export class LockService extends BaseService {
    */
   getHiddenAssetIdsForRead(auth: AuthDto, assetIds: string[]): Promise<Set<string>> {
     return this.getHiddenAssetIds(auth, assetIds, 'direct');
+  }
+
+  /**
+   * Ruling R56, direct-by-id responses (asset detail and its stripped shared-link form, single-object mutation
+   * responses): withhold `livePhotoVideoId` - set it to null - where the caller cannot reach the still's motion part
+   * under their asset.read rule. That rule is reused as is, in one batched access check: the viewer's own locks
+   * (bypassed by elevation), a partner owner's locks (never bypassed), and the album and shared-link grants that reach
+   * a motion part through its still (`livePhotoVideoId = any(target)`).
+   *
+   * Fast path: only lock rows can make the motion part of a reachable still unreachable, so the check runs only when
+   * an owner of the stills (the motion part's owner - a Live Photo is linked within one owner's library) or the viewer
+   * (whose locks withhold album grants), holds any; an elevated viewer's own locks never matter here. Responses without
+   * a Live Photo pay nothing; one without relevant locks pays one indexed probe.
+   */
+  async withholdUnreachableMotionIds<T extends { ownerId: string; livePhotoVideoId: string | null }>(
+    auth: AuthDto,
+    assets: T[],
+  ): Promise<T[]> {
+    const stills = assets.filter(({ livePhotoVideoId }) => !!livePhotoVideoId);
+    if (stills.length === 0) {
+      return assets;
+    }
+
+    const lockHolders = new Set(stills.map(({ ownerId }) => ownerId));
+    if (auth.sharedLink || !auth.session?.hasElevatedPermission) {
+      lockHolders.add(auth.user.id);
+    } else if (stills.every(({ ownerId }) => ownerId === auth.user.id)) {
+      return assets;
+    }
+    if (!(await this.lockRepository.anyHasLocks([...lockHolders]))) {
+      return assets;
+    }
+
+    const motionIds = [...new Set(stills.map(({ livePhotoVideoId }) => livePhotoVideoId!))];
+    const reachable = await this.checkAccess({ auth, permission: Permission.AssetRead, ids: motionIds });
+    return withheldMotionIds(assets, reachable);
+  }
+
+  /**
+   * Ruling R56, list responses: withhold `livePhotoVideoId` where the still's motion part does not pass the lock
+   * entries the list was filtered with (owner and partner entries, the viewer's reveal set applied by the caller), unless
+   * the still sits in one of the list's granted albums (its album arm). One batched query, and none at all when the
+   * list has no entries.
+   */
+  async withholdHiddenMotionIds<T extends { livePhotoVideoId: string | null }>(
+    assets: T[],
+    entries: OwnerLockVisibility[] | undefined,
+    grantedAlbumIds: string[] = [],
+  ): Promise<T[]> {
+    if (!entries?.length) {
+      return assets;
+    }
+    const motionIds = [
+      ...new Set(assets.flatMap(({ livePhotoVideoId }) => (livePhotoVideoId ? [livePhotoVideoId] : []))),
+    ];
+    if (motionIds.length === 0) {
+      return assets;
+    }
+    const visible = await this.lockRepository.getVisibleMotionIds(motionIds, entries, grantedAlbumIds);
+    return withheldMotionIds(assets, visible);
+  }
+
+  /** {@link withholdHiddenMotionIds} over the assets of several groups (memories, stacks, duplicates) in one query. */
+  async withholdHiddenMotionIdsInGroups<A extends { livePhotoVideoId: string | null }, G extends { assets: A[] }>(
+    groups: G[],
+    entries: OwnerLockVisibility[] | undefined,
+  ): Promise<G[]> {
+    const flat = groups.flatMap(({ assets }) => assets);
+    const withheld = await this.withholdHiddenMotionIds(flat, entries);
+    if (withheld === flat) {
+      return groups;
+    }
+    let index = 0;
+    return groups.map((group) => ({ ...group, assets: group.assets.map(() => withheld[index++]) }));
   }
 
   private async findHiddenSharedLinks(

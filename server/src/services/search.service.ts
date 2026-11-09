@@ -67,9 +67,12 @@ export class SearchService extends BaseService {
 
     const exploreLockVisibility = await this.getLockVisibility(auth, [auth.user.id]);
     const cities = await this.assetRepository.getAssetIdByCity(auth.user.id, options, exploreLockVisibility);
-    const cityAssets = await this.assetRepository.getByIdsWithAllRelationsButStacks(
-      cities.items.map(({ data }) => data),
-      auth.user.id,
+    const cityAssets = await this.withholdHiddenMotionIds(
+      await this.assetRepository.getByIdsWithAllRelationsButStacks(
+        cities.items.map(({ data }) => data),
+        auth.user.id,
+      ),
+      exploreLockVisibility,
     );
     const cityItems = cityAssets.map((asset) => ({ value: asset.exifInfo!.city!, data: mapAsset(asset, { auth }) }));
 
@@ -78,9 +81,12 @@ export class SearchService extends BaseService {
       options.maxFields,
       exploreLockVisibility,
     );
-    const recentAssets = await this.assetRepository.getByIdsWithAllRelationsButStacks(
-      recents.items.map((item) => item.data),
-      auth.user.id,
+    const recentAssets = await this.withholdHiddenMotionIds(
+      await this.assetRepository.getByIdsWithAllRelationsButStacks(
+        recents.items.map((item) => item.data),
+        auth.user.id,
+      ),
+      exploreLockVisibility,
     );
     const recentItems = recentAssets.map((asset) => ({
       value: asset.createdAt.toISOString(),
@@ -120,6 +126,7 @@ export class SearchService extends BaseService {
 
     const page = dto.page ?? 1;
     const size = dto.size;
+    const lockVisibility = userIds ? await this.getLockVisibility(auth, userIds) : undefined;
     const { hasNextPage, items } = await this.searchRepository.searchMetadata(
       { page, size },
       {
@@ -129,11 +136,17 @@ export class SearchService extends BaseService {
         userIds,
         viewingUserId: auth.user.id,
         orderDirection: dto.order ?? AssetOrder.Desc,
-        lockVisibility: userIds ? await this.getLockVisibility(auth, userIds) : undefined,
+        lockVisibility,
       },
     );
 
-    return this.mapResponse(items, { auth }, { nextPage: hasNextPage ? (page + 1).toString() : null });
+    return this.mapResponse(
+      await this.withholdHiddenMotionIds(items, lockVisibility),
+      { auth },
+      {
+        nextPage: hasNextPage ? (page + 1).toString() : null,
+      },
+    );
   }
 
   async searchStatistics(auth: AuthDto, dto: StatisticsSearchDto): Promise<SearchStatisticsResponseDto> {
@@ -169,14 +182,16 @@ export class SearchService extends BaseService {
     }
 
     const userIds = await this.getUserIdsToSearch(auth, dto.visibility);
+    const lockVisibility = await this.getLockVisibility(auth, userIds);
     const items = await this.searchRepository.searchRandom(dto.size, {
       ...dto,
       visibility: dto.visibility ?? (auth.session?.hasElevatedPermission ? undefined : 'not-locked'),
       userIds,
-      lockVisibility: await this.getLockVisibility(auth, userIds),
+      lockVisibility,
       viewingUserId: auth.user.id,
     });
-    return items.map((item) => mapAsset(item, { auth }));
+    const visible = await this.withholdHiddenMotionIds(items, lockVisibility);
+    return visible.map((item) => mapAsset(item, { auth }));
   }
 
   async searchLargeAssets(auth: AuthDto, dto: LargeAssetSearchDto): Promise<AssetResponseDto[]> {
@@ -187,14 +202,16 @@ export class SearchService extends BaseService {
     }
 
     const userIds = await this.getUserIdsToSearch(auth, dto.visibility);
+    const lockVisibility = await this.getLockVisibility(auth, userIds);
     const items = await this.searchRepository.searchLargeAssets(dto.size, {
       ...dto,
       visibility: dto.visibility ?? (auth.session?.hasElevatedPermission ? undefined : 'not-locked'),
       userIds,
-      lockVisibility: await this.getLockVisibility(auth, userIds),
+      lockVisibility,
       viewingUserId: auth.user.id,
     });
-    return items.map((item) => mapAsset(item, { auth }));
+    const visible = await this.withholdHiddenMotionIds(items, lockVisibility);
+    return visible.map((item) => mapAsset(item, { auth }));
   }
 
   async searchSmart(auth: AuthDto, dto: SmartSearchDto): Promise<SearchResponseDto> {
@@ -218,6 +235,7 @@ export class SearchService extends BaseService {
     const page = dto.page ?? 1;
     const size = dto.size;
     const resolvedUserIds = await userIds;
+    const lockVisibility = await this.getLockVisibility(auth, resolvedUserIds);
     const { hasNextPage, items } = await this.searchRepository.searchSmart(
       { page, size },
       {
@@ -226,17 +244,25 @@ export class SearchService extends BaseService {
         viewingUserId: auth.user.id,
         embedding,
         visibility: dto.visibility ?? (auth.session?.hasElevatedPermission ? undefined : 'not-locked'),
-        lockVisibility: await this.getLockVisibility(auth, resolvedUserIds),
+        lockVisibility,
       },
     );
 
-    return this.mapResponse(items, { auth }, { nextPage: hasNextPage ? (page + 1).toString() : null });
+    return this.mapResponse(
+      await this.withholdHiddenMotionIds(items, lockVisibility),
+      { auth },
+      {
+        nextPage: hasNextPage ? (page + 1).toString() : null,
+      },
+    );
   }
 
   async getAssetsByCity(auth: AuthDto): Promise<AssetResponseDto[]> {
     const userIds = await this.getUserIdsToSearch(auth);
-    const assets = await this.searchRepository.getAssetsByCity(userIds, await this.getLockVisibility(auth, userIds));
-    return assets.map((asset) => mapAsset(asset));
+    const lockVisibility = await this.getLockVisibility(auth, userIds);
+    const assets = await this.searchRepository.getAssetsByCity(userIds, lockVisibility);
+    const visible = await this.withholdHiddenMotionIds(assets, lockVisibility);
+    return visible.map((asset) => mapAsset(asset));
   }
 
   async getSearchSuggestions(auth: AuthDto, dto: SearchSuggestionRequestDto) {
@@ -297,7 +323,13 @@ export class SearchService extends BaseService {
       scope,
     );
 
-    return this.mapResponse(items, { auth }, { nextCursor: hasNextPage ? encodeSearchCursor(offset + size) : null });
+    return this.mapResponse(
+      await this.withholdHiddenMotionIds(items, scope),
+      { auth },
+      {
+        nextCursor: hasNextPage ? encodeSearchCursor(offset + size) : null,
+      },
+    );
   }
 
   private async searchStatisticsV3(auth: AuthDto, dto: StatisticsSearchDto): Promise<SearchStatisticsResponseDto> {
@@ -317,7 +349,8 @@ export class SearchService extends BaseService {
       },
       scope,
     );
-    return items.map((item) => mapAsset(item, { auth }));
+    const visible = await this.withholdHiddenMotionIds(items, scope);
+    return visible.map((item) => mapAsset(item, { auth }));
   }
 
   private async searchSmartV3(auth: AuthDto, dto: SmartSearchDto): Promise<SearchResponseDto> {
@@ -338,7 +371,7 @@ export class SearchService extends BaseService {
       scope,
     );
 
-    return this.mapResponse(items, { auth });
+    return this.mapResponse(await this.withholdHiddenMotionIds(items, scope), { auth });
   }
 
   private async resolveSearchScopeV3(
@@ -435,6 +468,20 @@ export class SearchService extends BaseService {
       isElevated: !!auth.session?.hasElevatedPermission,
     });
     return entries.length > 0 ? entries : undefined;
+  }
+
+  /**
+   * Fork (R56): results never enumerate a hidden motion part - judged by the lock entries the search was filtered
+   * with, plus the V3 scope's album arm (granted albums reach a motion part through its still).
+   */
+  private withholdHiddenMotionIds<T extends { livePhotoVideoId: string | null }>(
+    assets: T[],
+    scope: OwnerLockVisibility[] | Pick<AssetSearchScope, 'lockVisibility' | 'grantedAlbumIds'> | undefined,
+  ): Promise<T[]> {
+    const lockService = BaseService.create(LockService, this);
+    return !scope || Array.isArray(scope)
+      ? lockService.withholdHiddenMotionIds(assets, scope)
+      : lockService.withholdHiddenMotionIds(assets, scope.lockVisibility, scope.grantedAlbumIds);
   }
 
   private async getUserIdsToSearch(auth: AuthDto, visibility?: AssetVisibility): Promise<string[]> {

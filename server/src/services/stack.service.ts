@@ -4,6 +4,7 @@ import { AuthDto } from 'src/dtos/auth.dto.js';
 import { StackCreateDto, StackResponseDto, StackSearchDto, StackUpdateDto, mapStack } from 'src/dtos/stack.dto.js';
 import { Permission } from 'src/enum.js';
 import { BaseService } from 'src/services/base.service.js';
+import { LockService } from 'src/services/lock.service.js';
 import { OwnerLockVisibility } from 'src/utils/database.js';
 import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
 import { findOrFail } from 'src/utils/misc.js';
@@ -11,6 +12,10 @@ import { UUIDAssetIDParamDto } from 'src/validation.js';
 
 @Injectable()
 export class StackService extends BaseService {
+  private lockService() {
+    return BaseService.create(LockService, this);
+  }
+
   /** Stacks only contain the viewer's own assets, so the only relevant lock owner is the viewer. */
   private getViewerLockVisibility(auth: AuthDto) {
     return this.lockRepository.getOwnerLockVisibility({
@@ -37,15 +42,18 @@ export class StackService extends BaseService {
   }
 
   async search(auth: AuthDto, dto: StackSearchDto): Promise<StackResponseDto[]> {
+    const lockVisibility = await this.getViewerLockVisibility(auth);
     const stacks = await this.stackRepository.search(
       {
         ownerId: auth.user.id,
         primaryAssetId: dto.primaryAssetId,
       },
-      await this.getViewerLockVisibility(auth),
+      lockVisibility,
     );
 
-    return stacks
+    // Fork (R56): a member never enumerates a hidden motion part (same entries as the members).
+    const visible = await this.lockService().withholdHiddenMotionIdsInGroups(stacks, lockVisibility);
+    return visible
       .map((stack) => this.toVisibleStack(stack))
       .filter((stack) => stack !== null)
       .map((stack) => mapStack(stack, { auth }));
@@ -59,13 +67,17 @@ export class StackService extends BaseService {
 
     await this.eventRepository.emit('StackCreate', { stackId: stack.id, userId: auth.user.id });
 
-    return mapStack(stack, { auth });
+    // Fork (R56): the members passed asset.update (the direct rule), so their motion parts are judged by it too.
+    const assets = await this.lockService().withholdUnreachableMotionIds(auth, stack.assets);
+    return mapStack({ ...stack, assets }, { auth });
   }
 
   async get(auth: AuthDto, id: string): Promise<StackResponseDto> {
     await this.requireAccess({ auth, permission: Permission.StackRead, ids: [id] });
-    const stack = await this.findOrFail(id, await this.getViewerLockVisibility(auth));
-    return mapStack(stack, { auth });
+    const lockVisibility = await this.getViewerLockVisibility(auth);
+    const stack = await this.findOrFail(id, lockVisibility);
+    const [visible] = await this.lockService().withholdHiddenMotionIdsInGroups([stack], lockVisibility);
+    return mapStack(visible, { auth });
   }
 
   /**
@@ -147,8 +159,12 @@ export class StackService extends BaseService {
 
     await this.eventRepository.emit('StackUpdate', { stackId: id, userId: auth.user.id });
 
-    // Normalize like the read paths: never expose a hidden primary through the response.
-    return mapStack(this.toVisibleStack(updatedStack) ?? updatedStack, { auth });
+    // Normalize like the read paths: never expose a hidden primary (or, R56, a hidden motion part's id).
+    const [visible] = await this.lockService().withholdHiddenMotionIdsInGroups(
+      [this.toVisibleStack(updatedStack) ?? updatedStack],
+      lockVisibility,
+    );
+    return mapStack(visible, { auth });
   }
 
   async delete(auth: AuthDto, id: string): Promise<void> {

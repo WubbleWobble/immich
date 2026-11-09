@@ -123,6 +123,8 @@ State these plainly to users.
 - **Live Photo auto-linking respects locks.** If the motion part is hidden
   by the owner's locks and the still is not, metadata extraction leaves
   both unlinked and untouched.
+- **API clients may see `livePhotoVideoId: null` on a visible still (R56)**
+  when its motion part is hidden from them; the still then plays as a photo.
 - **CLI and API-key uploads re-send hidden files every run (R49).** API-key
   sessions are never elevated. So `immich-cli` and `immich-go` see an
   already-hidden file as new each time, upload it again and get a phantom

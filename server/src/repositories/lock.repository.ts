@@ -3,10 +3,17 @@ import { Kysely, sql } from 'kysely';
 import { InjectKysely } from 'nestjs-kysely';
 import { DummyValue, GenerateSql } from 'src/decorators.js';
 import { DB } from 'src/schema/index.js';
-import { OwnerLockVisibility, anyUuid, joinDeduplicationPlugin, withLockVisibility } from 'src/utils/database.js';
+import {
+  OwnerLockVisibility,
+  anyUuid,
+  joinDeduplicationPlugin,
+  lockVisibilityExpression,
+  withLockVisibility,
+} from 'src/utils/database.js';
 import {
   LockVisibilityRequest,
   RevealedLocks,
+  anyHasLocksQuery,
   getHiddenAlbumIdsQuery,
   getHiddenContainerIdsQuery,
   getOwnerLockVisibility,
@@ -76,6 +83,11 @@ export class LockRepository {
     return hasAnyLocksQuery(this.db, userId);
   }
 
+  /** Batched fast path (ruling R56): whether any of `userIds` holds a lock row. */
+  anyHasLocks(userIds: string[]): Promise<boolean> {
+    return anyHasLocksQuery(this.db, userIds);
+  }
+
   /** See getHiddenAlbumIdsQuery in utils/lock-visibility.ts - the single source of truth. */
   getHiddenAlbumIds(userId: string, revealed: RevealedLocks): Promise<string[]> {
     return getHiddenAlbumIdsQuery(this.db, userId, revealed);
@@ -120,6 +132,46 @@ export class LockRepository {
       this.db,
       entries,
     )
+      .withPlugin(joinDeduplicationPlugin)
+      .execute();
+    return new Set(rows.map(({ id }) => id));
+  }
+
+  /**
+   * Fork (ruling R56): the list rule for Live Photo motion parts - the subset of `motionIds` that passes `entries`
+   * (each judged as the 7A.2 Live Photo unit under its owner's entry), or whose still sits in one of
+   * `grantedAlbumIds` (the list's album arm, which reaches a motion part through its still). One query; callers skip
+   * it when `entries` is empty.
+   */
+  async getVisibleMotionIds(
+    motionIds: string[],
+    entries: OwnerLockVisibility[],
+    grantedAlbumIds: string[] = [],
+  ): Promise<Set<string>> {
+    if (motionIds.length === 0) {
+      return new Set();
+    }
+    const rows = await this.db
+      .selectFrom('asset')
+      .select('asset.id')
+      .where('asset.id', '=', anyUuid(motionIds))
+      .where((eb) =>
+        eb.or([
+          entries.length > 0 ? lockVisibilityExpression(eb, this.db, entries) : eb.lit(true),
+          ...(grantedAlbumIds.length > 0
+            ? [
+                eb.exists(
+                  eb
+                    .selectFrom('asset as still')
+                    .innerJoin('album_asset', 'album_asset.assetId', 'still.id')
+                    .select('still.id')
+                    .whereRef('still.livePhotoVideoId', '=', 'asset.id')
+                    .where('album_asset.albumId', '=', anyUuid(grantedAlbumIds)),
+                ),
+              ]
+            : []),
+        ]),
+      )
       .withPlugin(joinDeduplicationPlugin)
       .execute();
     return new Set(rows.map(({ id }) => id));

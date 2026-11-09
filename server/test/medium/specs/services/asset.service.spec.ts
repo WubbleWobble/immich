@@ -1,7 +1,10 @@
 import { BadRequestException } from '@nestjs/common';
 import { Kysely } from 'kysely';
 import { StorageCore } from 'src/cores/storage.core.js';
+import { AuthDto } from 'src/dtos/auth.dto.js';
 import { AssetEditAction } from 'src/dtos/editing.dto.js';
+import { MetadataSearchDto } from 'src/dtos/search.dto.js';
+import { TimeBucketAssetDto } from 'src/dtos/time-bucket.dto.js';
 import {
   AssetFileType,
   AssetMetadataKey,
@@ -16,11 +19,17 @@ import { AlbumRepository } from 'src/repositories/album.repository.js';
 import { AssetEditRepository } from 'src/repositories/asset-edit.repository.js';
 import { AssetJobRepository } from 'src/repositories/asset-job.repository.js';
 import { AssetRepository } from 'src/repositories/asset.repository.js';
+import { DownloadRepository } from 'src/repositories/download.repository.js';
+import { DuplicateRepository } from 'src/repositories/duplicate.repository.js';
 import { EventRepository } from 'src/repositories/event.repository.js';
 import { JobRepository } from 'src/repositories/job.repository.js';
 import { LockRepository } from 'src/repositories/lock.repository.js';
 import { LoggingRepository } from 'src/repositories/logging.repository.js';
+import { MemoryRepository } from 'src/repositories/memory.repository.js';
 import { OcrRepository } from 'src/repositories/ocr.repository.js';
+import { PartnerRepository } from 'src/repositories/partner.repository.js';
+import { PersonRepository } from 'src/repositories/person.repository.js';
+import { SearchRepository } from 'src/repositories/search.repository.js';
 import { SharedLinkAssetRepository } from 'src/repositories/shared-link-asset.repository.js';
 import { SharedLinkRepository } from 'src/repositories/shared-link.repository.js';
 import { StackRepository } from 'src/repositories/stack.repository.js';
@@ -29,6 +38,12 @@ import { UserRepository } from 'src/repositories/user.repository.js';
 import { WebsocketRepository } from 'src/repositories/websocket.repository.js';
 import { DB } from 'src/schema/index.js';
 import { AssetService } from 'src/services/asset.service.js';
+import { DownloadService } from 'src/services/download.service.js';
+import { DuplicateService } from 'src/services/duplicate.service.js';
+import { MemoryService } from 'src/services/memory.service.js';
+import { SearchService } from 'src/services/search.service.js';
+import { StackService } from 'src/services/stack.service.js';
+import { TimelineService } from 'src/services/timeline.service.js';
 import { newMediumService } from 'test/medium.factory.js';
 import { factory } from 'test/small.factory.js';
 import { getKyselyDB } from 'test/utils.js';
@@ -52,6 +67,74 @@ const setup = (db?: Kysely<DB>) => {
     mock: [EventRepository, LoggingRepository, JobRepository, StorageRepository, OcrRepository, WebsocketRepository],
   });
 };
+
+// Fork (ruling R56): the Live Photo fixture and the list surfaces it is read through.
+const timeline = () =>
+  newMediumService(TimelineService, {
+    database: defaultDatabase,
+    real: [AlbumRepository, AssetRepository, AccessRepository, LockRepository, PartnerRepository],
+    mock: [LoggingRepository],
+  }).sut;
+const search = () =>
+  newMediumService(SearchService, {
+    database: defaultDatabase,
+    real: [
+      LockRepository,
+      AccessRepository,
+      AlbumRepository,
+      AssetRepository,
+      SearchRepository,
+      PartnerRepository,
+      PersonRepository,
+    ],
+    mock: [LoggingRepository],
+  }).sut;
+
+/** The unlink fixture: an uncontained, visible still whose motion part is filed only into a locked album. */
+const newLivePhoto = async (ctx: ReturnType<typeof setup>['ctx'], { lock = true } = {}) => {
+  const { user } = await ctx.newUser();
+  const localDateTime = '1970-02-15T00:00:00.000Z';
+  const { asset: motion } = await ctx.newAsset({
+    ownerId: user.id,
+    type: AssetType.Video,
+    visibility: AssetVisibility.Hidden,
+    localDateTime,
+  });
+  const { asset: still } = await ctx.newAsset({ ownerId: user.id, livePhotoVideoId: motion.id, localDateTime });
+  await ctx.newExif({ assetId: still.id, make: 'Canon' });
+  await ctx.newExif({ assetId: motion.id, make: 'Canon' });
+  const { album } = await ctx.newAlbum({ ownerId: user.id }, [motion.id]);
+  if (lock) {
+    await ctx.get(LockRepository).lockAlbum(user.id, album.id);
+  }
+  return { user, still, motion, album };
+};
+
+/** The still's livePhotoVideoId as each list surface presents it: timeline bucket, search v1 and search v3. */
+const listed = async (auth: AuthDto, stillId: string, bucket: Partial<TimeBucketAssetDto> = {}) => {
+  const columnar = JSON.parse(await timeline().getTimeBucket(auth, { timeBucket: '1970-02-01', ...bucket }));
+  const inBucket = (columnar.id as string[]).flatMap((id, index) =>
+    id === stillId ? [columnar.livePhotoVideoId[index]] : [],
+  );
+  const fromSearch = async (dto: MetadataSearchDto) => {
+    const { assets } = await search().searchMetadata(auth, dto);
+    return assets.items.filter(({ id }) => id === stillId).map(({ livePhotoVideoId }) => livePhotoVideoId);
+  };
+  return {
+    bucket: inBucket,
+    searchV1: await fromSearch({ size: 250 }),
+    searchV3: await fromSearch({ size: 250, filter: {} }),
+  };
+};
+const everywhere = (value: string | null) => ({ bucket: [value], searchV1: [value], searchV3: [value] });
+
+const lists = (value: string | null) => ({
+  stack: value,
+  stacks: value,
+  memory: value,
+  memories: value,
+  duplicates: value,
+});
 
 beforeAll(async () => {
   defaultDatabase = await getKyselyDB();
@@ -435,6 +518,10 @@ describe(AssetService.name, () => {
       const before = await rows();
       StorageCore.setMediaLocation('/photos');
       onTestFinished(() => StorageCore.reset());
+
+      // R56: the visible still's read response does not enumerate the hidden motion part either
+      await expect(sut.get(ordinary, still.id)).resolves.toMatchObject({ id: still.id, livePhotoVideoId: null });
+      await expect(sut.get(elevated, still.id)).resolves.toMatchObject({ livePhotoVideoId: motion.id });
 
       await expect(sut.update(ordinary, still.id, { livePhotoVideoId: null })).rejects.toThrow(
         new BadRequestException('Live photo video not found'),
@@ -1157,6 +1244,178 @@ describe(AssetService.name, () => {
         expect.objectContaining({ isEdited: true }),
       );
       await expect(ctx.get(AssetEditRepository).getAll(asset.id)).resolves.toEqual([editResponse]);
+    });
+  });
+
+  /**
+   * Fork (ruling R56): a visible still must not enumerate a motion part the caller cannot reach. Each response applies
+   * its own rule: direct-by-id responses the caller's asset.read rule (elevation bypasses only the viewer's own locks),
+   * lists the lock visibility they were filtered with (hidden stays hidden when elevated unless revealed).
+   */
+  describe('Live Photo motion id of a visible still (R56)', () => {
+    it("the owner's detail, timeline bucket and search withhold a lock-hidden motion part's id", async () => {
+      const { sut, ctx } = setup();
+      const { user, still, motion, album } = await newLivePhoto(ctx);
+      const ordinary = factory.auth({ user, session: { hasElevatedPermission: false } });
+      const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+      const revealing = { ...elevated, revealedLocks: { albumIds: [album.id], containerIds: [] } };
+
+      // the motion part itself is unreachable by id, and the visible still must not enumerate it
+      await expect(sut.get(ordinary, motion.id)).rejects.toThrow('Not found or no asset.read access');
+      await expect(sut.get(ordinary, still.id)).resolves.toMatchObject({ id: still.id, livePhotoVideoId: null });
+      await expect(listed(ordinary, still.id)).resolves.toEqual(everywhere(null));
+
+      // direct-by-id: elevation bypasses the viewer's own locks; lists: hidden stays hidden until revealed
+      await expect(sut.get(elevated, still.id)).resolves.toMatchObject({ livePhotoVideoId: motion.id });
+      await expect(listed(elevated, still.id)).resolves.toEqual(everywhere(null));
+      await expect(listed(revealing, still.id)).resolves.toEqual(everywhere(motion.id));
+    });
+
+    it("a partner never sees the id while the owner's lock hides the motion part, whatever the partner's session", async () => {
+      const { sut, ctx } = setup();
+      const { user: owner, still } = await newLivePhoto(ctx);
+      const { user: partner } = await ctx.newUser();
+      await ctx.newPartner({ sharedById: owner.id, sharedWithId: partner.id });
+      const ordinary = factory.auth({ user: partner, session: { hasElevatedPermission: false } });
+      const elevated = factory.auth({ user: partner, session: { hasElevatedPermission: true } });
+
+      for (const auth of [ordinary, elevated]) {
+        await expect(sut.get(auth, still.id)).resolves.toMatchObject({ id: still.id, livePhotoVideoId: null });
+        await expect(listed(auth, still.id, { userId: owner.id })).resolves.toEqual(everywhere(null));
+      }
+    });
+
+    it('a legitimate album or shared-link grant still reaches the motion part through its still', async () => {
+      const { sut, ctx } = setup();
+      const { user: owner, still, motion } = await newLivePhoto(ctx);
+      // an album the owner is not a member of: it grants its viewer the still and, through it, the motion part, while
+      // it neither rescues the motion part from the owner's lock nor counts for the owner
+      const { user: viewer } = await ctx.newUser();
+      await ctx.newAlbum({ ownerId: viewer.id }, [still.id]);
+      await expect(sut.get(factory.auth({ user: viewer }), still.id)).resolves.toMatchObject({
+        livePhotoVideoId: motion.id,
+      });
+      await expect(sut.get(factory.auth({ user: owner }), still.id)).resolves.toMatchObject({
+        livePhotoVideoId: null,
+      });
+
+      // the shared-link visitor (stripped-metadata form included) reaches the motion part through the link's own grant
+      for (const showExif of [true, false]) {
+        const sharedLink = await ctx.get(SharedLinkRepository).create({
+          allowUpload: false,
+          showExif,
+          key: Buffer.from(`live-photo-${still.id}-${showExif}`),
+          type: SharedLinkType.Individual,
+          userId: owner.id,
+          assetIds: [still.id],
+        });
+        const response = await sut.get(factory.auth({ user: { id: owner.id }, sharedLink }), still.id);
+        expect(response).toMatchObject({ id: still.id, hasMetadata: showExif, livePhotoVideoId: motion.id });
+      }
+    });
+
+    it('a V3 search keeps the id for a still its album arm grants', async () => {
+      const { ctx } = setup();
+      const { user: owner, still, motion } = await newLivePhoto(ctx);
+      // a partner who also holds an album of their own (the owner is not a member) containing the still
+      const { user: viewer } = await ctx.newUser();
+      await ctx.newPartner({ sharedById: owner.id, sharedWithId: viewer.id });
+      const { album } = await ctx.newAlbum({ ownerId: viewer.id }, [still.id]);
+      const auth = factory.auth({ user: viewer });
+      const motionIds = async (filter: MetadataSearchDto['filter']) => {
+        const { assets } = await search().searchMetadata(auth, { size: 250, filter });
+        return assets.items.filter(({ id }) => id === still.id).map(({ livePhotoVideoId }) => livePhotoVideoId);
+      };
+
+      // reached through the partner arm only, the owner's lock decides; through the album arm, the album grants
+      await expect(motionIds({ isFavorite: { eq: false } })).resolves.toEqual([null]);
+      await expect(
+        motionIds({ or: [{ albumIds: { any: [album.id] } }, { isFavorite: { eq: false } }] }),
+      ).resolves.toEqual([motion.id]);
+    });
+
+    it('stacks, memories, duplicates and download info apply the same rules', async () => {
+      const { ctx } = setup();
+      const { user, still, motion, album } = await newLivePhoto(ctx);
+      const { asset: other } = await ctx.newAsset({ ownerId: user.id });
+      await ctx.newExif({ assetId: other.id, make: 'Canon' });
+      const { stack } = await ctx.newStack({ ownerId: user.id }, [still.id, other.id]);
+      const { memory } = await ctx.newMemory({ ownerId: user.id });
+      await ctx.newMemoryAsset({ memoryId: memory.id, assetId: still.id });
+      // duplicates leave stacked assets out: a second, unstacked still of the same motion part forms the group
+      const duplicateId = factory.uuid();
+      const duplicateIds: string[] = [];
+      for (const livePhotoVideoId of [motion.id, null]) {
+        const { asset } = await ctx.newAsset({ ownerId: user.id, livePhotoVideoId, duplicateId });
+        await ctx.newExif({ assetId: asset.id, make: 'Canon' });
+        duplicateIds.push(asset.id);
+      }
+
+      const real = [AccessRepository, AlbumRepository, AssetRepository, LockRepository];
+      const stacks = newMediumService(StackService, {
+        database: defaultDatabase,
+        real: [...real, StackRepository],
+        mock: [EventRepository, LoggingRepository],
+      }).sut;
+      const memories = newMediumService(MemoryService, {
+        database: defaultDatabase,
+        real: [...real, MemoryRepository],
+        mock: [LoggingRepository],
+      }).sut;
+      const duplicates = newMediumService(DuplicateService, {
+        database: defaultDatabase,
+        real: [...real, DuplicateRepository],
+        mock: [LoggingRepository],
+      }).sut;
+      const downloads = newMediumService(DownloadService, {
+        database: defaultDatabase,
+        real: [...real, DownloadRepository, UserRepository],
+        mock: [LoggingRepository],
+      }).sut;
+
+      const presented = async (auth: AuthDto) => {
+        const ofStill = (assets: { id: string; livePhotoVideoId?: string | null }[], stillId = still.id) =>
+          assets.find(({ id }) => id === stillId)?.livePhotoVideoId;
+        const [duplicate] = await duplicates.getDuplicates(auth);
+        const [stackListed] = await stacks.search(auth, {});
+        const [memoryListed] = await memories.search(auth, {});
+        const { archives } = await downloads.getDownloadInfo(auth, { assetIds: [still.id] });
+        const stackRead = await stacks.get(auth, stack.id);
+        const memoryRead = await memories.get(auth, memory.id);
+        return {
+          stack: ofStill(stackRead.assets),
+          stacks: ofStill(stackListed.assets),
+          memory: ofStill(memoryRead.assets),
+          memories: ofStill(memoryListed.assets),
+          duplicates: ofStill(duplicate.assets, duplicateIds[0]),
+          download: archives.flatMap(({ assetIds }) => assetIds).toSorted(),
+        };
+      };
+      StorageCore.setMediaLocation('/photos');
+      onTestFinished(() => StorageCore.reset());
+      const ordinary = factory.auth({ user, session: { hasElevatedPermission: false } });
+      const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+      const revealing = { ...elevated, revealedLocks: { albumIds: [album.id], containerIds: [] } };
+
+      await expect(presented(ordinary)).resolves.toEqual({ ...lists(null), download: [still.id] });
+      // the requested download is direct-by-id: elevation reaches the motion part, as asset.download would
+      await expect(presented(elevated)).resolves.toEqual({
+        ...lists(null),
+        download: [still.id, motion.id].toSorted(),
+      });
+      await expect(presented(revealing)).resolves.toEqual({
+        ...lists(motion.id),
+        download: [still.id, motion.id].toSorted(),
+      });
+    });
+
+    it('a user without locks sees the motion id unchanged', async () => {
+      const { sut, ctx } = setup();
+      const { user, still, motion } = await newLivePhoto(ctx, { lock: false });
+      const auth = factory.auth({ user, session: { hasElevatedPermission: false } });
+
+      await expect(sut.get(auth, still.id)).resolves.toMatchObject({ livePhotoVideoId: motion.id });
+      await expect(listed(auth, still.id)).resolves.toEqual(everywhere(motion.id));
     });
   });
 });

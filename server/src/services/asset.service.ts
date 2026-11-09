@@ -95,6 +95,12 @@ export class AssetService extends BaseService {
       asset.stack = await this.toVisibleStackSummary(auth, id, asset.stack);
     }
 
+    // Fork (R56): the still must not enumerate a motion part the caller cannot reach (both mapped forms below).
+    const [{ livePhotoVideoId }] = await BaseService.create(LockService, this).withholdUnreachableMotionIds(auth, [
+      asset,
+    ]);
+    asset.livePhotoVideoId = livePhotoVideoId;
+
     if (auth.sharedLink && !auth.sharedLink.showExif) {
       return mapAsset(asset, { stripMetadata: true, withStack: true, auth });
     }

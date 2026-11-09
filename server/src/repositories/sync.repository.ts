@@ -6,7 +6,12 @@ import { columns } from 'src/database.js';
 import { DummyValue, GenerateSql } from 'src/decorators.js';
 import { MemoryType } from 'src/enum.js';
 import { DB } from 'src/schema/index.js';
-import { OwnerLockVisibility, joinDeduplicationPlugin, lockVisibilityExpression } from 'src/utils/database.js';
+import {
+  OwnerLockVisibility,
+  joinDeduplicationPlugin,
+  lockVisibilityExpression,
+  lockVisibleLivePhotoVideoId,
+} from 'src/utils/database.js';
 
 export type SyncBackfillOptions = {
   nowId: string;
@@ -672,11 +677,28 @@ class PartnerSync extends BaseSync {
  * partner's row streams iff its asset passes ITS OWNER's locks; an empty list (no partner hides anything) leaves the
  * query untouched. The user's own streams stay unfiltered (spec §13: own-device mobile UI is out of scope).
  */
+/** The partner asset row without `livePhotoVideoId`, which {@link partnerLivePhotoVideoId} selects instead. */
+const partnerAssetColumns = columns.syncPartnerAsset.filter(
+  (column): column is Exclude<(typeof columns.syncPartnerAsset)[number], 'asset.livePhotoVideoId'> =>
+    column !== 'asset.livePhotoVideoId',
+);
+
+/**
+ * Fork (ruling R56): a partner's visible still streams without the id of a motion part the partner's locks hide (the
+ * same entries that filter the rows; the column is untouched when no partner hides anything).
+ */
+const partnerLivePhotoVideoId = (
+  eb: ExpressionBuilder<DB, 'asset'>,
+  db: Kysely<DB>,
+  lockVisibility: OwnerLockVisibility[],
+) => lockVisibleLivePhotoVideoId(eb, db, lockVisibility).as('livePhotoVideoId');
+
 class PartnerAssetsSync extends BaseSync {
   @GenerateSql({ params: [dummyBackfillOptions, DummyValue.UUID], stream: true })
   getBackfill(options: SyncBackfillOptions, partnerId: string, lockVisibility: OwnerLockVisibility[] = []) {
     return this.backfillQuery('asset', options)
-      .select(columns.syncPartnerAsset)
+      .select(partnerAssetColumns)
+      .select((eb) => partnerLivePhotoVideoId(eb, this.db, lockVisibility))
       .select(sql.val(false).as('isFavorite'))
       .select('asset.updateId')
       .where('ownerId', '=', partnerId)
@@ -701,7 +723,8 @@ class PartnerAssetsSync extends BaseSync {
   @GenerateSql({ params: [dummyQueryOptions], stream: true })
   getUpserts(options: SyncQueryOptions, lockVisibility: OwnerLockVisibility[] = []) {
     return this.upsertQuery('asset', options)
-      .select(columns.syncPartnerAsset)
+      .select(partnerAssetColumns)
+      .select((eb) => partnerLivePhotoVideoId(eb, this.db, lockVisibility))
       .select(sql.val(false).as('isFavorite'))
       .select('asset.updateId')
       .where('ownerId', 'in', (eb) =>

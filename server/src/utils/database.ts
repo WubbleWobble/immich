@@ -627,6 +627,47 @@ export function faceLockVisible(
   ]);
 }
 
+/**
+ * Fork (ruling R56): a lock-filtered list's `livePhotoVideoId` for the `asset` row - the still's motion part id when
+ * that motion part passes the same `entries` (judged as the 7A.2 Live Photo unit by its owner's entry), otherwise
+ * null, so a visible still never enumerates a hidden motion part. `grant` is the list's album arm, if it has one: a
+ * still granted through an album reaches its motion part the same way (checkAlbumAccess grants it through the still).
+ * An empty `entries` returns the column untouched, so lists without lock entries pay nothing.
+ *
+ * The motion part is aliased in a middle query because {@link withLockVisibility} judges the table named `asset`,
+ * which shadows the outer row.
+ */
+export function lockVisibleLivePhotoVideoId(
+  eb: ExpressionBuilder<DB, 'asset'>,
+  db: Kysely<DB>,
+  entries: OwnerLockVisibility[],
+  grant?: Expression<SqlBool>,
+) {
+  if (entries.length === 0) {
+    return eb.ref('asset.livePhotoVideoId');
+  }
+  const motionVisible = eb.exists(
+    eb
+      .selectFrom('asset as motion_part')
+      .select('motion_part.id')
+      .whereRef('motion_part.id', '=', 'asset.livePhotoVideoId')
+      .where((eb2) =>
+        eb2.exists(
+          withLockVisibility(
+            db.selectFrom('asset').select('asset.id').where('asset.id', '=', sql.ref<string>('motion_part.id')),
+            db,
+            entries,
+          ),
+        ),
+      ),
+  );
+  return eb
+    .case()
+    .when(grant ? eb.or([grant, motionVisible]) : motionVisible)
+    .then(eb.ref('asset.livePhotoVideoId'))
+    .end();
+}
+
 /** The viewer's own effectively hidden album ids from a lock-visibility list (empty when the viewer hides nothing). */
 export const getViewerHiddenAlbumIds = (viewerId: string, entries: OwnerLockVisibility[] | undefined) =>
   entries?.find(({ ownerId }) => ownerId === viewerId)?.hiddenAlbumIds ?? [];

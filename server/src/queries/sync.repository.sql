@@ -882,12 +882,12 @@ select
   "asset"."deletedAt",
   "asset"."visibility",
   "asset"."duration",
-  "asset"."livePhotoVideoId",
   "asset"."stackId",
   "asset"."libraryId",
   "asset"."width",
   "asset"."height",
   "asset"."isEdited",
+  "asset"."livePhotoVideoId" as "livePhotoVideoId",
   $1 as "isFavorite",
   "asset"."updateId"
 from
@@ -935,12 +935,12 @@ select
   "asset"."deletedAt",
   "asset"."visibility",
   "asset"."duration",
-  "asset"."livePhotoVideoId",
   "asset"."stackId",
   "asset"."libraryId",
   "asset"."width",
   "asset"."height",
   "asset"."isEdited",
+  "asset"."livePhotoVideoId" as "livePhotoVideoId",
   $1 as "isFavorite",
   "asset"."updateId"
 from

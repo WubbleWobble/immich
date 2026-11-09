@@ -42,6 +42,7 @@ import {
   inSharedAlbum,
   joinDeduplicationPlugin,
   lockVisibilityExpression,
+  lockVisibleLivePhotoVideoId,
   removeUndefinedKeys,
   searchAssetIdSubquery,
   truncatedDate,
@@ -919,7 +920,17 @@ export class AssetRepository {
             sql`asset."isFavorite" and asset."ownerId" = ${auth.user.id}`.as('isFavorite'),
             sql`asset.type = 'IMAGE'`.as('isImage'),
             sql`asset."deletedAt" is not null`.as('isTrashed'),
-            'asset.livePhotoVideoId',
+            // Fork (R56): a hidden motion part's id is withheld under the same lock entries (and album arm) as the rows.
+            options.lockVisibility?.length
+              ? lockVisibleLivePhotoVideoId(
+                  eb,
+                  this.db,
+                  options.lockVisibility,
+                  isPersonTimeline(options)
+                    ? inSharedAlbum(auth.user.id, 'asset.id', options.hiddenSharedAlbumIds ?? [])
+                    : undefined,
+                ).as('livePhotoVideoId')
+              : 'asset.livePhotoVideoId',
             sql`extract(epoch from (asset."localDateTime" AT TIME ZONE 'UTC' - asset."fileCreatedAt" at time zone 'UTC'))::real / 3600`.as(
               'localOffsetHours',
             ),
