@@ -2,7 +2,7 @@ import { DateTime } from 'luxon';
 import { InjectKysely } from 'nestjs-kysely';
 import type { Insertable, Kysely, Updateable } from 'kysely';
 import { columns } from 'src/database.js';
-import { DummyValue, GenerateSql } from 'src/decorators.js';
+import { ChunkedArray, DummyValue, GenerateSql } from 'src/decorators.js';
 import { NotificationSearchDto } from 'src/dtos/notification.dto.js';
 import { DB } from 'src/schema/index.js';
 import { NotificationTable } from 'src/schema/tables/notification.table.js';
@@ -54,15 +54,21 @@ export class NotificationRepository {
       .execute();
   }
 
-  /** Fork (R58): the user's own live notifications among `ids`, with the data their lock judgement reads. */
+  /**
+   * Fork (R58): the user's own notifications among `ids`, with the data their lock judgement reads. Soft-deleted rows
+   * are included on purpose: `get` still answers them within the cleanup window, so they are judged like live ones.
+   */
   @GenerateSql({ params: [DummyValue.UUID, [DummyValue.UUID]] })
+  @ChunkedArray({ paramIndex: 1 })
   getByIds(userId: string, ids: string[]) {
+    if (ids.length === 0) {
+      return Promise.resolve([]);
+    }
     return this.db
       .selectFrom('notification')
       .select(['id', 'data'])
       .where('userId', '=', userId)
       .where('id', 'in', ids)
-      .where('deletedAt', 'is', null)
       .execute();
   }
 

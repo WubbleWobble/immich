@@ -2013,6 +2013,58 @@ describe(AssetService.name, () => {
         await expect(state()).resolves.toMatchObject({ hidden: { deleted: true } });
       });
 
+      it('a soft-deleted hidden notification is judged like a live one: refused outside elevation, skipped in bulk (round 5)', async () => {
+        const { ctx } = setup();
+        const { sut } = albumNotifier();
+        const { user, hiddenNotice, openNotice } = await newNotifications(ctx);
+        const notifications = ctx.get(NotificationRepository);
+        // both soft-deleted, within the cleanup window
+        await notifications.delete(hiddenNotice.id);
+        await notifications.delete(openNotice.id);
+        const rows = async () => {
+          const current = await ctx.database
+            .selectFrom('notification')
+            .select(['id', 'readAt', 'deletedAt'])
+            .where('id', 'in', [hiddenNotice.id, openNotice.id])
+            .execute();
+          return Object.fromEntries(
+            current.map(({ id, ...rest }) => [id === hiddenNotice.id ? 'hidden' : 'open', rest]),
+          );
+        };
+        const before = await rows();
+        expect(before.hidden.deletedAt).not.toBeNull();
+
+        // single-id: a soft-deleted hidden notification fails exactly like a missing id
+        const ordinary = factory.auth({ user });
+        const actions = [
+          (id: string) => sut.get(ordinary, id),
+          (id: string) => sut.update(ordinary, id, { readAt: new Date() }),
+          (id: string) => sut.delete(ordinary, id),
+        ];
+        for (const action of actions) {
+          const missing = await failure(action, factory.uuid());
+          expect(missing).toMatchObject({ status: 400 });
+          await expect(failure(action, hiddenNotice.id)).resolves.toEqual(missing);
+        }
+
+        // a soft-deleted VISIBLE notification behaves as upstream: `get` still returns it
+        await expect(sut.get(ordinary, openNotice.id)).resolves.toMatchObject({ id: openNotice.id });
+
+        // bulk: the hidden one is skipped, the open one is processed as upstream does
+        await sut.updateAll(ordinary, { ids: [hiddenNotice.id, openNotice.id], readAt: new Date() });
+        await sut.deleteAll(ordinary, { ids: [hiddenNotice.id, openNotice.id] });
+        const after = await rows();
+        expect(after.hidden).toEqual(before.hidden);
+        expect(after.open.readAt).not.toBeNull();
+        expect(after.open.deletedAt!.getTime()).toBeGreaterThan(before.open.deletedAt!.getTime());
+
+        // the elevated path is unchanged: the soft-deleted hidden notification is readable and writable there
+        const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+        await expect(sut.get(elevated, hiddenNotice.id)).resolves.toMatchObject({ id: hiddenNotice.id });
+        await sut.updateAll(elevated, { ids: [hiddenNotice.id], readAt: new Date() });
+        await expect(rows()).resolves.toMatchObject({ hidden: { readAt: expect.any(Date) } });
+      });
+
       it("a notification about an unrelated user's hidden asset is not hidden from its recipient (round 4)", async () => {
         const { ctx } = setup();
         const { sut } = albumNotifier();

@@ -48,4 +48,3 @@ from
 where
   "userId" = $1
   and "id" in ($2)
-  and "deletedAt" is null

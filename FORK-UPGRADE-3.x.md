@@ -137,7 +137,8 @@ State these plainly to users.
   in-app notifications about an album you locked (or an asset hidden from
   you) likewise reach only your elevated sessions, and such notifications
   are left out of the notification list outside elevation (and cannot be
-  opened, marked read or deleted there; bulk actions skip them). Sharees who
+  opened, marked read or deleted there, even while soft-deleted and still
+  within the cleanup window; bulk actions skip them). Sharees who
   did not lock the album are unaffected. A person's thumbnail-ready event
   for a person you only see on hidden photos also reaches elevated sessions
   only (R60).
