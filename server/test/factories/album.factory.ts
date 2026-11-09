@@ -99,6 +99,7 @@ export class AlbumFactory {
       assets: this.#assets.map((asset) => asset.build()),
       albumUsers: this.#albumUsers.map((albumUser) => albumUser.build()),
       sharedLinks: this.#sharedLinks,
+      viewerRole: AlbumUserRole.Owner as AlbumUserRole | null,
     };
   }
 }
