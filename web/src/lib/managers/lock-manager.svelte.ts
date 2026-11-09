@@ -14,6 +14,7 @@ import {
 import { SvelteSet } from 'svelte/reactivity';
 import { eventManager } from '$lib/managers/event-manager.svelte';
 import { userInteraction } from '$lib/stores/user.svelte';
+import { purgeMediaRequests } from '$lib/utils/sw-messaging';
 
 const REVEALED_ALBUMS_HEADER = 'x-immich-revealed-albums';
 const REVEALED_CONTAINERS_HEADER = 'x-immich-revealed-containers';
@@ -50,6 +51,10 @@ class LockManager {
     const { isElevated, pinCode } = await getAuthStatus();
     this.isElevated = isElevated;
     this.hasPinCode = pinCode;
+    if (wasElevated && !isElevated) {
+      // Elevation lapsed: media fetched while elevated must not be handed out again (R50).
+      purgeMediaRequests();
+    }
     if (isElevated && !wasElevated) {
       // Reveal defaults to off each time elevation is (re)acquired.
       this.clearReveals();
@@ -89,6 +94,7 @@ class LockManager {
 
   async lockAlbum(id: string) {
     await lockAlbum({ id });
+    purgeMediaRequests();
     this.lockedAlbumIds.add(id);
     // Auto-reveal what was just locked so the user does not lose the page they are on.
     this.revealAlbum(id, true);
@@ -97,6 +103,7 @@ class LockManager {
 
   async unlockAlbum(id: string) {
     await unlockAlbum({ id });
+    purgeMediaRequests();
     this.lockedAlbumIds.delete(id);
     this.revealAlbum(id, false);
     this.invalidateRecentAlbums();
@@ -104,6 +111,7 @@ class LockManager {
 
   async lockContainer(id: string) {
     await lockAlbumContainer({ id });
+    purgeMediaRequests();
     this.lockedContainerIds.add(id);
     this.revealContainer(id, true);
     this.invalidateRecentAlbums();
@@ -111,6 +119,7 @@ class LockManager {
 
   async unlockContainer(id: string) {
     await unlockAlbumContainer({ id });
+    purgeMediaRequests();
     this.lockedContainerIds.delete(id);
     this.revealContainer(id, false);
     this.invalidateRecentAlbums();
@@ -151,6 +160,7 @@ class LockManager {
     this.lockedContainerIds.clear();
     this.clearReveals();
     this.invalidateRecentAlbums();
+    purgeMediaRequests();
   }
 
   /** Drop server-side elevation and every client-side reveal. */
@@ -161,6 +171,7 @@ class LockManager {
     this.lockedContainerIds.clear();
     this.clearReveals();
     this.invalidateRecentAlbums();
+    purgeMediaRequests();
   }
 
   /** The sidebar's recent-albums cache may hold an album that just became hidden (or visible): refetch it. */
@@ -176,6 +187,7 @@ class LockManager {
 
   private syncHeaders() {
     defaults.headers ??= {};
+    const before = [defaults.headers[REVEALED_ALBUMS_HEADER], defaults.headers[REVEALED_CONTAINERS_HEADER]];
     if (this.revealedAlbumIds.size > 0) {
       defaults.headers[REVEALED_ALBUMS_HEADER] = [...this.revealedAlbumIds].join(',');
     } else {
@@ -185,6 +197,13 @@ class LockManager {
       defaults.headers[REVEALED_CONTAINERS_HEADER] = [...this.revealedContainerIds].join(',');
     } else {
       delete defaults.headers[REVEALED_CONTAINERS_HEADER];
+    }
+    if (
+      before[0] !== defaults.headers[REVEALED_ALBUMS_HEADER] ||
+      before[1] !== defaults.headers[REVEALED_CONTAINERS_HEADER]
+    ) {
+      // The reveal set changed (R50).
+      purgeMediaRequests();
     }
   }
 }

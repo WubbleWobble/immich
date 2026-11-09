@@ -103,7 +103,8 @@ export class HlsService extends BaseService {
     const response = new ImmichFileResponse({
       path,
       contentType: 'video/mp4',
-      cacheControl: CacheControl.PrivateWithCache,
+      // Fork (R50): asset bytes are revalidated on every use, after the access check, never served from cache
+      cacheControl: CacheControl.PrivateWithoutCache,
     });
 
     const apiSession = this.trackSession(sessionId, variantIndex);

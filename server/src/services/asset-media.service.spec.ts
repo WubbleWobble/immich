@@ -511,7 +511,7 @@ describe(AssetMediaService.name, () => {
           path: asset.originalPath,
           fileName: asset.originalFileName,
           contentType: 'image/jpeg',
-          cacheControl: CacheControl.PrivateWithCache,
+          cacheControl: CacheControl.PrivateWithoutCache,
         }),
       );
     });
@@ -531,7 +531,7 @@ describe(AssetMediaService.name, () => {
           path: editedAsset.files[3].path,
           fileName: editedAsset.originalFileName,
           contentType: 'image/jpeg',
-          cacheControl: CacheControl.PrivateWithCache,
+          cacheControl: CacheControl.PrivateWithoutCache,
         }),
       );
     });
@@ -551,7 +551,7 @@ describe(AssetMediaService.name, () => {
           path: editedAsset.files[3].path,
           fileName: editedAsset.originalFileName,
           contentType: 'image/jpeg',
-          cacheControl: CacheControl.PrivateWithCache,
+          cacheControl: CacheControl.PrivateWithoutCache,
         }),
       );
     });
@@ -570,7 +570,7 @@ describe(AssetMediaService.name, () => {
           path: fullsizeEdited.path,
           fileName: editedAsset.originalFileName,
           contentType: 'image/jpeg',
-          cacheControl: CacheControl.PrivateWithCache,
+          cacheControl: CacheControl.PrivateWithoutCache,
         }),
       );
     });
@@ -590,7 +590,7 @@ describe(AssetMediaService.name, () => {
           path: editedAsset.originalPath,
           fileName: editedAsset.originalFileName,
           contentType: 'image/jpeg',
-          cacheControl: CacheControl.PrivateWithCache,
+          cacheControl: CacheControl.PrivateWithoutCache,
         }),
       );
     });
@@ -613,7 +613,7 @@ describe(AssetMediaService.name, () => {
       await expect(sut.viewThumbnail(authStub.admin, asset.id, { size: AssetMediaSize.THUMBNAIL })).resolves.toEqual(
         new ImmichFileResponse({
           path: asset.files[0].path,
-          cacheControl: CacheControl.PrivateWithCache,
+          cacheControl: CacheControl.PrivateWithoutCache,
           contentType: 'image/jpeg',
           fileName: `IMG_${asset.id}_thumbnail.jpg`,
         }),
@@ -627,7 +627,7 @@ describe(AssetMediaService.name, () => {
       await expect(sut.viewThumbnail(authStub.admin, asset.id, { size: AssetMediaSize.PREVIEW })).resolves.toEqual(
         new ImmichFileResponse({
           path: asset.files[0].path,
-          cacheControl: CacheControl.PrivateWithCache,
+          cacheControl: CacheControl.PrivateWithoutCache,
           contentType: 'image/jpeg',
           fileName: `IMG_${asset.id}_preview.jpg`,
         }),
@@ -643,7 +643,7 @@ describe(AssetMediaService.name, () => {
       await expect(sut.viewThumbnail(authStub.admin, asset.id, { size: AssetMediaSize.THUMBNAIL })).resolves.toEqual(
         new ImmichFileResponse({
           path: asset.files[0].path,
-          cacheControl: CacheControl.PrivateWithCache,
+          cacheControl: CacheControl.PrivateWithoutCache,
           contentType: 'application/octet-stream',
           fileName: `IMG_${asset.id}_thumbnail.ext`,
         }),
@@ -658,7 +658,7 @@ describe(AssetMediaService.name, () => {
       await expect(sut.viewThumbnail(authStub.admin, asset.id, { size: AssetMediaSize.THUMBNAIL })).resolves.toEqual(
         new ImmichFileResponse({
           path: asset.files[0].path,
-          cacheControl: CacheControl.PrivateWithCache,
+          cacheControl: CacheControl.PrivateWithoutCache,
           contentType: 'image/jpeg',
           fileName: `IMG_${asset.id}_thumbnail.jpg`,
         }),
@@ -675,7 +675,7 @@ describe(AssetMediaService.name, () => {
       ).resolves.toEqual(
         new ImmichFileResponse({
           path: asset.files[0].path,
-          cacheControl: CacheControl.PrivateWithCache,
+          cacheControl: CacheControl.PrivateWithoutCache,
           contentType: 'image/jpeg',
           fileName: `IMG_${asset.id}_thumbnail.jpg`,
         }),
@@ -692,7 +692,7 @@ describe(AssetMediaService.name, () => {
       ).resolves.toEqual(
         new ImmichFileResponse({
           path: asset.files[0].path,
-          cacheControl: CacheControl.PrivateWithCache,
+          cacheControl: CacheControl.PrivateWithoutCache,
           contentType: 'image/jpeg',
           fileName: `IMG_${asset.id}_thumbnail.jpg`,
         }),
@@ -712,7 +712,7 @@ describe(AssetMediaService.name, () => {
       ).resolves.toEqual(
         new ImmichFileResponse({
           path: asset.files[0].path,
-          cacheControl: CacheControl.PrivateWithCache,
+          cacheControl: CacheControl.PrivateWithoutCache,
           contentType: 'image/jpeg',
           fileName: `IMG_${asset.id}_thumbnail.jpg`,
         }),
@@ -731,7 +731,7 @@ describe(AssetMediaService.name, () => {
       await expect(sut.viewThumbnail(auth, asset.id, { size: AssetMediaSize.PREVIEW })).resolves.toEqual(
         new ImmichFileResponse({
           path: asset.files[0].path,
-          cacheControl: CacheControl.PrivateWithCache,
+          cacheControl: CacheControl.PrivateWithoutCache,
           contentType: 'image/jpeg',
           fileName: `${asset.id}_preview.jpg`,
         }),
@@ -768,7 +768,7 @@ describe(AssetMediaService.name, () => {
       await expect(sut.playbackVideo(authStub.admin, asset.id)).resolves.toEqual(
         new ImmichFileResponse({
           path: '/path/to/encoded/video.mp4',
-          cacheControl: CacheControl.PrivateWithCache,
+          cacheControl: CacheControl.PrivateWithoutCache,
           contentType: 'video/mp4',
         }),
       );
@@ -785,7 +785,7 @@ describe(AssetMediaService.name, () => {
       await expect(sut.playbackVideo(authStub.admin, asset.id)).resolves.toEqual(
         new ImmichFileResponse({
           path: asset.originalPath,
-          cacheControl: CacheControl.PrivateWithCache,
+          cacheControl: CacheControl.PrivateWithoutCache,
           contentType: 'application/octet-stream',
         }),
       );

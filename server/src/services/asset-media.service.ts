@@ -260,7 +260,8 @@ export class AssetMediaService extends BaseService {
       path,
       fileName: getFileNameWithoutExtension(originalFileName) + getFilenameExtension(path),
       contentType: mimeTypes.lookup(path),
-      cacheControl: CacheControl.PrivateWithCache,
+      // Fork (R50): asset bytes are revalidated on every use, after the access check, never served from cache
+      cacheControl: CacheControl.PrivateWithoutCache,
     });
   }
 
@@ -309,7 +310,8 @@ export class AssetMediaService extends BaseService {
       fileName,
       path,
       contentType: mimeTypes.lookup(path),
-      cacheControl: CacheControl.PrivateWithCache,
+      // Fork (R50): asset bytes are revalidated on every use, after the access check, never served from cache
+      cacheControl: CacheControl.PrivateWithoutCache,
     });
   }
 
@@ -327,7 +329,8 @@ export class AssetMediaService extends BaseService {
     return new ImmichFileResponse({
       path: filepath,
       contentType: mimeTypes.lookup(filepath),
-      cacheControl: CacheControl.PrivateWithCache,
+      // Fork (R50): asset bytes are revalidated on every use, after the access check, never served from cache
+      cacheControl: CacheControl.PrivateWithoutCache,
     });
   }
 

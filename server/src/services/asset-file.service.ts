@@ -29,7 +29,8 @@ export class AssetFileService extends BaseService {
       path: file.path,
       fileName: getFileNameWithoutExtension(file.path) + getFilenameExtension(file.path),
       contentType: mimeTypes.lookup(file.path),
-      cacheControl: CacheControl.PrivateWithCache,
+      // Fork (R50): asset bytes are revalidated on every use, after the access check, never served from cache
+      cacheControl: CacheControl.PrivateWithoutCache,
     });
   }
 

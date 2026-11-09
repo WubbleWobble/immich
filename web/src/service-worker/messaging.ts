@@ -3,7 +3,7 @@
 /// <reference no-default-lib="true"/>
 /// <reference lib="esnext" />
 /// <reference lib="webworker" />
-import { handleCancel } from './request';
+import { handleCancel, handlePurge } from './request';
 
 const sw = globalThis as unknown as ServiceWorkerGlobalScope;
 
@@ -26,6 +26,12 @@ export const installMessageListener = () => {
         }
 
         handleCancel(url);
+        break;
+      }
+
+      // Fork (R50): an authorization boundary in any tab - one worker serves every client of the origin
+      case 'purge': {
+        handlePurge();
         break;
       }
     }

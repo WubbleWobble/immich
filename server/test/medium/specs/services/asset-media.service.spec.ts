@@ -1,11 +1,16 @@
 import { ExecutionContext } from '@nestjs/common';
+import express, { NextFunction, Request, Response } from 'express';
 import { Kysely } from 'kysely';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { lastValueFrom, of } from 'rxjs';
+import request from 'supertest';
 import { AssetMediaStatus, AssetRejectReason, AssetUploadAction } from 'src/dtos/asset-media-response.dto.js';
 import { AssetMediaSize } from 'src/dtos/asset-media.dto.js';
 import { AuthDto } from 'src/dtos/auth.dto.js';
-import { AlbumKind, AssetFileType, ImmichHeader, SharedLinkType } from 'src/enum.js';
+import { AlbumKind, AssetFileType, AssetType, ImmichHeader, SharedLinkType } from 'src/enum.js';
 import { AssetUploadInterceptor } from 'src/middleware/asset-upload.interceptor.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { AlbumRepository } from 'src/repositories/album.repository.js';
@@ -21,7 +26,7 @@ import { UserRepository } from 'src/repositories/user.repository.js';
 import { DB } from 'src/schema/index.js';
 import { AssetMediaService } from 'src/services/asset-media.service.js';
 import { AssetService } from 'src/services/asset.service.js';
-import { ImmichFileResponse } from 'src/utils/file.js';
+import { ImmichFileResponse, sendFile } from 'src/utils/file.js';
 import { mediumFactory, newMediumService } from 'test/medium.factory.js';
 import { factory } from 'test/small.factory.js';
 import { getKyselyDB } from 'test/utils.js';
@@ -755,6 +760,71 @@ describe(AssetService.name, () => {
       const resultEdited = await sut.viewThumbnail(auth, asset.id, { size: AssetMediaSize.THUMBNAIL, edited: true });
       expect(resultEdited).toBeInstanceOf(ImmichFileResponse);
       expect((resultEdited as ImmichFileResponse).path).toBe('/edited/thumbnail.jpg');
+    });
+  });
+
+  describe('media caching (R50)', () => {
+    it('serves asset bytes as revalidate-always and refuses a conditional request once the asset is hidden', async () => {
+      const { sut, ctx } = setup();
+      const dir = await mkdtemp(join(tmpdir(), 'immich-r50-'));
+      const thumbnailPath = join(dir, 'thumbnail.webp');
+      const originalPath = join(dir, 'original.jpg');
+      const videoPath = join(dir, 'video.mp4');
+      await writeFile(thumbnailPath, 'thumbnail bytes');
+      await writeFile(originalPath, 'original bytes');
+      await writeFile(videoPath, 'video bytes');
+
+      const { user } = await ctx.newUser();
+      const { asset: photo } = await ctx.newAsset({ ownerId: user.id, originalPath });
+      const { asset: video } = await ctx.newAsset({ ownerId: user.id, type: AssetType.Video, originalPath: videoPath });
+      await ctx.newAssetFile({ assetId: photo.id, type: AssetFileType.Thumbnail, path: thumbnailPath });
+      const { album } = await ctx.newAlbum({ ownerId: user.id }, [photo.id, video.id]);
+      const auth = factory.auth({ user: { id: user.id }, session: { hasElevatedPermission: false } });
+      const logger = ctx.getMock(LoggingRepository);
+
+      // the real service behind the real sendFile, as the controller wires it (the auth guard precedes both)
+      const app = express();
+      const route = (path: string, handler: (id: string) => Promise<unknown>) =>
+        app.get(`/:id/${path}`, (req, res, next) =>
+          sendFile(res, next, () => handler(req.params.id) as Promise<ImmichFileResponse>, logger),
+        );
+      route('thumbnail', (id) => sut.viewThumbnail(auth, id, {}));
+      route('original', (id) => sut.downloadOriginal(auth, id, {}));
+      route('video/playback', (id) => sut.playbackVideo(auth, id));
+      app.use((error: { getStatus?: () => number }, _req: Request, res: Response, _next: NextFunction) => {
+        res.status(error.getStatus?.() ?? 500).json({ error: true });
+      });
+
+      const urls = [`/${photo.id}/thumbnail`, `/${photo.id}/original`, `/${video.id}/video/playback`];
+      const etags: Record<string, string> = {};
+      for (const url of urls) {
+        const response = await request(app).get(url);
+        expect(response.status).toBe(200);
+        expect(response.headers['cache-control']).toBe('private, no-cache, no-transform');
+        expect(response.headers.etag).toBeDefined();
+        etags[url] = response.headers.etag;
+
+        // while allowed, revalidation is a cheap 304
+        await expect(request(app).get(url).set('If-None-Match', etags[url])).resolves.toMatchObject({ status: 304 });
+      }
+
+      await ctx.get(LockRepository).lockAlbum(user.id, album.id);
+
+      const missing = await request(app).get(`/${randomUUID()}/thumbnail`);
+      for (const url of urls) {
+        const conditional = await request(app).get(url).set('If-None-Match', etags[url]);
+        // the access check runs before any freshness check: never 304, never the bytes, same as a missing asset
+        expect(conditional.status).not.toBe(304);
+        expect(conditional.status).toBe(missing.status);
+        expect(conditional.body).toEqual(missing.body);
+        expect(conditional.headers.etag).not.toBe(etags[url]);
+        expect(conditional.headers.etag).toBe(missing.headers.etag);
+
+        const plain = await request(app).get(url);
+        expect(plain.status).toBe(missing.status);
+      }
+
+      await rm(dir, { recursive: true, force: true });
     });
   });
 });

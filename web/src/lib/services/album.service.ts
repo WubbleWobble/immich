@@ -58,6 +58,7 @@ import { downloadArchive } from '$lib/utils/asset-utils';
 import { openFileUploadDialog } from '$lib/utils/file-uploader';
 import { handleError } from '$lib/utils/handle-error';
 import { getFormatter } from '$lib/utils/i18n';
+import { purgeMediaRequests } from '$lib/utils/sw-messaging';
 
 export const isAlbumOwner = (album: AlbumResponseDto) => album.albumUsers[0].user.id === authManager.user.id;
 /** Smart albums are read-only: their content is the filter's result, never manual adds/uploads/removals. */
@@ -343,6 +344,8 @@ export const moveAssetsToLockedAlbum = async (
       moveToLockedAlbumDto: { albumId: lockedAlbumId, assetIds },
     });
     eventManager.emit('AlbumAddAssets', { assetIds: [...moved, ...stillVisible], albumIds: [lockedAlbumId] });
+    // Fork (R50): the moved assets are hidden now; drop any media request fetched before the move.
+    purgeMediaRequests();
     return { moved, stillVisible, failed };
   } catch (error) {
     const $t = await getFormatter();
