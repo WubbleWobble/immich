@@ -1447,6 +1447,30 @@ describe(AssetService.name, () => {
       ).resolves.toEqual([motion.id]);
     });
 
+    it('a trashed still is not granted its motion part through the V3 album arm (round 4)', async () => {
+      const { ctx } = setup();
+      const { user: owner, still } = await newLivePhoto(ctx);
+      const { user: viewer } = await ctx.newUser();
+      await ctx.newPartner({ sharedById: owner.id, sharedWithId: viewer.id });
+      const { album } = await ctx.newAlbum({ ownerId: viewer.id }, [still.id]);
+      await ctx.database.updateTable('asset').set({ deletedAt: new Date() }).where('id', '=', still.id).execute();
+      const presented = async (isMotion: boolean) => {
+        const { assets } = await search().searchMetadata(factory.auth({ user: viewer }), {
+          size: 250,
+          filter: {
+            or: [{ albumIds: { any: [album.id] } }, { isFavorite: { eq: false } }],
+            trashedAt: { ne: null },
+            isMotion: { eq: isMotion },
+          },
+        });
+        return assets.items.filter(({ id }) => id === still.id).map(({ livePhotoVideoId }) => livePhotoVideoId);
+      };
+
+      // the output column withholds the id (getVisibleMotionIds needs a live still), so isMotion must agree
+      await expect(presented(true)).resolves.toEqual([]);
+      await expect(presented(false)).resolves.toEqual([null]);
+    });
+
     it('stacks, memories, duplicates and download info apply the same rules', async () => {
       const { ctx } = setup();
       const { user, still, motion, album } = await newLivePhoto(ctx);

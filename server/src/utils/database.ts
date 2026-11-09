@@ -1085,11 +1085,13 @@ function searchUniversePredicates(eb: AssetExpressionBuilder, kysely: Kysely<DB>
  * a still whose motion part is hidden counts as no Live Photo. Untouched without lock entries.
  */
 function searchMotionColumn(eb: AssetExpressionBuilder, kysely: Kysely<DB>, scope: AssetSearchScope) {
+  const { albumArm } = searchUniversePredicates(eb, kysely, scope);
+  // like the post-query album arm (getVisibleMotionIds), only a live still is granted through its album
   return lockVisibleLivePhotoVideoId(
     eb,
     kysely,
     scope.lockVisibility ?? [],
-    searchUniversePredicates(eb, kysely, scope).albumArm,
+    albumArm ? eb.and([eb('asset.deletedAt', 'is', null), albumArm]) : undefined,
   );
 }
 
