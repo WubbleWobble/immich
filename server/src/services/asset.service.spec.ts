@@ -745,6 +745,37 @@ describe(AssetService.name, () => {
       ]);
     });
 
+    it('should flag a stranded motion part hidden when its owner holds locks (R61, R68)', async () => {
+      const motion = AssetFactory.create({ type: AssetType.Video, visibility: AssetVisibility.Hidden });
+      mocks.assetJob.getForAssetDeletion.mockResolvedValue(getForAssetDeletion(motion));
+      mocks.asset.getLivePhotoCount.mockResolvedValue(0);
+      mocks.lock.anyHasLocks.mockResolvedValue(true);
+      mocks.lock.hasAnyLocks.mockResolvedValue(true);
+      mocks.lock.getAssetOwners.mockResolvedValue([]);
+
+      await sut.handleAssetDeletion({ id: motion.id, deleteOnDisk: false });
+
+      expect(mocks.asset.getLivePhotoCount).toHaveBeenCalledWith(motion.id);
+      expect(mocks.asset.remove).toHaveBeenCalledWith(getForAssetDeletion(motion), { ownerHidden: true });
+      expect(mocks.event.emit).toHaveBeenCalledWith('AssetDelete', {
+        assetId: motion.id,
+        userId: motion.ownerId,
+        hiddenFromOrdinary: true,
+      });
+    });
+
+    it('should leave a stranded motion part visible when its owner holds no locks', async () => {
+      const motion = AssetFactory.create({ type: AssetType.Video, visibility: AssetVisibility.Hidden });
+      mocks.assetJob.getForAssetDeletion.mockResolvedValue(getForAssetDeletion(motion));
+      mocks.asset.getLivePhotoCount.mockResolvedValue(0);
+      mocks.lock.anyHasLocks.mockResolvedValue(false);
+      mocks.lock.hasAnyLocks.mockResolvedValue(false);
+
+      await sut.handleAssetDeletion({ id: motion.id, deleteOnDisk: false });
+
+      expect(mocks.asset.remove).toHaveBeenCalledWith(getForAssetDeletion(motion), { ownerHidden: false });
+    });
+
     it('should update usage', async () => {
       const asset = AssetFactory.from().exif({ fileSizeInByte: 5000 }).build();
       mocks.assetJob.getForAssetDeletion.mockResolvedValue(getForAssetDeletion(asset));

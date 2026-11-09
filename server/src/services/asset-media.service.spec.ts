@@ -13,7 +13,7 @@ import { AssetEditAction } from 'src/dtos/editing.dto.js';
 import { AssetFileType, AssetType, AssetVisibility, CacheControl, JobName } from 'src/enum.js';
 import { AuthRequest } from 'src/middleware/auth.guard.js';
 import { AssetMediaService } from 'src/services/asset-media.service.js';
-import { ASSET_CHECKSUM_CONSTRAINT } from 'src/utils/database.js';
+import { ASSET_CHECKSUM_CONSTRAINT, OwnerLockVisibility } from 'src/utils/database.js';
 import { ImmichFileResponse } from 'src/utils/file.js';
 import { AssetFileFactory } from 'test/factories/asset-file.factory.js';
 import { AssetFactory } from 'test/factories/asset.factory.js';
@@ -347,6 +347,70 @@ describe(AssetMediaService.name, () => {
         expect.any(Date),
         new Date(createDto.fileModifiedAt),
       );
+    });
+
+    describe('clean-up of a failed upload (R66, R68)', () => {
+      const file = {
+        uuid: 'random-uuid',
+        originalPath: 'fake_path/asset_1.jpeg',
+        mimeType: 'image/jpeg',
+        checksum: Buffer.from('file hash', 'utf8'),
+        originalName: 'asset_1.jpeg',
+        size: 42,
+      };
+      const uploadError = new Error('disk full');
+
+      const failAfterCreate = ({ hasLocks, hidden }: { hasLocks: boolean; hidden: boolean }) => {
+        const ownerId = authStub.user1.user.id;
+        mocks.asset.create.mockResolvedValue(assetEntity);
+        mocks.asset.upsertExif.mockRejectedValue(uploadError);
+        mocks.lock.anyHasLocks.mockResolvedValue(hasLocks);
+        mocks.lock.hasAnyLocks.mockResolvedValue(hasLocks);
+        mocks.lock.getAssetOwners.mockResolvedValue([{ id: assetEntity.id, ownerId, isPartner: false }]);
+        mocks.lock.getOwnerLockVisibility.mockResolvedValue(
+          hasLocks
+            ? [
+                {
+                  ownerId,
+                  hiddenAlbumIds: [],
+                  hiddenSmartFilters: [{}],
+                  visibleSmartFilters: [],
+                } as OwnerLockVisibility,
+              ]
+            : [],
+        );
+        mocks.lock.getVisibleAssetIds.mockResolvedValue(hidden ? new Set() : new Set([assetEntity.id]));
+      };
+
+      it('removes a row a hidden smart filter already matches with the hidden verdict', async () => {
+        failAfterCreate({ hasLocks: true, hidden: true });
+
+        await expect(sut.uploadAsset(authStub.user1, createDto, file)).rejects.toBe(uploadError);
+
+        expect(mocks.asset.remove).toHaveBeenCalledWith({ id: assetEntity.id }, { ownerHidden: true });
+      });
+
+      it('leaves the verdict visible for an owner without locks', async () => {
+        failAfterCreate({ hasLocks: false, hidden: false });
+
+        await expect(sut.uploadAsset(authStub.user1, createDto, file)).rejects.toBe(uploadError);
+
+        expect(mocks.asset.remove).toHaveBeenCalledWith({ id: assetEntity.id }, { ownerHidden: false });
+      });
+
+      it('logs the original error first and fails closed when the verdict probe throws', async () => {
+        failAfterCreate({ hasLocks: true, hidden: false });
+        mocks.lock.anyHasLocks.mockRejectedValue(new Error('probe failed'));
+        mocks.lock.hasAnyLocks.mockRejectedValue(new Error('probe failed'));
+
+        await expect(sut.uploadAsset(authStub.user1, createDto, file)).rejects.toBe(uploadError);
+
+        expect(mocks.asset.remove).toHaveBeenCalledWith({ id: assetEntity.id }, { ownerHidden: true });
+        expect(mocks.logger.error).toHaveBeenNthCalledWith(1, `Error uploading file ${uploadError}`, uploadError.stack);
+        expect(mocks.logger.error.mock.invocationCallOrder[0]).toBeLessThan(
+          mocks.lock.anyHasLocks.mock.invocationCallOrder[0],
+        );
+      });
     });
 
     it('should handle a file upload', async () => {

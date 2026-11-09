@@ -708,10 +708,12 @@ export class LibraryService extends BaseService {
       if (!asset) {
         continue;
       }
-      // Fork (R66): judged before the delete so the audit row carries the owner's lock verdict for partner sync.
+      // Fork (R66, R68): judged before the delete so the audit row carries the owner's lock verdict for partner sync.
+      // Each unlinked file is its own job, so a Live Photo's motion part may come after its still is gone - the
+      // shared verdict covers that stranded part.
       const ownerHidden = await BaseService.create(LockService, this).isAssetHiddenForOwnerDeletion(
         asset.ownerId,
-        asset.id,
+        asset,
       );
       await this.assetRepository.remove(asset, { ownerHidden });
     }

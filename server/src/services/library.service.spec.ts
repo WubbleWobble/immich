@@ -5,8 +5,9 @@ import type { ILibraryBulkIdsJob, ILibraryFileJob } from 'src/types.js';
 import { JOBS_LIBRARY_PAGINATION_SIZE } from 'src/constants.js';
 import { SystemConfig, defaults } from 'src/dtos/config.dto.js';
 import { mapLibrary } from 'src/dtos/library.dto.js';
-import { AssetType, CronJob, ImmichWorker, JobName, JobStatus } from 'src/enum.js';
+import { AssetType, AssetVisibility, CronJob, ImmichWorker, JobName, JobStatus } from 'src/enum.js';
 import { LibraryService } from 'src/services/library.service.js';
+import { OwnerLockVisibility } from 'src/utils/database.js';
 import { AssetFactory } from 'test/factories/asset.factory.js';
 import { authStub } from 'test/fixtures/auth.stub.js';
 import { systemConfigStub } from 'test/fixtures/system-config.stub.js';
@@ -1318,6 +1319,117 @@ describe(LibraryService.name, () => {
             message: 'Cannot use media upload folder for external libraries',
           },
         ],
+      });
+    });
+  });
+
+  describe('handleAssetRemoval (file watcher, R68)', () => {
+    const libraryId = newUuid();
+    const ownerId = newUuid();
+
+    /**
+     * A Live Photo of an external library: the still sits in the owner's locked album, the motion part has no
+     * container of its own. Repository results model the database: the motion part carries its still's verdict while
+     * the still exists, and reads as a visible zero-container asset once the still row is gone.
+     */
+    const setupLivePhoto = ({ hasLocks }: { hasLocks: boolean }) => {
+      const motion = AssetFactory.create({
+        ownerId,
+        libraryId,
+        type: AssetType.Video,
+        visibility: AssetVisibility.Hidden,
+        originalPath: '/ext/IMG_0001.mov',
+      });
+      const still = AssetFactory.create({
+        ownerId,
+        libraryId,
+        livePhotoVideoId: motion.id,
+        originalPath: '/ext/IMG_0001.heic',
+      });
+      const existing = new Map([still, motion].map((asset) => [asset.originalPath, asset]));
+      const exists = (id: string) => existing.values().some((asset) => asset.id === id);
+
+      mocks.asset.getByLibraryIdAndOriginalPath.mockImplementation((_libraryId, path) =>
+        Promise.resolve(existing.get(path) as any),
+      );
+      mocks.asset.remove.mockImplementation((asset) => {
+        for (const [path, { id }] of existing) {
+          if (id === asset.id) {
+            existing.delete(path);
+          }
+        }
+        return Promise.resolve();
+      });
+      mocks.asset.getLivePhotoCount.mockImplementation((motionId) =>
+        Promise.resolve(motionId === motion.id && exists(still.id) ? 1 : 0),
+      );
+      mocks.lock.anyHasLocks.mockResolvedValue(hasLocks);
+      mocks.lock.hasAnyLocks.mockResolvedValue(hasLocks);
+      mocks.lock.getAssetOwners.mockImplementation((_viewerId, ids) =>
+        Promise.resolve(ids.map((id) => ({ id, ownerId, isPartner: false }))),
+      );
+      mocks.lock.getOwnerLockVisibility.mockResolvedValue(
+        hasLocks
+          ? [
+              {
+                ownerId,
+                hiddenAlbumIds: [newUuid()],
+                hiddenSmartFilters: [],
+                visibleSmartFilters: [],
+              } as OwnerLockVisibility,
+            ]
+          : [],
+      );
+      // the still is in the locked album; the motion part is hidden with it, and visible once stranded
+      mocks.lock.getVisibleAssetIds.mockImplementation((ids) =>
+        Promise.resolve(new Set(ids.filter((id) => id === motion.id && !exists(still.id)))),
+      );
+
+      return { still, motion };
+    };
+
+    const removeInSeparateJobs = async (paths: string[]) => {
+      for (const path of paths) {
+        await expect(sut.handleAssetRemoval({ libraryId, paths: [path] })).resolves.toBe(JobStatus.Success);
+      }
+    };
+
+    it('flags both parts hidden when the still is removed before its motion part', async () => {
+      const { still, motion } = setupLivePhoto({ hasLocks: true });
+
+      await removeInSeparateJobs([still.originalPath, motion.originalPath]);
+
+      expect(mocks.asset.remove).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: still.id }), {
+        ownerHidden: true,
+      });
+      expect(mocks.asset.remove).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: motion.id }), {
+        ownerHidden: true,
+      });
+    });
+
+    it('flags both parts hidden when the motion part is removed before its still', async () => {
+      const { still, motion } = setupLivePhoto({ hasLocks: true });
+
+      await removeInSeparateJobs([motion.originalPath, still.originalPath]);
+
+      expect(mocks.asset.remove).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: motion.id }), {
+        ownerHidden: true,
+      });
+      expect(mocks.asset.remove).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: still.id }), {
+        ownerHidden: true,
+      });
+    });
+
+    it('leaves the verdict visible for an owner without locks', async () => {
+      const { still, motion } = setupLivePhoto({ hasLocks: false });
+
+      await removeInSeparateJobs([still.originalPath, motion.originalPath]);
+
+      expect(mocks.asset.remove).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: still.id }), {
+        ownerHidden: false,
+      });
+      expect(mocks.asset.remove).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: motion.id }), {
+        ownerHidden: false,
       });
     });
   });

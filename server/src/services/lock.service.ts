@@ -3,7 +3,7 @@ import { Kysely } from 'kysely';
 import { BulkIdErrorReason } from 'src/dtos/asset-ids.response.dto.js';
 import { AuthDto } from 'src/dtos/auth.dto.js';
 import { LocksResponseDto, MoveToLockedAlbumDto, MoveToLockedAlbumResponseDto } from 'src/dtos/lock.dto.js';
-import { Permission, SharedLinkType } from 'src/enum.js';
+import { AssetVisibility, Permission, SharedLinkType } from 'src/enum.js';
 import { DB } from 'src/schema/index.js';
 import { AlbumService } from 'src/services/album.service.js';
 import { BaseService } from 'src/services/base.service.js';
@@ -405,11 +405,34 @@ export class LockService extends BaseService {
 
   /**
    * Ruling R66, asset deletions outside the AssetDelete job (upload clean-up, library file removal): whether the
-   * owner's asset is hidden by the owner's own locks outside elevation - the verdict persisted on its audit row.
+   * owner's asset is hidden by the owner's own locks outside elevation - the verdict persisted on its audit row. Judge
+   * it while the asset row still exists. Includes the stranded motion-part rule (R61, R68) below, so the verdict does
+   * not depend on which part of a Live Photo a separate job removes first.
    */
-  async isAssetHiddenForOwnerDeletion(ownerId: string, assetId: string): Promise<boolean> {
-    const hidden = await this.getOwnerEventHiddenIds(ownerId, [assetId]);
-    return hidden.has(assetId);
+  async isAssetHiddenForOwnerDeletion(
+    ownerId: string,
+    asset: { id: string; visibility: AssetVisibility },
+  ): Promise<boolean> {
+    const hidden = await this.getOwnerEventHiddenIds(ownerId, [asset.id]);
+    return hidden.has(asset.id) || (await this.isStrandedMotionPartHiddenForOwner(ownerId, asset));
+  }
+
+  /**
+   * Rulings R61 and R68, the one stranded motion-part rule every asset deletion applies: a motion part
+   * (`visibility = hidden`) that no still references any more has no container to judge and would read as visible -
+   * e.g. after its still was deleted first (file watcher, library deletion, metadata replacement). With any lock on its
+   * owner it is withheld from ordinary sessions, which never present a standalone motion part. Owners without locks
+   * are unaffected.
+   */
+  async isStrandedMotionPartHiddenForOwner(
+    ownerId: string,
+    asset: { id: string; visibility: AssetVisibility },
+  ): Promise<boolean> {
+    return (
+      asset.visibility === AssetVisibility.Hidden &&
+      (await this.lockRepository.hasAnyLocks(ownerId)) &&
+      (await this.assetRepository.getLivePhotoCount(asset.id)) === 0
+    );
   }
 
   /** R58: the rooms for an owner event judged hidden from ordinary sessions (elevated sessions) or not (user room). */

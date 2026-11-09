@@ -236,17 +236,21 @@ export class AssetMediaService extends BaseService {
         return { status: AssetMediaStatus.DUPLICATE, id: duplicateId };
       }
 
-      // clean up the asset row if one was created. Fork (R66): judged like any deletion - a hidden smart filter can
-      // already match the row - so its audit row carries the partner verdict.
+      this.logger.error(`Error uploading file ${error}`, error?.stack);
+
+      // clean up the asset row if one was created. Fork (R66, R68): judged like any deletion - a hidden smart filter
+      // can already match the row - so its audit row carries the partner verdict. A failing judgement never masks the
+      // upload error: the row is then removed as hidden (fail closed).
       if (asset) {
-        const ownerHidden = await BaseService.create(LockService, this).isAssetHiddenForOwnerDeletion(
-          auth.user.id,
-          asset.id,
-        );
+        let ownerHidden = true;
+        try {
+          ownerHidden = await BaseService.create(LockService, this).isAssetHiddenForOwnerDeletion(auth.user.id, asset);
+        } catch (probeError: any) {
+          this.logger.error(`Error judging the failed upload's clean-up, removing it as hidden: ${probeError}`);
+        }
         await this.assetRepository.remove({ id: asset.id }, { ownerHidden });
       }
 
-      this.logger.error(`Error uploading file ${error}`, error?.stack);
       throw error;
     }
   }

@@ -1,6 +1,6 @@
 import { Kysely } from 'kysely';
 import { AuthDto } from 'src/dtos/auth.dto.js';
-import { SyncEntityType, SyncRequestType } from 'src/enum.js';
+import { AssetType, AssetVisibility, JobStatus, SyncEntityType, SyncRequestType } from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { AlbumRepository } from 'src/repositories/album.repository.js';
 import { AssetEditRepository } from 'src/repositories/asset-edit.repository.js';
@@ -8,6 +8,7 @@ import { AssetJobRepository } from 'src/repositories/asset-job.repository.js';
 import { AssetRepository } from 'src/repositories/asset.repository.js';
 import { EventRepository } from 'src/repositories/event.repository.js';
 import { JobRepository } from 'src/repositories/job.repository.js';
+import { LibraryRepository } from 'src/repositories/library.repository.js';
 import { LockRepository } from 'src/repositories/lock.repository.js';
 import { LoggingRepository } from 'src/repositories/logging.repository.js';
 import { SessionRepository } from 'src/repositories/session.repository.js';
@@ -18,6 +19,7 @@ import { UserRepository } from 'src/repositories/user.repository.js';
 import { WebsocketRepository } from 'src/repositories/websocket.repository.js';
 import { DB } from 'src/schema/index.js';
 import { AssetService } from 'src/services/asset.service.js';
+import { LibraryService } from 'src/services/library.service.js';
 import { StackService } from 'src/services/stack.service.js';
 import { SyncTestContext, newMediumService } from 'test/medium.factory.js';
 import { factory } from 'test/small.factory.js';
@@ -212,5 +214,97 @@ describe('partner delete streams honour the pre-delete lock verdict (R66)', () =
     expect(deletedIds(assetStream, SyncEntityType.PartnerAssetDeleteV1)).toEqual([hidden.id]);
     const stackStream = await ctx.syncStream(auth, [SyncRequestType.PartnerStacksV1]);
     expect(deletedIds(stackStream, SyncEntityType.PartnerStackDeleteV1)).toEqual([hiddenStack.id]);
+  });
+});
+
+const libraryService = (database: Kysely<DB>) => {
+  const { sut } = newMediumService(LibraryService, {
+    database,
+    real: [AccessRepository, AssetRepository, LibraryRepository, LockRepository],
+    mock: [EventRepository, JobRepository, LoggingRepository],
+  });
+  return sut;
+};
+
+/** An external-library Live Photo of the partner: the still is in an album (locked unless `locked: false`). */
+const setupLivePhoto = async ({ locked }: { locked: boolean }) => {
+  const ctx = new SyncTestContext(defaultDatabase);
+  const { auth, user } = await ctx.newSyncAuthUser();
+  const { user: owner } = await ctx.newUser();
+  const library = await ctx.get(LibraryRepository).create({
+    ownerId: owner.id,
+    name: 'External',
+    importPaths: ['/external'],
+    exclusionPatterns: [],
+  });
+  const { asset: motion } = await ctx.newAsset({
+    ownerId: owner.id,
+    libraryId: library.id,
+    type: AssetType.Video,
+    visibility: AssetVisibility.Hidden,
+    originalPath: '/external/IMG_0001.mov',
+  });
+  const { asset: still } = await ctx.newAsset({
+    ownerId: owner.id,
+    libraryId: library.id,
+    livePhotoVideoId: motion.id,
+    originalPath: '/external/IMG_0001.heic',
+  });
+  const { album } = await ctx.newAlbum({ ownerId: owner.id }, [still.id]);
+  if (locked) {
+    await ctx.get(LockRepository).lockAlbum(owner.id, album.id);
+  }
+  await ctx.newPartner({ sharedById: owner.id, sharedWithId: user.id });
+  const { session } = await ctx.newSession({ userId: user.id });
+  const freshDevice = factory.auth({ session, user: { id: user.id, name: user.name, email: user.email } });
+
+  // the file watcher queues one LibraryRemoveAsset job per unlinked file
+  const sut = libraryService(ctx.database);
+  const unlink = async (...assets: Array<{ originalPath: string }>) => {
+    for (const { originalPath } of assets) {
+      await expect(sut.handleAssetRemoval({ libraryId: library.id, paths: [originalPath] })).resolves.toBe(
+        JobStatus.Success,
+      );
+    }
+  };
+
+  return { ctx, auth, freshDevice, owner, still, motion, unlink };
+};
+
+/**
+ * Fork (ruling R68): the file watcher removes a Live Photo's still and motion part in separate jobs. Whichever goes
+ * first, the stranded-motion rule of the shared deletion verdict keeps both ids out of the partner delete stream.
+ */
+describe('file-watcher removal of a hidden Live Photo (R68)', () => {
+  for (const order of ['still first', 'motion first'] as const) {
+    it(`never names either part to the partner (${order})`, async () => {
+      const { ctx, auth, freshDevice, owner, still, motion, unlink } = await setupLivePhoto({ locked: true });
+
+      await (order === 'still first' ? unlink(still, motion) : unlink(motion, still));
+
+      for (const viewer of [auth, freshDevice]) {
+        const response = await ctx.syncStream(viewer, [SyncRequestType.PartnerAssetsV2]);
+        expect(deletedIds(response, SyncEntityType.PartnerAssetDeleteV1)).toEqual([]);
+        expect(JSON.stringify(response)).not.toContain(still.id);
+        expect(JSON.stringify(response)).not.toContain(motion.id);
+      }
+
+      // the owner's own stream is unchanged (R43)
+      const { session } = await ctx.newSession({ userId: owner.id });
+      const ownerAuth = factory.auth({ session, user: { id: owner.id } });
+      const ownStream = await ctx.syncStream(ownerAuth, [SyncRequestType.AssetsV2]);
+      expect(deletedIds(ownStream, SyncEntityType.AssetDeleteV1)).toEqual([still.id, motion.id].toSorted());
+    });
+  }
+
+  it('streams both parts for an owner without locks', async () => {
+    const { ctx, auth, freshDevice, still, motion, unlink } = await setupLivePhoto({ locked: false });
+
+    await unlink(still, motion);
+
+    for (const viewer of [auth, freshDevice]) {
+      const response = await ctx.syncStream(viewer, [SyncRequestType.PartnerAssetsV2]);
+      expect(deletedIds(response, SyncEntityType.PartnerAssetDeleteV1)).toEqual([still.id, motion.id].toSorted());
+    }
   });
 });
