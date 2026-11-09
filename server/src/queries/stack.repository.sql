@@ -150,6 +150,14 @@ from
 where
   "id" = $1::uuid
 
+-- StackRepository.getMemberIds
+select
+  "asset"."id"
+from
+  "asset"
+where
+  "asset"."stackId" = $1::uuid
+
 -- StackRepository.getForAssetRemoval
 select
   "stackId" as "id",

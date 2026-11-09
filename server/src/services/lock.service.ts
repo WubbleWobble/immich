@@ -324,6 +324,52 @@ export class LockService extends BaseService {
     return assets.map((asset) => deliveries.get(asset)!);
   }
 
+  /**
+   * Ruling R58 (round 2), id-only asset events (`on_asset_trash`, `on_asset_restore`): split `assetIds` of one owner
+   * into the user room (ids visible under the owner's non-elevated direct rule) and the owner's currently elevated
+   * session rooms (the hidden ids). Owners without lock rows pay one probe and get a single user-room route.
+   */
+  async routeOwnerAssetIds(ownerId: string, assetIds: string[]): Promise<{ room: string; ids: string[] }[]> {
+    const hidden = await this.getOwnerEventHiddenIds(ownerId, assetIds);
+    const visibleIds = assetIds.filter((id) => !hidden.has(id));
+    const routes = visibleIds.length > 0 ? [{ room: ownerId, ids: visibleIds }] : [];
+    if (hidden.size > 0) {
+      const hiddenIds = assetIds.filter((id) => hidden.has(id));
+      for (const room of await this.getElevatedSessionIds(ownerId)) {
+        routes.push({ room, ids: hiddenIds });
+      }
+    }
+    return routes;
+  }
+
+  /** R58: the subset of the owner's `assetIds` hidden for the owner outside elevation (one probe without locks). */
+  async getOwnerEventHiddenIds(ownerId: string, assetIds: string[]): Promise<Set<string>> {
+    if (assetIds.length === 0 || !(await this.lockRepository.anyHasLocks([ownerId]))) {
+      return new Set();
+    }
+    return this.getOwnHiddenAssetIdsForUpload({ user: { id: ownerId } } as AuthDto, assetIds);
+  }
+
+  /**
+   * R58 (round 2), stack events: whether an ordinary session of the owner does not present the stack as a stack. Under
+   * the 7A.8c summary rule a stack with a hidden member is presented only while at least two members are visible
+   * (otherwise it reads as no stack), so such a stack's events belong to elevated sessions only. Judge it while the
+   * stack exists (a delete judges before deleting). One probe when the owner holds no locks.
+   */
+  async isStackHiddenForOwnerEvents(ownerId: string, stackId: string): Promise<boolean> {
+    if (!(await this.lockRepository.anyHasLocks([ownerId]))) {
+      return false;
+    }
+    const memberIds = await this.stackRepository.getMemberIds(stackId);
+    const hidden = await this.getOwnHiddenAssetIdsForUpload({ user: { id: ownerId } } as AuthDto, memberIds);
+    return hidden.size > 0 && memberIds.length - hidden.size < 2;
+  }
+
+  /** R58: the rooms for an owner event judged hidden from ordinary sessions (elevated sessions) or not (user room). */
+  async getOwnerEventRooms(ownerId: string, hiddenFromOrdinary: boolean): Promise<string[]> {
+    return hiddenFromOrdinary ? this.getElevatedSessionIds(ownerId) : [ownerId];
+  }
+
   /** The owner's sessions that are elevated right now (the PIN window of AuthService.validateSession). */
   private async getElevatedSessionIds(userId: string): Promise<string[]> {
     const now = new Date();

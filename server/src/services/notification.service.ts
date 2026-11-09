@@ -159,19 +159,33 @@ export class NotificationService extends BaseService {
     await this.jobRepository.queue({ name: JobName.AssetGenerateThumbnails, data: { id: assetId, notify: true } });
   }
 
+  // Fork (R58, round 2): id-carrying asset events are split - ids hidden for the owner outside elevation reach only
+  // the owner's elevated sessions, the rest the owner's user room (see LockService.routeOwnerAssetIds).
   @OnEvent({ name: 'AssetTrash' })
-  onAssetTrash({ assetId, userId }: ArgOf<'AssetTrash'>) {
-    this.websocketRepository.clientSend('on_asset_trash', userId, [assetId]);
+  async onAssetTrash({ assetId, userId }: ArgOf<'AssetTrash'>) {
+    await this.sendAssetIds('on_asset_trash', userId, [assetId]);
   }
 
+  /**
+   * The asset row is gone by now, so the deletion job judged it beforehand (`hiddenFromOrdinary`): ordinary tabs that
+   * never showed a hidden asset do not learn its id from its deletion.
+   */
   @OnEvent({ name: 'AssetDelete' })
-  onAssetDelete({ assetId, userId }: ArgOf<'AssetDelete'>) {
-    this.websocketRepository.clientSend('on_asset_delete', userId, assetId);
+  async onAssetDelete({ assetId, userId, hiddenFromOrdinary }: ArgOf<'AssetDelete'>) {
+    for (const room of await this.lockService().getOwnerEventRooms(userId, !!hiddenFromOrdinary)) {
+      this.websocketRepository.clientSend('on_asset_delete', room, assetId);
+    }
   }
 
   @OnEvent({ name: 'AssetTrashAll' })
-  onAssetsTrash({ assetIds, userId }: ArgOf<'AssetTrashAll'>) {
-    this.websocketRepository.clientSend('on_asset_trash', userId, assetIds);
+  async onAssetsTrash({ assetIds, userId }: ArgOf<'AssetTrashAll'>) {
+    await this.sendAssetIds('on_asset_trash', userId, assetIds);
+  }
+
+  private async sendAssetIds(event: 'on_asset_trash' | 'on_asset_restore', userId: string, assetIds: string[]) {
+    for (const { room, ids } of await this.lockService().routeOwnerAssetIds(userId, assetIds)) {
+      this.websocketRepository.clientSend(event, room, ids);
+    }
   }
 
   @OnEvent({ name: 'AssetMetadataExtracted' })
@@ -197,28 +211,37 @@ export class NotificationService extends BaseService {
   }
 
   @OnEvent({ name: 'AssetRestoreAll' })
-  onAssetsRestore({ assetIds, userId }: ArgOf<'AssetRestoreAll'>) {
-    this.websocketRepository.clientSend('on_asset_restore', userId, assetIds);
+  async onAssetsRestore({ assetIds, userId }: ArgOf<'AssetRestoreAll'>) {
+    await this.sendAssetIds('on_asset_restore', userId, assetIds);
   }
 
+  // Fork (R58, round 2): `on_asset_stack_update` carries no ids; a stack an ordinary session does not present (7A.8c:
+  // a hidden member and fewer than two visible ones) is announced to the owner's elevated sessions only.
   @OnEvent({ name: 'StackCreate' })
-  onStackCreate({ userId }: ArgOf<'StackCreate'>) {
-    this.websocketRepository.clientSend('on_asset_stack_update', userId);
+  async onStackCreate({ stackId, userId }: ArgOf<'StackCreate'>) {
+    await this.sendStackUpdate(userId, await this.lockService().isStackHiddenForOwnerEvents(userId, stackId));
   }
 
   @OnEvent({ name: 'StackUpdate' })
-  onStackUpdate({ userId }: ArgOf<'StackUpdate'>) {
-    this.websocketRepository.clientSend('on_asset_stack_update', userId);
+  async onStackUpdate({ stackId, userId }: ArgOf<'StackUpdate'>) {
+    await this.sendStackUpdate(userId, await this.lockService().isStackHiddenForOwnerEvents(userId, stackId));
   }
 
+  /** Deleted stacks were judged by StackService before deletion (`hiddenFromOrdinary`). */
   @OnEvent({ name: 'StackDelete' })
-  onStackDelete({ userId }: ArgOf<'StackDelete'>) {
-    this.websocketRepository.clientSend('on_asset_stack_update', userId);
+  async onStackDelete({ userId, hiddenFromOrdinary }: ArgOf<'StackDelete'>) {
+    await this.sendStackUpdate(userId, !!hiddenFromOrdinary);
   }
 
   @OnEvent({ name: 'StackDeleteAll' })
-  onStacksDelete({ userId }: ArgOf<'StackDeleteAll'>) {
-    this.websocketRepository.clientSend('on_asset_stack_update', userId);
+  async onStacksDelete({ userId, hiddenFromOrdinary }: ArgOf<'StackDeleteAll'>) {
+    await this.sendStackUpdate(userId, !!hiddenFromOrdinary);
+  }
+
+  private async sendStackUpdate(userId: string, hiddenFromOrdinary: boolean) {
+    for (const room of await this.lockService().getOwnerEventRooms(userId, hiddenFromOrdinary)) {
+      this.websocketRepository.clientSend('on_asset_stack_update', room);
+    }
   }
 
   @OnEvent({ name: 'UserSignup' })

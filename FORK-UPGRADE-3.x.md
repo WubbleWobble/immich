@@ -129,7 +129,11 @@ State these plainly to users.
   websocket events (update, upload/edit ready, hide, sidecar refresh) about
   an asset hidden by your locks go only to sessions that are elevated at that
   moment; other tabs pick the change up on navigation. Events about visible
-  stills withhold a hidden motion part's id the same way.
+  stills withhold a hidden motion part's id the same way. Trash, restore and
+  delete events are split: ids of hidden assets go to elevated sessions only
+  (a deletion is judged before the asset is removed). A stack event goes to
+  elevated sessions only when an ordinary session would not show that stack
+  (a hidden member and fewer than two visible members).
 - **CLI and API-key uploads re-send hidden files every run (R49).** API-key
   sessions are never elevated. So `immich-cli` and `immich-go` see an
   already-hidden file as new each time, upload it again and get a phantom

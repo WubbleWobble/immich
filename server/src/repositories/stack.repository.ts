@@ -175,6 +175,17 @@ export class StackRepository {
     );
   }
 
+  /** Fork (R58): every member id of a stack (deleted members included), without the asset payload. */
+  @GenerateSql({ params: [DummyValue.UUID] })
+  async getMemberIds(stackId: string): Promise<string[]> {
+    const rows = await this.db
+      .selectFrom('asset')
+      .select('asset.id')
+      .where('asset.stackId', '=', asUuid(stackId))
+      .execute();
+    return rows.map(({ id }) => id);
+  }
+
   @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID] })
   getForAssetRemoval(assetId: string) {
     return this.db

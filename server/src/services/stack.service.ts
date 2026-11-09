@@ -170,8 +170,10 @@ export class StackService extends BaseService {
   async delete(auth: AuthDto, id: string): Promise<void> {
     await this.requireAccess({ auth, permission: Permission.StackDelete, ids: [id] });
     await this.assertStackMutableForViewer(auth, id);
+    // Fork (R58): judged before the stack is gone - see NotificationService.onStackDelete.
+    const hiddenFromOrdinary = await this.lockService().isStackHiddenForOwnerEvents(auth.user.id, id);
     await this.stackRepository.delete(id);
-    await this.eventRepository.emit('StackDelete', { stackId: id, userId: auth.user.id });
+    await this.eventRepository.emit('StackDelete', { stackId: id, userId: auth.user.id, hiddenFromOrdinary });
   }
 
   async deleteAll(auth: AuthDto, dto: BulkIdsDto): Promise<void> {
@@ -179,8 +181,16 @@ export class StackService extends BaseService {
     for (const id of dto.ids) {
       await this.assertStackMutableForViewer(auth, id);
     }
+    // Fork (R58): one event for all - ordinary sessions get it unless none of them presented any of these stacks.
+    let hiddenFromOrdinary = true;
+    for (const id of dto.ids) {
+      if (!(await this.lockService().isStackHiddenForOwnerEvents(auth.user.id, id))) {
+        hiddenFromOrdinary = false;
+        break;
+      }
+    }
     await this.stackRepository.deleteAll(dto.ids);
-    await this.eventRepository.emit('StackDeleteAll', { stackIds: dto.ids, userId: auth.user.id });
+    await this.eventRepository.emit('StackDeleteAll', { stackIds: dto.ids, userId: auth.user.id, hiddenFromOrdinary });
   }
 
   async removeAsset(auth: AuthDto, dto: UUIDAssetIDParamDto): Promise<void> {

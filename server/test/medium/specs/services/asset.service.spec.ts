@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { Kysely } from 'kysely';
+import type { ArgOf } from 'src/repositories/event.repository.js';
 import { StorageCore } from 'src/cores/storage.core.js';
 import { AuthDto } from 'src/dtos/auth.dto.js';
 import { AssetEditAction } from 'src/dtos/editing.dto.js';
@@ -45,6 +46,7 @@ import { DownloadService } from 'src/services/download.service.js';
 import { DuplicateService } from 'src/services/duplicate.service.js';
 import { JobService } from 'src/services/job.service.js';
 import { MemoryService } from 'src/services/memory.service.js';
+import { NotificationService } from 'src/services/notification.service.js';
 import { SearchService } from 'src/services/search.service.js';
 import { StackService } from 'src/services/stack.service.js';
 import { TimelineService } from 'src/services/timeline.service.js';
@@ -158,6 +160,31 @@ const found = async (auth: AuthDto, stillId: string, isMotion: boolean) => {
   const v3 = await search().searchMetadata(auth, { size: 250, filter: { isMotion: { eq: isMotion } } });
   return [v1, v3].map(({ assets }) => assets.items.some(({ id }) => id === stillId));
 };
+
+// Fork (R58, round 2): NotificationService over the real lock repositories, and its fixture.
+const notifier = () =>
+  newMediumService(NotificationService, {
+    database: defaultDatabase,
+    real: [AccessRepository, AlbumRepository, AssetRepository, LockRepository, SessionRepository, StackRepository],
+    mock: [JobRepository, LoggingRepository, WebsocketRepository],
+  });
+/** An owner with one visible and one lock-hidden asset, an ordinary and an elevated session. */
+const newLibrary = async (ctx: ReturnType<typeof setup>['ctx'], { lock = true } = {}) => {
+  const { user } = await ctx.newUser();
+  const { asset: visible } = await ctx.newAsset({ ownerId: user.id });
+  const { asset: other } = await ctx.newAsset({ ownerId: user.id });
+  const { asset: hidden } = await ctx.newAsset({ ownerId: user.id });
+  const { album } = await ctx.newAlbum({ ownerId: user.id }, [hidden.id]);
+  if (lock) {
+    await ctx.get(LockRepository).lockAlbum(user.id, album.id);
+  }
+  await ctx.newSession({ userId: user.id });
+  const { session } = await ctx.newSession({ userId: user.id, pinExpiresAt: new Date(Date.now() + 60_000) });
+  return { user, visible, other, hidden, elevatedRoom: session.id };
+};
+
+const sent = (ctx: ReturnType<typeof notifier>['ctx']) =>
+  ctx.getMock(WebsocketRepository).clientSend.mock.calls.map(([event, room, ids]) => ({ event, room, ids }));
 
 beforeAll(async () => {
   defaultDatabase = await getKyselyDB();
@@ -1605,6 +1632,113 @@ describe(AssetService.name, () => {
         { event: 'AssetUploadReadyV2', ...ofHidden },
         { event: 'AssetEditReadyV2', ...ofHidden },
       ]);
+    });
+
+    describe('id-carrying events: trash, restore, delete and stacks (round 2)', () => {
+      it('trash and restore split a batch: hidden ids reach only elevated sessions', async () => {
+        const { ctx } = setup();
+        const { sut, ctx: notifyCtx } = notifier();
+        notifyCtx.getMock(WebsocketRepository).clientSend.mockReturnValue();
+        const { user, visible, hidden, elevatedRoom } = await newLibrary(ctx);
+
+        await sut.onAssetTrash({ assetId: hidden.id, userId: user.id });
+        await sut.onAssetsTrash({ assetIds: [visible.id, hidden.id], userId: user.id });
+        await sut.onAssetsRestore({ assetIds: [hidden.id, visible.id], userId: user.id });
+
+        expect(sent(notifyCtx)).toEqual([
+          { event: 'on_asset_trash', room: elevatedRoom, ids: [hidden.id] },
+          { event: 'on_asset_trash', room: user.id, ids: [visible.id] },
+          { event: 'on_asset_trash', room: elevatedRoom, ids: [hidden.id] },
+          { event: 'on_asset_restore', room: user.id, ids: [visible.id] },
+          { event: 'on_asset_restore', room: elevatedRoom, ids: [hidden.id] },
+        ]);
+      });
+
+      it("a hidden asset's deletion is judged before removal and reaches only elevated sessions", async () => {
+        const { sut, ctx } = setup();
+        ctx.getMock(EventRepository).emit.mockResolvedValue();
+        ctx.getMock(JobRepository).queue.mockResolvedValue();
+        const { sut: notify, ctx: notifyCtx } = notifier();
+        notifyCtx.getMock(WebsocketRepository).clientSend.mockReturnValue();
+        const { user, visible, hidden, elevatedRoom } = await newLibrary(ctx);
+
+        for (const asset of [hidden, visible]) {
+          await sut.handleAssetDeletion({ id: asset.id, deleteOnDisk: false });
+        }
+        const emitted = ctx
+          .getMock(EventRepository)
+          .emit.mock.calls.filter(([name]) => name === 'AssetDelete')
+          .map(([, payload]) => payload as ArgOf<'AssetDelete'>);
+        expect(emitted).toEqual([
+          { assetId: hidden.id, userId: user.id, hiddenFromOrdinary: true },
+          { assetId: visible.id, userId: user.id, hiddenFromOrdinary: false },
+        ]);
+
+        for (const payload of emitted) {
+          await notify.onAssetDelete(payload);
+        }
+        expect(sent(notifyCtx)).toEqual([
+          { event: 'on_asset_delete', room: elevatedRoom, ids: hidden.id },
+          { event: 'on_asset_delete', room: user.id, ids: visible.id },
+        ]);
+      });
+
+      it('a stack an ordinary session does not present is announced to elevated sessions only', async () => {
+        const { ctx } = setup();
+        const { sut, ctx: notifyCtx } = notifier();
+        notifyCtx.getMock(WebsocketRepository).clientSend.mockReturnValue();
+        const { user, visible, other, hidden, elevatedRoom } = await newLibrary(ctx);
+        const { asset: third } = await ctx.newAsset({ ownerId: user.id });
+        // one visible member besides the hidden one: an ordinary session shows no stack (7A.8c)
+        const { stack: hiddenStack } = await ctx.newStack({ ownerId: user.id }, [visible.id, hidden.id]);
+        // two visible members: the ordinary session presents it, and the event carries no ids at all
+        const { stack: shownStack } = await ctx.newStack({ ownerId: user.id }, [other.id, third.id]);
+
+        await sut.onStackCreate({ stackId: hiddenStack.id, userId: user.id });
+        await sut.onStackUpdate({ stackId: shownStack.id, userId: user.id });
+
+        const stacks = newMediumService(StackService, {
+          database: defaultDatabase,
+          real: [AccessRepository, AlbumRepository, AssetRepository, LockRepository, StackRepository],
+          mock: [EventRepository, LoggingRepository],
+        });
+        stacks.ctx.getMock(EventRepository).emit.mockResolvedValue();
+        const elevated = factory.auth({ user, session: { id: elevatedRoom, hasElevatedPermission: true } });
+        await stacks.sut.delete(elevated, hiddenStack.id);
+        await stacks.sut.deleteAll(elevated, { ids: [shownStack.id] });
+        const [[, deleted], [, deletedAll]] = stacks.ctx.getMock(EventRepository).emit.mock.calls as any;
+        expect(deleted).toEqual({ stackId: hiddenStack.id, userId: user.id, hiddenFromOrdinary: true });
+        expect(deletedAll).toEqual({ stackIds: [shownStack.id], userId: user.id, hiddenFromOrdinary: false });
+        await sut.onStackDelete(deleted);
+        await sut.onStacksDelete(deletedAll);
+
+        expect(sent(notifyCtx)).toEqual([
+          { event: 'on_asset_stack_update', room: elevatedRoom, ids: undefined },
+          { event: 'on_asset_stack_update', room: user.id, ids: undefined },
+          { event: 'on_asset_stack_update', room: elevatedRoom, ids: undefined },
+          { event: 'on_asset_stack_update', room: user.id, ids: undefined },
+        ]);
+      });
+
+      it('a user without locks gets every event unchanged in the user room', async () => {
+        const { ctx } = setup();
+        const { sut, ctx: notifyCtx } = notifier();
+        notifyCtx.getMock(WebsocketRepository).clientSend.mockReturnValue();
+        const { user, visible, hidden } = await newLibrary(ctx, { lock: false });
+        const { stack } = await ctx.newStack({ ownerId: user.id }, [visible.id, hidden.id]);
+
+        await sut.onAssetsTrash({ assetIds: [visible.id, hidden.id], userId: user.id });
+        await sut.onAssetsRestore({ assetIds: [visible.id, hidden.id], userId: user.id });
+        await sut.onAssetDelete({ assetId: hidden.id, userId: user.id, hiddenFromOrdinary: false });
+        await sut.onStackCreate({ stackId: stack.id, userId: user.id });
+
+        expect(sent(notifyCtx)).toEqual([
+          { event: 'on_asset_trash', room: user.id, ids: [visible.id, hidden.id] },
+          { event: 'on_asset_restore', room: user.id, ids: [visible.id, hidden.id] },
+          { event: 'on_asset_delete', room: user.id, ids: hidden.id },
+          { event: 'on_asset_stack_update', room: user.id, ids: undefined },
+        ]);
+      });
     });
   });
 });

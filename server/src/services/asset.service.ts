@@ -425,12 +425,16 @@ export class AssetService extends BaseService {
       }
     }
 
+    // Fork (R58): judged while the asset (and its album memberships) still exist - see NotificationService.
+    const hiddenForOwner = await BaseService.create(LockService, this).getOwnerEventHiddenIds(asset.ownerId, [id]);
+    const hiddenFromOrdinary = hiddenForOwner.has(id);
+
     await this.assetRepository.remove(asset);
     if (!asset.libraryId) {
       await this.userRepository.updateUsage(asset.ownerId, -(asset.exifInfo?.fileSizeInByte || 0));
     }
 
-    await this.eventRepository.emit('AssetDelete', { assetId: id, userId: asset.ownerId });
+    await this.eventRepository.emit('AssetDelete', { assetId: id, userId: asset.ownerId, hiddenFromOrdinary });
 
     // Final removal: a smart album whose cached thumbnail or membership referenced this
     // asset must drop the reference on next read.

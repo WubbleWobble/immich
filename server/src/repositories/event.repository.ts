@@ -51,7 +51,8 @@ type EventMap = {
   AssetHide: [{ assetId: string; userId: string }];
   AssetShow: [{ assetId: string; userId: string }];
   AssetTrash: [{ assetId: string; userId: string }];
-  AssetDelete: [{ assetId: string; userId: string }];
+  /** `hiddenFromOrdinary`: judged before removal (R58) - the event then reaches only the owner's elevated sessions. */
+  AssetDelete: [{ assetId: string; userId: string; hiddenFromOrdinary?: boolean }];
   AssetMetadataExtracted: [{ assetId: string; userId: string; source?: JobSource }];
 
   // asset bulk events
@@ -79,10 +80,11 @@ type EventMap = {
   // stack events
   StackCreate: [{ stackId: string; userId: string }];
   StackUpdate: [{ stackId: string; userId: string }];
-  StackDelete: [{ stackId: string; userId: string }];
+  /** `hiddenFromOrdinary`: judged before deletion (R58) - the event then reaches only the owner's elevated sessions. */
+  StackDelete: [{ stackId: string; userId: string; hiddenFromOrdinary?: boolean }];
 
   // stack bulk events
-  StackDeleteAll: [{ stackIds: string[]; userId: string }];
+  StackDeleteAll: [{ stackIds: string[]; userId: string; hiddenFromOrdinary?: boolean }];
 
   // user events
   UserSignup: [{ notify: boolean; id: string; password?: string }];

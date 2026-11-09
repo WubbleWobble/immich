@@ -216,6 +216,7 @@ describe(StackService.name, () => {
       expect(mocks.event.emit).toHaveBeenCalledWith('StackDelete', {
         stackId: 'stack-id',
         userId: auth.user.id,
+        hiddenFromOrdinary: false,
       });
     });
   });
@@ -238,6 +239,7 @@ describe(StackService.name, () => {
       expect(mocks.event.emit).toHaveBeenCalledWith('StackDeleteAll', {
         stackIds: ['stack-id'],
         userId: authStub.admin.user.id,
+        hiddenFromOrdinary: false,
       });
     });
   });
