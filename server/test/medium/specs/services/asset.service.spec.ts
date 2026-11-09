@@ -2168,6 +2168,87 @@ describe(AssetService.name, () => {
         await expect(sut.search(factory.auth({ user: partner }), {})).resolves.toHaveLength(0);
       });
 
+      it("R62: a partner's lock hides a notification in every session of the recipient; only the recipient's own locks yield to elevation; an album grant rescues", async () => {
+        const { ctx } = setup();
+        const { sut, ctx: notifyCtx } = albumNotifier();
+        notifyCtx.getMock(WebsocketRepository).clientSend.mockReturnValue();
+        const { user: owner, hidden, visible } = await newLibrary(ctx);
+        const { user: partner } = await ctx.newUser();
+        await ctx.newPartner({ sharedById: owner.id, sharedWithId: partner.id });
+        // the partner locks an album of their own too, with a notification about it (own hiding)
+        const { album: ownLocked } = await ctx.newAlbum({ ownerId: partner.id });
+        await ctx.get(LockRepository).lockAlbum(partner.id, ownLocked.id);
+        const elevatedRoom = await withSessions(ctx, partner.id);
+        const notifications = ctx.get(NotificationRepository);
+        const notice = async (title: string, data: object) =>
+          notifications.create({ userId: partner.id, title, data: JSON.stringify(data) });
+        const foreignNotice = await notice('foreign-hidden', { assetId: hidden.id });
+        const ownNotice = await notice('own-hidden', { albumId: ownLocked.id });
+        const visibleNotice = await notice('visible', { assetId: visible.id });
+        const ordinary = factory.auth({ user: partner });
+        const elevated = factory.auth({ user: partner, session: { id: elevatedRoom, hasElevatedPermission: true } });
+        const listed = async (auth: AuthDto) => {
+          const items = await sut.search(auth, {});
+          return items.map(({ title }) => title).toSorted();
+        };
+        const actions = (auth: AuthDto) => [
+          (id: string) => sut.get(auth, id),
+          (id: string) => sut.update(auth, id, { readAt: new Date() }),
+          (id: string) => sut.delete(auth, id),
+        ];
+        const failsLikeMissing = async (auth: AuthDto, id: string) => {
+          for (const action of actions(auth)) {
+            const missing = await failure(action, factory.uuid());
+            expect(missing).toMatchObject({ status: 400 });
+            await expect(failure(action, id)).resolves.toEqual(missing);
+          }
+        };
+        const readAt = async (id: string) => {
+          const [row] = await ctx.database.selectFrom('notification').select('readAt').where('id', '=', id).execute();
+          return row.readAt;
+        };
+
+        // foreign-hidden: absent and refused like a missing id in BOTH sessions; own-hidden yields to elevation
+        await expect(listed(ordinary)).resolves.toEqual(['visible']);
+        await expect(listed(elevated)).resolves.toEqual(['own-hidden', 'visible']);
+        await failsLikeMissing(ordinary, foreignNotice.id);
+        await failsLikeMissing(elevated, foreignNotice.id);
+        await failsLikeMissing(ordinary, ownNotice.id);
+        // (upstream `get` answers soft-deleted rows only, so a live notification is read back through `update`)
+        await expect(sut.update(elevated, ownNotice.id, { readAt: null })).resolves.toMatchObject({ id: ownNotice.id });
+
+        // bulk: the foreign-hidden one is skipped even when elevated
+        await sut.updateAll(elevated, { ids: [foreignNotice.id, ownNotice.id, visibleNotice.id], readAt: new Date() });
+        await expect(readAt(foreignNotice.id)).resolves.toBeNull();
+        await expect(readAt(ownNotice.id)).resolves.toEqual(expect.any(Date));
+        await expect(readAt(visibleNotice.id)).resolves.toEqual(expect.any(Date));
+
+        // push routing: own-hidden to the elevated room only, foreign-hidden nowhere, visible to the user room
+        for (const item of [ownNotice, foreignNotice, visibleNotice]) {
+          await sut['sendNotification'](partner.id, item);
+        }
+        expect(
+          notifyCtx.getMock(WebsocketRepository).clientSend.mock.calls.map(([event, room, item]) => ({
+            event,
+            room,
+            title: (item as { title: string }).title,
+          })),
+        ).toEqual([
+          { event: 'on_notification', room: elevatedRoom, title: 'own-hidden' },
+          { event: 'on_notification', room: partner.id, title: 'visible' },
+        ]);
+
+        // an independent album grant rescues: the owner shares an album holding the asset with the partner
+        const { album: shared } = await ctx.newAlbum({ ownerId: owner.id }, [hidden.id]);
+        await ctx.newAlbumUser({ albumId: shared.id, userId: partner.id });
+        await expect(listed(ordinary)).resolves.toEqual(['foreign-hidden', 'visible']);
+        for (const auth of [ordinary, elevated]) {
+          await expect(sut.update(auth, foreignNotice.id, { readAt: null })).resolves.toMatchObject({
+            id: foreignNotice.id,
+          });
+        }
+      });
+
       it('a user without locks gets album updates and notifications unchanged', async () => {
         const { ctx } = setup();
         const { sut, ctx: notifyCtx } = albumNotifier();

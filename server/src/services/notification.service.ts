@@ -41,24 +41,27 @@ export class NotificationService extends BaseService {
 
   async search(auth: AuthDto, dto: NotificationSearchDto): Promise<NotificationDto[]> {
     const items = await this.notificationRepository.search(auth.user.id, dto);
-    // Fork (R58): outside elevation, a notification about a hidden album or asset is not listed (see sendNotification).
-    const hidden = auth.session?.hasElevatedPermission
-      ? new Set<string>()
-      : await this.lockService().getHiddenNotificationIds(auth.user.id, items);
+    // Fork (R58, R62): a notification about hidden content is not listed - elevation bypasses only the recipient's own
+    // locks, never a partner's (see sendNotification).
+    const hidden = await this.lockService().getHiddenNotificationIds(auth.user.id, items, {
+      isElevated: !!auth.session?.hasElevatedPermission,
+    });
     return items.filter(({ id }) => !hidden.has(id)).map((item) => mapNotification(item));
   }
 
   /**
-   * Fork (R58, §15.2): the caller's notifications among `ids` that are about hidden content, for an ordinary session
-   * (always empty when elevated). Single-id endpoints refuse them exactly like a missing id (ruling R32); bulk
-   * endpoints skip them silently.
+   * Fork (R58, R62, §15.2): the caller's notifications among `ids` that are about content hidden for this session -
+   * by the caller's own locks outside elevation, or by a partner's locks in any session. Single-id endpoints refuse
+   * them exactly like a missing id (ruling R32); bulk endpoints skip them silently.
    */
   private async getHiddenOwnNotificationIds(auth: AuthDto, ids: string[]): Promise<Set<string>> {
-    if (auth.session?.hasElevatedPermission || ids.length === 0) {
+    if (ids.length === 0) {
       return new Set();
     }
     const items = await this.notificationRepository.getByIds(auth.user.id, ids);
-    return this.lockService().getHiddenNotificationIds(auth.user.id, items);
+    return this.lockService().getHiddenNotificationIds(auth.user.id, items, {
+      isElevated: !!auth.session?.hasElevatedPermission,
+    });
   }
 
   /** The single-id access check, with a notification about hidden content failing exactly like a missing one. */
@@ -71,12 +74,12 @@ export class NotificationService extends BaseService {
   }
 
   /**
-   * Fork (R58): the `on_notification` push follows the recipient's lock state - a notification about an album or asset
-   * hidden for the recipient outside elevation reaches only their elevated sessions.
+   * Fork (R58, R62): the `on_notification` push follows the recipient's lock state - a notification about content
+   * hidden by the recipient's own locks reaches only their elevated sessions; one hidden by a partner's locks reaches
+   * no session at all.
    */
   private async sendNotification(userId: string, item: Parameters<typeof mapNotification>[0]) {
-    const hidden = await this.lockService().getHiddenNotificationIds(userId, [item]);
-    for (const room of await this.lockService().getOwnerEventRooms(userId, hidden.has(item.id))) {
+    for (const room of await this.lockService().getNotificationRooms(userId, item)) {
       this.websocketRepository.clientSend('on_notification', room, mapNotification(item));
     }
   }

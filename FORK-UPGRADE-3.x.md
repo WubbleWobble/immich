@@ -141,8 +141,11 @@ State these plainly to users.
   you) likewise reach only your elevated sessions, and such notifications
   are left out of the notification list outside elevation (and cannot be
   opened, marked read or deleted there, even while soft-deleted and still
-  within the cleanup window; bulk actions skip them). Sharees who
-  did not lock the album are unaffected. A person's thumbnail-ready event
+  within the cleanup window; bulk actions skip them). Elevation bypasses
+  only your own locks here: a notification about a partner's asset that
+  their locks hide from you (with no album or smart-album grant of your own
+  to it) is hidden in every session, elevated or not, and its push reaches
+  no session (R62). Sharees who did not lock the album are unaffected. A person's thumbnail-ready event
   for a person you only see on hidden photos also reaches elevated sessions
   only (R60).
 - **CLI and API-key uploads re-send hidden files every run (R49).** API-key

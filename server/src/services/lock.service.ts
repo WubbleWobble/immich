@@ -404,17 +404,24 @@ export class LockService extends BaseService {
   }
 
   /**
-   * R58 (round 3), notifications: the subset of `notifications` (all of `userId`) whose data references an album
-   * (`albumId`) hidden by the recipient's own locks or an asset (`assetId`) of the recipient or a partner of theirs that
-   * is hidden for them, both under the non-elevated rule. Nothing is queried for notifications without such references, and the album side only when the
-   * recipient holds locks.
+   * R58 (round 3) and R62, notifications: the subset of `notifications` (all of `userId`) that are about hidden content,
+   * judged per hiding source. An album reference (`albumId`) is hidden only by the recipient's OWN locks, which an
+   * elevated session bypasses (another member's locks never matter, spec §4). An asset reference (`assetId`) of the
+   * recipient or a partner of theirs is judged under the direct-by-id rule: elevation bypasses the recipient's own
+   * locks only, a partner's locks apply in every session, and an independent album or smart-album grant still rescues
+   * (`relatedOnly`: an unrelated user's asset enumerates nothing). The reveal set never applies (§15.3). Nothing is
+   * queried for notifications without such references, and the album side only when the recipient holds locks.
    */
-  async getHiddenNotificationIds(userId: string, notifications: { id: string; data: unknown }[]): Promise<Set<string>> {
+  async getHiddenNotificationIds(
+    userId: string,
+    notifications: { id: string; data: unknown }[],
+    { isElevated = false }: { isElevated?: boolean } = {},
+  ): Promise<Set<string>> {
     const refs = notifications.map(({ id, data }) => ({ id, ...getNotificationRefs(data) }));
     const albumRefs = refs.filter(({ albumId }) => albumId);
     const assetIds = [...new Set(refs.flatMap(({ assetId }) => (assetId ? [assetId] : [])))];
     const hidden = new Set<string>();
-    if (albumRefs.length > 0 && (await this.lockRepository.anyHasLocks([userId]))) {
+    if (!isElevated && albumRefs.length > 0 && (await this.lockRepository.anyHasLocks([userId]))) {
       const hiddenAlbumIds = new Set(await this.lockRepository.getHiddenAlbumIds(userId, NO_REVEALED_LOCKS));
       for (const { id, albumId } of albumRefs) {
         if (hiddenAlbumIds.has(albumId!)) {
@@ -423,9 +430,11 @@ export class LockService extends BaseService {
       }
     }
     if (assetIds.length > 0) {
-      // Only assets the recipient owns or reaches as a partner are judged (relatedOnly): a notification about an
-      // unrelated user's asset (an admin custom notification) enumerates nothing hidden for this recipient.
-      const hiddenAssetIds = await this.getUnshareableHiddenAssetIds({ user: { id: userId } } as AuthDto, assetIds);
+      const auth = {
+        user: { id: userId },
+        session: isElevated ? { hasElevatedPermission: true } : undefined,
+      } as AuthDto;
+      const hiddenAssetIds = await this.getHiddenAssetIds(auth, assetIds, 'direct', { relatedOnly: true });
       for (const { id, assetId } of refs) {
         if (assetId && hiddenAssetIds.has(assetId)) {
           hidden.add(id);
@@ -433,6 +442,20 @@ export class LockService extends BaseService {
       }
     }
     return hidden;
+  }
+
+  /**
+   * R62, the `on_notification` push: the user room when the notification is visible to an ordinary session; the
+   * recipient's elevated session rooms when only their own locks hide it; no room at all when a foreign owner's locks
+   * hide it (elevation does not bypass those). A visible notification costs the ordinary judgement alone.
+   */
+  async getNotificationRooms(userId: string, item: { id: string; data: unknown }): Promise<string[]> {
+    const hiddenForOrdinary = await this.getHiddenNotificationIds(userId, [item]);
+    if (!hiddenForOrdinary.has(item.id)) {
+      return [userId];
+    }
+    const hiddenForElevated = await this.getHiddenNotificationIds(userId, [item], { isElevated: true });
+    return hiddenForElevated.has(item.id) ? [] : this.getElevatedSessionIds(userId);
   }
 
   /**
