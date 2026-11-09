@@ -12,6 +12,14 @@ type AssetCursor = {
 export class PreloadManager {
   private nextPreloader: AdaptiveImageLoader | undefined;
   private previousPreloader: AdaptiveImageLoader | undefined;
+  /**
+   * Fork: the preloader of the asset the viewer navigated onto. It is kept alive while that asset is shown (the
+   * viewer's <Image> adopts its in-flight requests) and destroyed once the viewer moves on. An orphaned preloader's
+   * unsettled requests would otherwise count as live consumers forever and block the cancel of every passed-over
+   * asset's download (see ImageRequestLedger). Destroying it cancels only its own tokens: an <Image> still showing
+   * the URL keeps its own.
+   */
+  private adoptedPreloader: AdaptiveImageLoader | undefined;
 
   private startPreloader(
     asset: AssetResponseDto | undefined,
@@ -68,6 +76,10 @@ export class PreloadManager {
     const movedForward = newCursor.current.id === oldCursor.nextAsset?.id;
     const movedBackward = newCursor.current.id === oldCursor.previousAsset?.id;
 
+    // the viewer left the asset whose preloader it had adopted
+    this.adoptedPreloader?.destroy();
+    this.adoptedPreloader = undefined;
+
     if (!movedBackward) {
       this.destroyPreviousPreloader();
     }
@@ -77,8 +89,10 @@ export class PreloadManager {
     }
 
     if (movedForward) {
+      this.adoptedPreloader = this.nextPreloader;
       this.nextPreloader = this.startPreloader(newCursor.nextAsset, sharedlink);
     } else if (movedBackward) {
+      this.adoptedPreloader = this.previousPreloader;
       this.previousPreloader = this.startPreloader(newCursor.previousAsset, sharedlink);
     } else {
       this.previousPreloader = this.startPreloader(newCursor.previousAsset, sharedlink);
@@ -98,6 +112,8 @@ export class PreloadManager {
   destroy() {
     this.destroyNextPreloader();
     this.destroyPreviousPreloader();
+    this.adoptedPreloader?.destroy();
+    this.adoptedPreloader = undefined;
   }
 }
 
