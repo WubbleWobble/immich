@@ -1007,6 +1007,19 @@ export class AssetRepository {
                     .whereRef('stacked.stackId', '=', 'asset.stackId')
                     .where('stacked.deletedAt', 'is', null)
                     .where('stacked.visibility', '=', AssetVisibility.Timeline)
+                    // Fork (R36-1): members hidden for their owner are not counted - each judged by its owner's
+                    // entry (no reveal unless the viewer is elevated and the member is the viewer's own).
+                    .$if(!!options.lockVisibility?.length, (qb) =>
+                      qb.where((eb) =>
+                        eb.exists(
+                          withLockVisibility(
+                            eb.selectFrom('asset').select('asset.id').whereRef('asset.id', '=', 'stacked.id'),
+                            this.db,
+                            options.lockVisibility!,
+                          ),
+                        ),
+                      ),
+                    )
                     .groupBy('stacked.stackId')
                     .as('stacked_assets'),
                 (join) => join.onTrue(),

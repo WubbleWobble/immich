@@ -337,6 +337,67 @@ describe(TimelineService.name, () => {
     });
   });
 
+  describe('stack counts and locks', () => {
+    it('a time bucket stack count excludes members hidden for their owner (R36-1)', async () => {
+      const { sut, ctx } = setup();
+      const { user: viewer } = await ctx.newUser();
+      const { user: partner } = await ctx.newUser();
+      await ctx.newPartner({ sharedById: partner.id, sharedWithId: viewer.id });
+
+      const newLockedStack = async (ownerId: string) => {
+        const members = [];
+        for (const day of ['10', '11', '12']) {
+          const { asset } = await ctx.newAsset({ ownerId, localDateTime: `1970-02-${day}T00:00:00.000Z` });
+          await ctx.newExif({ assetId: asset.id, make: 'Canon' });
+          members.push(asset);
+        }
+        const [primary, hidden, visible] = members;
+        const { stack } = await ctx.newStack({ ownerId }, [primary.id, hidden.id, visible.id]);
+        const { album } = await ctx.newAlbum({ ownerId }, [hidden.id]);
+        await ctx.get(LockRepository).lockAlbum(ownerId, album.id);
+        return { stack, primary };
+      };
+      const own = await newLockedStack(viewer.id);
+      const partners = await newLockedStack(partner.id);
+
+      const stackOf = async (auth: AuthDto, userId: string) => {
+        const json = await sut.getTimeBucket(auth, {
+          timeBucket: '1970-02-01',
+          userId,
+          withStacked: true,
+          visibility: AssetVisibility.Timeline,
+        });
+        const { id, stack } = JSON.parse(json) as { id: string[]; stack: Array<[string, string] | null> };
+        return { id, stack };
+      };
+
+      const plain = factory.auth({ user: viewer });
+      const elevated = factory.auth({ user: viewer, session: { hasElevatedPermission: true } });
+
+      // the owner, plain and elevated without reveal: 2 visible members, not 3
+      for (const auth of [plain, elevated]) {
+        await expect(stackOf(auth, viewer.id)).resolves.toEqual({ id: [own.primary.id], stack: [[own.stack.id, '2']] });
+      }
+      // revealing the lock (elevated) counts the member again
+      const lockedAlbumId = await ctx.database
+        .selectFrom('locked_album')
+        .select('albumId')
+        .where('userId', '=', viewer.id)
+        .executeTakeFirstOrThrow();
+      await expect(
+        stackOf({ ...elevated, revealedLocks: { albumIds: [lockedAlbumId.albumId], containerIds: [] } }, viewer.id),
+      ).resolves.toEqual({ id: [own.primary.id], stack: [[own.stack.id, '3']] });
+
+      // a partner's hidden member is never counted, elevated or not
+      for (const auth of [plain, elevated]) {
+        await expect(stackOf(auth, partner.id)).resolves.toEqual({
+          id: [partners.primary.id],
+          stack: [[partners.stack.id, '2']],
+        });
+      }
+    });
+  });
+
   describe('map viewport and locks', () => {
     it('map-viewport bbox timeline buckets exclude hidden assets', async () => {
       const { sut, ctx } = setup();
