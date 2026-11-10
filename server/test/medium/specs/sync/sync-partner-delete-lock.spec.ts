@@ -6,6 +6,7 @@ import {
   AssetType,
   AssetVisibility,
   JobStatus,
+  Permission,
   SyncEntityType,
   SyncRequestType,
 } from 'src/enum.js';
@@ -30,6 +31,7 @@ import { DB } from 'src/schema/index.js';
 import { AssetService } from 'src/services/asset.service.js';
 import { LibraryService } from 'src/services/library.service.js';
 import { StackService } from 'src/services/stack.service.js';
+import { checkAccess } from 'src/utils/access.js';
 import { upsertTags } from 'src/utils/tag.js';
 import { SyncTestContext, newMediumService } from 'test/medium.factory.js';
 import { factory } from 'test/small.factory.js';
@@ -382,5 +384,72 @@ describe('a trashed photo hidden only by a locked smart album (R79)', () => {
     await expect(ownerHiddenOf(ctx, hidden.id)).resolves.not.toBe(true);
     const response = await ctx.syncStream(auth, [SyncRequestType.PartnerAssetsV2]);
     expect(deletedIds(response, SyncEntityType.PartnerAssetDeleteV1)).toEqual([hidden.id]);
+  });
+});
+
+/**
+ * R79 and 7A.2: the partner's Live Photo whose still is hidden only by a locked smart album on its tag; the motion
+ * part has no container of its own, so it is judged with its still.
+ */
+const setupSmartLockedLivePhoto = async ({ locked }: { locked: boolean }) => {
+  const ctx = new SyncTestContext(defaultDatabase);
+  const { user } = await ctx.newSyncAuthUser();
+  const { user: owner } = await ctx.newUser();
+  const { asset: motion } = await ctx.newAsset({
+    ownerId: owner.id,
+    type: AssetType.Video,
+    visibility: AssetVisibility.Hidden,
+  });
+  const { asset: still } = await ctx.newAsset({ ownerId: owner.id, livePhotoVideoId: motion.id });
+  const [tag] = await upsertTags(ctx.get(TagRepository), { userId: owner.id, tags: ['private'] });
+  await ctx.newTagAsset({ tagIds: [tag.id], assetIds: [still.id] });
+  const { album } = await ctx.newAlbum({
+    ownerId: owner.id,
+    kind: AlbumKind.Smart,
+    filter: { tagIds: [tag.id] } as any,
+  });
+  if (locked) {
+    await ctx.get(LockRepository).lockAlbum(owner.id, album.id);
+  }
+  await ctx.newPartner({ sharedById: owner.id, sharedWithId: user.id });
+  const freshDevice = async () => {
+    const { session } = await ctx.newSession({ userId: user.id });
+    return factory.auth({ session, user: { id: user.id, name: user.name, email: user.email } });
+  };
+  const partnerReadable = async (ids: string[]) =>
+    [
+      ...(await checkAccess(ctx.get(AccessRepository), {
+        auth: factory.auth({ user: { id: user.id } }),
+        permission: Permission.AssetRead,
+        ids,
+      })),
+    ].toSorted();
+  return { ctx, still, motion, freshDevice, partnerReadable };
+};
+
+const streamedAssetIds = (response: Array<{ type: string; data: unknown }>) =>
+  response
+    .filter((item) => item.type === SyncEntityType.PartnerAssetV2)
+    .map((item) => (item.data as { id: string }).id)
+    .toSorted();
+
+describe('a trashed Live Photo still hidden only by a locked smart album (R79, 7A.2)', () => {
+  it('keeps its container-less motion part hidden from the partner stream and direct reads', async () => {
+    const { ctx, still, motion, freshDevice, partnerReadable } = await setupSmartLockedLivePhoto({ locked: true });
+    await ctx.get(AssetRepository).updateAll([still.id], { deletedAt: new Date(), status: AssetStatus.Trashed });
+
+    const response = await ctx.syncStream(await freshDevice(), [SyncRequestType.PartnerAssetsV2]);
+    expect(JSON.stringify(response)).not.toContain(still.id);
+    expect(JSON.stringify(response)).not.toContain(motion.id);
+    await expect(partnerReadable([motion.id])).resolves.toEqual([]);
+  });
+
+  it('control: without the lock both parts stream and the motion part is readable', async () => {
+    const { ctx, still, motion, freshDevice, partnerReadable } = await setupSmartLockedLivePhoto({ locked: false });
+    await ctx.get(AssetRepository).updateAll([still.id], { deletedAt: new Date(), status: AssetStatus.Trashed });
+
+    const response = await ctx.syncStream(await freshDevice(), [SyncRequestType.PartnerAssetsV2]);
+    expect(streamedAssetIds(response)).toEqual([still.id, motion.id].toSorted());
+    await expect(partnerReadable([motion.id])).resolves.toEqual([motion.id]);
   });
 });
