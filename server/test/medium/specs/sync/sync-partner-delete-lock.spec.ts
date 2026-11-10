@@ -1,6 +1,14 @@
 import { Kysely } from 'kysely';
 import { AuthDto } from 'src/dtos/auth.dto.js';
-import { AssetType, AssetVisibility, JobStatus, SyncEntityType, SyncRequestType } from 'src/enum.js';
+import {
+  AlbumKind,
+  AssetStatus,
+  AssetType,
+  AssetVisibility,
+  JobStatus,
+  SyncEntityType,
+  SyncRequestType,
+} from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { AlbumRepository } from 'src/repositories/album.repository.js';
 import { AssetEditRepository } from 'src/repositories/asset-edit.repository.js';
@@ -15,12 +23,14 @@ import { SessionRepository } from 'src/repositories/session.repository.js';
 import { SharedLinkAssetRepository } from 'src/repositories/shared-link-asset.repository.js';
 import { StackRepository } from 'src/repositories/stack.repository.js';
 import { StorageRepository } from 'src/repositories/storage.repository.js';
+import { TagRepository } from 'src/repositories/tag.repository.js';
 import { UserRepository } from 'src/repositories/user.repository.js';
 import { WebsocketRepository } from 'src/repositories/websocket.repository.js';
 import { DB } from 'src/schema/index.js';
 import { AssetService } from 'src/services/asset.service.js';
 import { LibraryService } from 'src/services/library.service.js';
 import { StackService } from 'src/services/stack.service.js';
+import { upsertTags } from 'src/utils/tag.js';
 import { SyncTestContext, newMediumService } from 'test/medium.factory.js';
 import { factory } from 'test/small.factory.js';
 import { getKyselyDB } from 'test/utils.js';
@@ -306,5 +316,71 @@ describe('file-watcher removal of a hidden Live Photo (R68)', () => {
       const response = await ctx.syncStream(viewer, [SyncRequestType.PartnerAssetsV2]);
       expect(deletedIds(response, SyncEntityType.PartnerAssetDeleteV1)).toEqual([still.id, motion.id].toSorted());
     }
+  });
+});
+
+/** R79: the partner's tagged photo is protected ONLY by the partner's locked smart album on the tag. */
+const setupSmartLocked = async ({ locked }: { locked: boolean }) => {
+  const ctx = new SyncTestContext(defaultDatabase);
+  const { auth, user } = await ctx.newSyncAuthUser();
+  const { user: owner } = await ctx.newUser();
+  const { asset: hidden } = await ctx.newAsset({ ownerId: owner.id });
+  const [tag] = await upsertTags(ctx.get(TagRepository), { userId: owner.id, tags: ['private'] });
+  await ctx.newTagAsset({ tagIds: [tag.id], assetIds: [hidden.id] });
+  const { album } = await ctx.newAlbum({
+    ownerId: owner.id,
+    kind: AlbumKind.Smart,
+    filter: { tagIds: [tag.id] } as any,
+  });
+  if (locked) {
+    await ctx.get(LockRepository).lockAlbum(owner.id, album.id);
+  }
+  await ctx.newPartner({ sharedById: owner.id, sharedWithId: user.id });
+  const freshDevice = async () => {
+    const { session } = await ctx.newSession({ userId: user.id });
+    return factory.auth({ session, user: { id: user.id, name: user.name, email: user.email } });
+  };
+  return { ctx, auth, owner, hidden, freshDevice };
+};
+
+const ownerHiddenOf = async (ctx: SyncTestContext, assetId: string) => {
+  const row = await ctx.database
+    .selectFrom('asset_audit')
+    .select('ownerHidden')
+    .where('assetId', '=', assetId)
+    .executeTakeFirstOrThrow();
+  return row.ownerHidden;
+};
+
+/**
+ * Fork (ruling R79): privacy judgment does not depend on trash state. A photo hidden only by its owner's locked smart
+ * album stays hidden once trashed: the partner stream does not send the trashed row, and the AssetDelete job's
+ * pre-delete verdict marks its audit row `ownerHidden`, so the partner delete stream never names it.
+ */
+describe('a trashed photo hidden only by a locked smart album (R79)', () => {
+  it('is neither streamed to the partner while trashed nor named when deleted', async () => {
+    const { ctx, auth, hidden, freshDevice } = await setupSmartLocked({ locked: true });
+    await ctx.get(AssetRepository).updateAll([hidden.id], { deletedAt: new Date(), status: AssetStatus.Trashed });
+
+    const trashed = await ctx.syncStream(await freshDevice(), [SyncRequestType.PartnerAssetsV2]);
+    expect(JSON.stringify(trashed)).not.toContain(hidden.id);
+
+    await assetService(ctx.database).handleAssetDeletion({ id: hidden.id, deleteOnDisk: false });
+    await expect(ownerHiddenOf(ctx, hidden.id)).resolves.toBe(true);
+    for (const viewer of [auth, await freshDevice()]) {
+      const response = await ctx.syncStream(viewer, [SyncRequestType.PartnerAssetsV2]);
+      expect(deletedIds(response, SyncEntityType.PartnerAssetDeleteV1)).toEqual([]);
+      expect(JSON.stringify(response)).not.toContain(hidden.id);
+    }
+  });
+
+  it('an owner without locks is unchanged: the deletion streams to the partner', async () => {
+    const { ctx, auth, hidden } = await setupSmartLocked({ locked: false });
+    await ctx.get(AssetRepository).updateAll([hidden.id], { deletedAt: new Date(), status: AssetStatus.Trashed });
+
+    await assetService(ctx.database).handleAssetDeletion({ id: hidden.id, deleteOnDisk: false });
+    await expect(ownerHiddenOf(ctx, hidden.id)).resolves.not.toBe(true);
+    const response = await ctx.syncStream(auth, [SyncRequestType.PartnerAssetsV2]);
+    expect(deletedIds(response, SyncEntityType.PartnerAssetDeleteV1)).toEqual([hidden.id]);
   });
 });

@@ -4,7 +4,15 @@ import { DateTime } from 'luxon';
 import { AuthDto } from 'src/dtos/auth.dto.js';
 import { AssetEditAction, MirrorAxis } from 'src/dtos/editing.dto.js';
 import { AssetFaceCreateDto, PersonSearchDto, PersonUserRole } from 'src/dtos/person.dto.js';
-import { AlbumKind, AlbumUserRole, AssetFileType, AssetVisibility, JobName, Permission } from 'src/enum.js';
+import {
+  AlbumKind,
+  AlbumUserRole,
+  AssetFileType,
+  AssetStatus,
+  AssetVisibility,
+  JobName,
+  Permission,
+} from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { AlbumUserRepository } from 'src/repositories/album-user.repository.js';
 import { AlbumRepository } from 'src/repositories/album.repository.js';
@@ -24,6 +32,7 @@ import { PersonRepository } from 'src/repositories/person.repository.js';
 import { SearchRepository } from 'src/repositories/search.repository.js';
 import { StorageRepository } from 'src/repositories/storage.repository.js';
 import { SystemMetadataRepository } from 'src/repositories/system-metadata.repository.js';
+import { TagRepository } from 'src/repositories/tag.repository.js';
 import { UserRepository } from 'src/repositories/user.repository.js';
 import { DB } from 'src/schema/index.js';
 import { AlbumService } from 'src/services/album.service.js';
@@ -33,6 +42,7 @@ import { PersonService } from 'src/services/person.service.js';
 import { SearchService } from 'src/services/search.service.js';
 import { checkAccess } from 'src/utils/access.js';
 import { getMyPartnerIds } from 'src/utils/asset.util.js';
+import { upsertTags } from 'src/utils/tag.js';
 import { newMediumService } from 'test/medium.factory.js';
 import { factory, newEmbedding, newUuid } from 'test/small.factory.js';
 import { getKyselyDB } from 'test/utils.js';
@@ -163,6 +173,47 @@ const newSharedPerson = async (ctx: Ctx) => {
   await ctx.newPersonUser({ personGroupId: person.personGroupId, sharedById: owner.id, sharedWithId: sharee.id });
   return { owner, sharee, personGroupId: person.personGroupId };
 };
+
+/**
+ * R79 fixture: A shares person G with B, and A's photo P (a face of G, the source of A's published crop) is protected
+ * ONLY by a locked smart album of A filtering on `criterion` - no regular-album membership.
+ */
+type SmartCriterion = 'tag' | 'person' | 'favorite';
+const smartLockedSource = async (ctx: Ctx, criterion: SmartCriterion) => {
+  const shared = await newSharedPerson(ctx);
+  const { owner, personGroupId } = shared;
+  const { asset } = await ctx.newAsset({ ownerId: owner.id, isFavorite: criterion === 'favorite' });
+  const { assetFace: face } = await ctx.newAssetFace({ assetId: asset.id, personGroupId });
+  let filter: object;
+  switch (criterion) {
+    case 'tag': {
+      const [tag] = await upsertTags(ctx.get(TagRepository), { userId: owner.id, tags: ['private'] });
+      await ctx.newTagAsset({ tagIds: [tag.id], assetIds: [asset.id] });
+      filter = { tagIds: [tag.id] };
+      break;
+    }
+    case 'person': {
+      filter = { personIds: [personGroupId] };
+      break;
+    }
+    case 'favorite': {
+      filter = { isFavorite: true };
+      break;
+    }
+  }
+  const { album: lockedSmart } = await ctx.newAlbum({
+    ownerId: owner.id,
+    kind: AlbumKind.Smart,
+    filter: filter as any,
+  });
+  await ctx.get(LockRepository).lockAlbum(owner.id, lockedSmart.id);
+  await publishPair(ctx, { ownerId: owner.id, personGroupId, faceId: face.id, path: '/owner-p.jpeg' });
+  return { ...shared, asset, face, filter, lockedSmart };
+};
+
+/** The owner's trash write (AssetService.deleteAll without force, after its access check). */
+const trashAsset = (ctx: Ctx, assetId: string) =>
+  ctx.get(AssetRepository).updateAll([assetId], { deletedAt: new Date(), status: AssetStatus.Trashed });
 
 // Databases created for a single test are dropped from the pool afterwards, so the suite stays within the test
 // server's connection limit.
@@ -3084,6 +3135,89 @@ describe(PersonService.name, () => {
         personGroupId: target.personGroupId,
         deletedAt: null,
       });
+    });
+  });
+  describe('trashed sources keep their smart-lock verdict (R79)', () => {
+    for (const criterion of ['tag', 'person', 'favorite'] as const) {
+      it(`a locked smart album on a ${criterion} keeps withholding the shared crop after its source is trashed`, async () => {
+        const { ctx, sut } = setup();
+        const { sharee, personGroupId, asset, lockedSmart } = await smartLockedSource(ctx, criterion);
+
+        for (const [label, auth] of shareeAuths(sharee, [lockedSmart.id])) {
+          await expectWithheld(sut, auth, personGroupId, `before trash, ${label}`);
+        }
+
+        await trashAsset(ctx, asset.id);
+        for (const [label, auth] of shareeAuths(sharee, [lockedSmart.id])) {
+          await expectWithheld(sut, auth, personGroupId, `after trash, ${label}`);
+        }
+      });
+    }
+
+    it('rescue: a source matched by a locked and an unlocked smart album is served before and after trash', async () => {
+      const { ctx, sut } = setup();
+      const { owner, sharee, personGroupId, asset, filter } = await smartLockedSource(ctx, 'tag');
+      await ctx.newAlbum({ ownerId: owner.id, kind: AlbumKind.Smart, filter: filter as any });
+
+      await expectServed(sut, factory.auth({ user: sharee }), personGroupId, '/owner-p.jpeg', 'before trash');
+      await trashAsset(ctx, asset.id);
+      await expectServed(sut, factory.auth({ user: sharee }), personGroupId, '/owner-p.jpeg', 'after trash');
+    });
+
+    it('rescue: a source in a locked regular album but matched by an unlocked smart album stays served after trash', async () => {
+      const { ctx, sut } = setup();
+      const { owner, sharee, personGroupId } = await newSharedPerson(ctx);
+      const source = await newFaceOn(ctx, { ownerId: owner.id, personGroupId, locked: true });
+      await ctx.newAlbum({ ownerId: owner.id, kind: AlbumKind.Smart, filter: { personIds: [personGroupId] } as any });
+      await publishPair(ctx, { ownerId: owner.id, personGroupId, faceId: source.face.id, path: '/owner.jpeg' });
+
+      await expectServed(sut, factory.auth({ user: sharee }), personGroupId, '/owner.jpeg', 'before trash');
+      await trashAsset(ctx, source.asset.id);
+      await expectServed(sut, factory.auth({ user: sharee }), personGroupId, '/owner.jpeg', 'after trash');
+    });
+
+    it('control: a locked regular album keeps withholding a trashed source', async () => {
+      const { ctx, sut } = setup();
+      const { owner, sharee, personGroupId } = await newSharedPerson(ctx);
+      const hidden = await newFaceOn(ctx, { ownerId: owner.id, personGroupId, locked: true });
+      await publishPair(ctx, { ownerId: owner.id, personGroupId, faceId: hidden.face.id, path: '/owner-h.jpeg' });
+
+      await trashAsset(ctx, hidden.asset.id);
+      for (const [label, auth] of shareeAuths(sharee, [hidden.album.id])) {
+        await expectWithheld(sut, auth, personGroupId, label);
+      }
+    });
+
+    it('control: an owner without locks is unchanged - a trashed source crop is still served', async () => {
+      const { ctx, sut } = setup();
+      const { owner, sharee, personGroupId } = await newSharedPerson(ctx);
+      const source = await newFaceOn(ctx, { ownerId: owner.id, personGroupId });
+      await ctx.newAlbum({ ownerId: owner.id, kind: AlbumKind.Smart, filter: { personIds: [personGroupId] } as any });
+      await publishPair(ctx, { ownerId: owner.id, personGroupId, faceId: source.face.id, path: '/owner.jpeg' });
+
+      await trashAsset(ctx, source.asset.id);
+      await expectServed(sut, factory.auth({ user: sharee }), personGroupId, '/owner.jpeg');
+    });
+
+    it("control: a smart album's count and sharing still exclude a trashed match", async () => {
+      const { ctx, sut } = setup();
+      const { owner, sharee, asset, filter } = await smartLockedSource(ctx, 'tag');
+      const { asset: other } = await ctx.newAsset({ ownerId: owner.id });
+      const [tag] = await upsertTags(ctx.get(TagRepository), { userId: owner.id, tags: ['private'] });
+      await ctx.newTagAsset({ tagIds: [tag.id], assetIds: [other.id] });
+      const shown = await newSharedSmartAlbum(ctx, owner.id, sharee.id, filter);
+      const ownerAuth = factory.auth({ user: owner });
+      const shareeAuth = factory.auth({ user: sharee });
+
+      await expect(listedAssetCount(sut, ownerAuth, shown.id)).resolves.toBe(2);
+      await expect(readableAssetIds(ctx, shareeAuth, [asset.id, other.id])).resolves.toEqual(
+        [asset.id, other.id].toSorted(),
+      );
+
+      await trashAsset(ctx, asset.id);
+      await BaseService.create(AlbumService, sut).invalidateSmartAlbumsForAssetIdsSafe([asset.id]);
+      await expect(listedAssetCount(sut, ownerAuth, shown.id)).resolves.toBe(1);
+      await expect(readableAssetIds(ctx, shareeAuth, [asset.id, other.id])).resolves.toEqual([other.id]);
     });
   });
 });

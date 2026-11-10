@@ -1,5 +1,5 @@
 import { Kysely } from 'kysely';
-import { AssetStatus, JobName } from 'src/enum.js';
+import { AlbumKind, AssetStatus, JobName } from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { AlbumRepository } from 'src/repositories/album.repository.js';
 import { AssetRepository } from 'src/repositories/asset.repository.js';
@@ -7,9 +7,13 @@ import { EventRepository } from 'src/repositories/event.repository.js';
 import { JobRepository } from 'src/repositories/job.repository.js';
 import { LockRepository } from 'src/repositories/lock.repository.js';
 import { LoggingRepository } from 'src/repositories/logging.repository.js';
+import { TagRepository } from 'src/repositories/tag.repository.js';
 import { TrashRepository } from 'src/repositories/trash.repository.js';
 import { DB } from 'src/schema/index.js';
+import { AssetService } from 'src/services/asset.service.js';
+import { BaseService } from 'src/services/base.service.js';
 import { TrashService } from 'src/services/trash.service.js';
+import { upsertTags } from 'src/utils/tag.js';
 import { MediumTestContext, newMediumService } from 'test/medium.factory.js';
 import { factory } from 'test/small.factory.js';
 import { getKyselyDB } from 'test/utils.js';
@@ -61,6 +65,38 @@ const statusOf = async (ctx: Ctx, id: string) => {
     .where('id', '=', id)
     .executeTakeFirstOrThrow();
   return row;
+};
+
+/**
+ * R79: an owner whose tagged photo `hidden` is protected ONLY by a locked smart album on the tag (no regular album).
+ * The owner trashes it through an elevated session (the real AssetService.deleteAll); `visible` is an ordinary trashed
+ * photo. With `rescue`, an unlocked smart album on the same tag also matches `hidden`.
+ */
+const newSmartLockedTrash = async (ctx: Ctx, { lock = true, rescue = false } = {}) => {
+  const { user } = await ctx.newUser();
+  const { asset: hidden } = await ctx.newAsset({ ownerId: user.id });
+  const { asset: visible } = await ctx.newAsset({
+    ownerId: user.id,
+    status: AssetStatus.Trashed,
+    deletedAt: new Date(),
+  });
+  const [tag] = await upsertTags(ctx.get(TagRepository), { userId: user.id, tags: ['private'] });
+  await ctx.newTagAsset({ tagIds: [tag.id], assetIds: [hidden.id] });
+  const { album: lockedSmart } = await ctx.newAlbum({
+    ownerId: user.id,
+    kind: AlbumKind.Smart,
+    filter: { tagIds: [tag.id] } as any,
+  });
+  if (lock) {
+    await ctx.get(LockRepository).lockAlbum(user.id, lockedSmart.id);
+  }
+  if (rescue) {
+    await ctx.newAlbum({ ownerId: user.id, kind: AlbumKind.Smart, filter: { tagIds: [tag.id] } as any });
+  }
+  const ordinary = factory.auth({ user });
+  const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+  await BaseService.create(AssetService, ctx.sut).deleteAll(elevated, { ids: [hidden.id] });
+  return { user, hidden, visible, lockedSmart, ordinary, elevated };
 };
 
 /**
@@ -165,6 +201,59 @@ describe(TrashService.name, () => {
       await expect(sut.empty(factory.auth({ user }))).resolves.toEqual({ count: 2 });
 
       await expect(statusOf(ctx, visible.id)).resolves.toMatchObject({ status: AssetStatus.Deleted });
+      await expect(statusOf(ctx, hidden.id)).resolves.toMatchObject({ status: AssetStatus.Deleted });
+    });
+  });
+  /**
+   * Fork (ruling R79): privacy judgment does not depend on trash state, so a trashed photo hidden only by a locked smart
+   * album stays hidden for the R65 bulk operations; an elevated session still acts on it.
+   */
+  describe('trashed photos hidden only by a locked smart album (R79)', () => {
+    it('ordinary empty skips it (not marked deleted, not queued); elevated empty deletes it', async () => {
+      const { sut, ctx } = setup();
+      const { hidden, visible, ordinary, elevated } = await newSmartLockedTrash(ctx);
+
+      await expect(sut.empty(ordinary)).resolves.toEqual({ count: 1 });
+      await expect(statusOf(ctx, visible.id)).resolves.toMatchObject({ status: AssetStatus.Deleted });
+      await expect(statusOf(ctx, hidden.id)).resolves.toMatchObject({ status: AssetStatus.Trashed });
+      await sut.handleEmptyTrash();
+      const queued = ctx
+        .getMock(JobRepository)
+        .queueAll.mock.calls.flatMap(([jobs]) => jobs)
+        .map((job) => (job.data as { id: string }).id);
+      expect(queued).not.toContain(hidden.id);
+
+      await expect(sut.empty(elevated)).resolves.toEqual({ count: 1 });
+      await expect(statusOf(ctx, hidden.id)).resolves.toMatchObject({ status: AssetStatus.Deleted });
+    });
+
+    it('ordinary restore-all and restore-by-id skip it; the elevated session restores it', async () => {
+      const { sut, ctx } = setup();
+      const { hidden, visible, ordinary, elevated } = await newSmartLockedTrash(ctx);
+
+      await expect(sut.restore(ordinary)).resolves.toEqual({ count: 1 });
+      await expect(statusOf(ctx, visible.id)).resolves.toEqual({ status: AssetStatus.Active, deletedAt: null });
+      await expect(statusOf(ctx, hidden.id)).resolves.toMatchObject({ status: AssetStatus.Trashed });
+      await expect(sut.restoreAssets(ordinary, { ids: [hidden.id] })).rejects.toThrow();
+      await expect(statusOf(ctx, hidden.id)).resolves.toMatchObject({ status: AssetStatus.Trashed });
+
+      await expect(sut.restoreAssets(elevated, { ids: [hidden.id] })).resolves.toEqual({ count: 1 });
+      await expect(statusOf(ctx, hidden.id)).resolves.toEqual({ status: AssetStatus.Active, deletedAt: null });
+    });
+
+    it('rescue: also matched by an unlocked smart album, it stays visible after trash and ordinary empty deletes it', async () => {
+      const { sut, ctx } = setup();
+      const { hidden, ordinary } = await newSmartLockedTrash(ctx, { rescue: true });
+
+      await expect(sut.empty(ordinary)).resolves.toEqual({ count: 2 });
+      await expect(statusOf(ctx, hidden.id)).resolves.toMatchObject({ status: AssetStatus.Deleted });
+    });
+
+    it('a user without locks is unchanged: ordinary empty deletes it', async () => {
+      const { sut, ctx } = setup();
+      const { hidden, ordinary } = await newSmartLockedTrash(ctx, { lock: false });
+
+      await expect(sut.empty(ordinary)).resolves.toEqual({ count: 2 });
       await expect(statusOf(ctx, hidden.id)).resolves.toMatchObject({ status: AssetStatus.Deleted });
     });
   });

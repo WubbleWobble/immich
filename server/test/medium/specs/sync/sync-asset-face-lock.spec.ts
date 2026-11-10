@@ -1,9 +1,12 @@
 import { Kysely } from 'kysely';
-import { SyncEntityType, SyncRequestType } from 'src/enum.js';
+import { AlbumKind, AssetStatus, SyncEntityType, SyncRequestType } from 'src/enum.js';
+import { AssetRepository } from 'src/repositories/asset.repository.js';
 import { LockRepository } from 'src/repositories/lock.repository.js';
 import { PersonRepository } from 'src/repositories/person.repository.js';
 import { SyncRepository } from 'src/repositories/sync.repository.js';
+import { TagRepository } from 'src/repositories/tag.repository.js';
 import { DB } from 'src/schema/index.js';
+import { upsertTags } from 'src/utils/tag.js';
 import { SyncTestContext } from 'test/medium.factory.js';
 import { factory, newUuidV7 } from 'test/small.factory.js';
 import { getKyselyDB, wait } from 'test/utils.js';
@@ -211,5 +214,97 @@ describe('AssetFacesV3 only streams judged owners', () => {
 
     const response = await ctx.syncStream(auth, [SyncRequestType.AssetFacesV3]);
     expect(faceIds(response)).toEqual([ownFace.id, visibleFace.id].toSorted());
+  });
+});
+
+type SmartCriterion = 'tag' | 'person' | 'favorite';
+
+/**
+ * R79: a cluster peer's photo protected ONLY by the peer's locked smart album on `criterion` (no regular album), plus
+ * a visible photo. Both carry a face of the peer's person.
+ */
+const setupSmartLocked = async (criterion: SmartCriterion) => {
+  const ctx = new SyncTestContext(defaultDatabase);
+  const { user } = await ctx.newSyncAuthUser();
+  const { user: peer } = await ctx.newUser({ clusterGroupId: user.clusterGroupId });
+  const { person } = await ctx.newPerson({ ownerId: peer.id });
+  const { asset: hidden } = await ctx.newAsset({ ownerId: peer.id, isFavorite: criterion === 'favorite' });
+  const { asset: visible } = await ctx.newAsset({ ownerId: peer.id });
+  const { assetFace: hiddenFace } = await ctx.newAssetFace({ assetId: hidden.id, personGroupId: person.personGroupId });
+  const { assetFace: visibleFace } = await ctx.newAssetFace({
+    assetId: visible.id,
+    personGroupId: person.personGroupId,
+  });
+  // the visible photo is in an unlocked regular album, which rescues it from a criterion it may share
+  await ctx.newAlbum({ ownerId: peer.id }, [visible.id]);
+  let filter: object;
+  switch (criterion) {
+    case 'tag': {
+      const [tag] = await upsertTags(ctx.get(TagRepository), { userId: peer.id, tags: ['private'] });
+      await ctx.newTagAsset({ tagIds: [tag.id], assetIds: [hidden.id] });
+      filter = { tagIds: [tag.id] };
+      break;
+    }
+    case 'person': {
+      filter = { personIds: [person.personGroupId] };
+      break;
+    }
+    case 'favorite': {
+      filter = { isFavorite: true };
+      break;
+    }
+  }
+  const { album: lockedSmart } = await ctx.newAlbum({ ownerId: peer.id, kind: AlbumKind.Smart, filter: filter as any });
+  await ctx.get(LockRepository).lockAlbum(peer.id, lockedSmart.id);
+  /** A fresh device of the viewer: no delivery history. */
+  const freshDevice = async () => {
+    const { session } = await ctx.newSession({ userId: user.id });
+    return factory.auth({ session, user: { id: user.id, name: user.name, email: user.email } });
+  };
+  /** The owner's trash write (AssetService.deleteAll without force, after its access check). */
+  const trash = (assetId: string) =>
+    ctx.get(AssetRepository).updateAll([assetId], { deletedAt: new Date(), status: AssetStatus.Trashed });
+  return { ctx, user, peer, person, hidden, visible, hiddenFace, visibleFace, filter, lockedSmart, freshDevice, trash };
+};
+
+/**
+ * Fork (ruling R79): privacy judgment does not depend on trash state. A foreign photo hidden only by its owner's
+ * locked smart album stays hidden from AssetFacesV3 once the owner trashes it, and a photo an unlocked smart album
+ * rescues stays visible.
+ */
+describe('AssetFacesV3 keeps a trashed photo smart-lock verdict (R79)', () => {
+  for (const criterion of ['tag', 'person', 'favorite'] as const) {
+    it(`a locked smart album on a ${criterion} keeps a trashed foreign photo out of a fresh face sync`, async () => {
+      const { ctx, hidden, hiddenFace, visibleFace, freshDevice, trash } = await setupSmartLocked(criterion);
+
+      const before = await ctx.syncStream(await freshDevice(), [SyncRequestType.AssetFacesV3]);
+      expect(faceIds(before)).toEqual([visibleFace.id]);
+
+      await trash(hidden.id);
+      const after = await ctx.syncStream(await freshDevice(), [SyncRequestType.AssetFacesV3]);
+      expect(faceIds(after)).toEqual([visibleFace.id]);
+      expect(JSON.stringify(after)).not.toContain(hidden.id);
+      expect(JSON.stringify(after)).not.toContain(hiddenFace.id);
+    });
+  }
+
+  it('rescue: a photo matched by a locked and an unlocked smart album streams before and after trash', async () => {
+    const { ctx, peer, hidden, hiddenFace, visibleFace, filter, freshDevice, trash } = await setupSmartLocked('tag');
+    await ctx.newAlbum({ ownerId: peer.id, kind: AlbumKind.Smart, filter: filter as any });
+    const expected = [hiddenFace.id, visibleFace.id].toSorted();
+
+    expect(faceIds(await ctx.syncStream(await freshDevice(), [SyncRequestType.AssetFacesV3]))).toEqual(expected);
+    await trash(hidden.id);
+    expect(faceIds(await ctx.syncStream(await freshDevice(), [SyncRequestType.AssetFacesV3]))).toEqual(expected);
+  });
+
+  it('control: a locked regular album keeps a trashed foreign photo out of a fresh face sync', async () => {
+    const { ctx, auth, hidden, hiddenFace, visibleFace } = await setup();
+    await ctx.get(AssetRepository).updateAll([hidden.id], { deletedAt: new Date(), status: AssetStatus.Trashed });
+
+    const response = await ctx.syncStream(auth, [SyncRequestType.AssetFacesV3]);
+    expect(faceIds(response)).toEqual([visibleFace.id]);
+    expect(JSON.stringify(response)).not.toContain(hidden.id);
+    expect(JSON.stringify(response)).not.toContain(hiddenFace.id);
   });
 });

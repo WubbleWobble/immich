@@ -1,7 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { Kysely } from 'kysely';
 import { AuthDto } from 'src/dtos/auth.dto.js';
-import { AssetType, AssetVisibility, SharedLinkType } from 'src/enum.js';
+import { AlbumKind, AssetStatus, AssetType, AssetVisibility, SharedLinkType } from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { AlbumRepository } from 'src/repositories/album.repository.js';
 import { AssetRepository } from 'src/repositories/asset.repository.js';
@@ -9,8 +9,10 @@ import { LockRepository } from 'src/repositories/lock.repository.js';
 import { LoggingRepository } from 'src/repositories/logging.repository.js';
 import { PartnerRepository } from 'src/repositories/partner.repository.js';
 import { SharedLinkRepository } from 'src/repositories/shared-link.repository.js';
+import { TagRepository } from 'src/repositories/tag.repository.js';
 import { DB } from 'src/schema/index.js';
 import { TimelineService } from 'src/services/timeline.service.js';
+import { upsertTags } from 'src/utils/tag.js';
 import { newMediumService } from 'test/medium.factory.js';
 import { factory } from 'test/small.factory.js';
 import { getKyselyDB } from 'test/utils.js';
@@ -37,6 +39,28 @@ const newPersonTimeline = async (ctx: ReturnType<typeof setup>['ctx']) => {
     return asset;
   };
   return { viewer, other, personId, newFaceAsset };
+};
+
+/**
+ * R79: an owner's trashed photo hidden only by a locked smart album on its tag, an ordinary trashed photo, and a live
+ * tagged photo.
+ */
+const newSmartLockedTrash = async (ctx: ReturnType<typeof setup>['ctx']) => {
+  const { user } = await ctx.newUser();
+  const localDateTime = new Date('1970-02-12');
+  const trashed = { status: AssetStatus.Trashed, deletedAt: new Date(), localDateTime };
+  const { asset: hidden } = await ctx.newAsset({ ownerId: user.id, ...trashed });
+  const { asset: visible } = await ctx.newAsset({ ownerId: user.id, ...trashed });
+  const { asset: live } = await ctx.newAsset({ ownerId: user.id, localDateTime });
+  for (const asset of [hidden, visible, live]) {
+    await ctx.newExif({ assetId: asset.id, make: 'Canon' });
+  }
+  const [tag] = await upsertTags(ctx.get(TagRepository), { userId: user.id, tags: ['private'] });
+  await ctx.newTagAsset({ tagIds: [tag.id], assetIds: [hidden.id, live.id] });
+  const filter = { tagIds: [tag.id] } as any;
+  const { album: lockedSmart } = await ctx.newAlbum({ ownerId: user.id, kind: AlbumKind.Smart, filter });
+  await ctx.get(LockRepository).lockAlbum(user.id, lockedSmart.id);
+  return { user, hidden, visible, live, filter, lockedSmart };
 };
 
 beforeAll(async () => {
@@ -491,6 +515,45 @@ describe(TimelineService.name, () => {
         '1970-01-01',
         '1970-03-01',
       ]);
+    });
+  });
+  /**
+   * Fork (ruling R79): privacy judgment does not depend on trash state. The owner's Trash view (isTrashed) of an
+   * ordinary session - and of an elevated one without reveal - no longer lists a trashed photo hidden only by a locked
+   * smart album; elevated + reveal does. A smart album's own view stays live-only.
+   */
+  describe('trash view and locked smart albums (R79)', () => {
+    it("an ordinary session's Trash view omits it; elevated + reveal lists it", async () => {
+      const { sut, ctx } = setup();
+      const { user, hidden, visible, lockedSmart } = await newSmartLockedTrash(ctx);
+      const trashIds = async (auth: AuthDto) =>
+        (
+          JSON.parse(await sut.getTimeBucket(auth, { timeBucket: '1970-02-01', isTrashed: true })).id as string[]
+        ).toSorted();
+
+      const ordinary = factory.auth({ user });
+      const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+      const revealed = { ...elevated, revealedLocks: { albumIds: [lockedSmart.id], containerIds: [] } };
+
+      await expect(trashIds(ordinary)).resolves.toEqual([visible.id]);
+      await expect(sut.getTimeBuckets(ordinary, { isTrashed: true })).resolves.toEqual([
+        { count: 1, timeBucket: '1970-02-01' },
+      ]);
+      await expect(trashIds(elevated)).resolves.toEqual([visible.id]);
+      await expect(trashIds(revealed)).resolves.toEqual([hidden.id, visible.id].toSorted());
+    });
+
+    it("a smart album's own view still excludes a trashed match", async () => {
+      const { sut, ctx } = setup();
+      const { user, live, filter } = await newSmartLockedTrash(ctx);
+      const { album: shown } = await ctx.newAlbum({ ownerId: user.id, kind: AlbumKind.Smart, filter });
+      const auth = factory.auth({ user });
+
+      await expect(sut.getTimeBuckets(auth, { albumId: shown.id })).resolves.toEqual([
+        { count: 1, timeBucket: '1970-02-01' },
+      ]);
+      const bucket = JSON.parse(await sut.getTimeBucket(auth, { albumId: shown.id, timeBucket: '1970-02-01' }));
+      expect(bucket.id).toEqual([live.id]);
     });
   });
 });
