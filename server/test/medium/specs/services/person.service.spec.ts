@@ -2053,8 +2053,6 @@ describe(PersonService.name, () => {
     it('name search hides a person whose only faces are on archived or trashed assets in a locked album', async () => {
       const { ctx, sut } = setup();
       const search = BaseService.create(SearchService, sut);
-      const { user } = await ctx.newUser();
-      const auth = factory.auth({ user });
       for (const hide of [
         (assetId: string) =>
           ctx.database
@@ -2064,6 +2062,10 @@ describe(PersonService.name, () => {
             .execute(),
         (assetId: string) => ctx.softDeleteAsset(assetId),
       ]) {
+        // fresh user per case: name search is trigram word-similarity, so a previous
+        // case's (visible again) "Quillon …" person could otherwise match this one
+        const { user } = await ctx.newUser();
+        const auth = factory.auth({ user });
         const name = `Quillon ${factory.uuid().slice(0, 8)}`;
         const { person } = await ctx.newPerson({ ownerId: user.id, name });
         const face = await newFaceOn(ctx, { ownerId: user.id, personGroupId: person.personGroupId });
