@@ -534,7 +534,7 @@ describe('/shared-links and locks', () => {
     albums = {
       visible: await utils.createAlbum(plain.accessToken, { albumName: 'Visible', assetIds: [visibleAsset.id] }),
       regular: await utils.createAlbum(plain.accessToken, { albumName: 'Regular', assetIds: [hiddenA.id] }),
-      smart: await newAlbum(plain, { albumName: 'Smart', kind: 'smart', filter: { isFavorite: true } }),
+      smart: await newAlbum(elevated, { albumName: 'Smart', kind: 'smart', filter: { isFavorite: true } }),
       inFolder: await newAlbum(plain, { albumName: 'In folder', containerId: folder.id }),
       underAncestor: await newAlbum(plain, { albumName: 'Under ancestor', containerId: child.id }),
     };

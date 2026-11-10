@@ -155,6 +155,7 @@ describe('/albums', () => {
         endDate: expect.any(String),
         shared: true,
         albumUsers: expect.any(Array),
+        viewerRole: 'editor',
       });
     });
 
