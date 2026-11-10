@@ -334,6 +334,7 @@ export class AlbumService extends BaseService {
 
     // Filter mutation is owner-only. Smart-album reads always evaluate against the owner's
     // library, so anyone else who can broaden the filter can browse the owner's assets.
+    let filterChanged = false;
     if (dto.filter !== undefined) {
       const ownerId = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)?.user.id;
       if (ownerId !== auth.user.id) {
@@ -346,8 +347,10 @@ export class AlbumService extends BaseService {
       // Fork (rulings R70, R72): an unlocked smart album makes every photo its filter matches visible, whatever
       // locked album holds it, so publishing a filter needs the PIN. Re-sending the stored filter changes nothing.
       // Compared as stored: the request carries Date objects where the stored JSON holds strings. Anything that does
-      // not compare equal asks for the PIN.
-      if (!isDeepStrictEqual(JSON.parse(JSON.stringify(dto.filter)), album.filter)) {
+      // not compare equal asks for the PIN. An unchanged filter is then left out of the write: writing it back
+      // could undo a newer filter another (elevated) session saved after this request read the album.
+      filterChanged = !isDeepStrictEqual(JSON.parse(JSON.stringify(dto.filter)), album.filter);
+      if (filterChanged) {
         await this.requireElevationForLockSensitiveWrite(auth);
       }
     }
@@ -374,7 +377,7 @@ export class AlbumService extends BaseService {
       albumThumbnailAssetId: dto.albumThumbnailAssetId,
       isActivityEnabled: dto.isActivityEnabled,
       order: dto.order,
-      ...(dto.filter !== undefined && { filter: dto.filter }),
+      ...(filterChanged && { filter: dto.filter }),
       // Only a placement writes containerId: an unchanged value judged on a stale read must not be
       // written outside the structure lock.
       containerId: isPlacement ? dto.containerId : undefined,

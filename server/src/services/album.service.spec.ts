@@ -865,6 +865,48 @@ describe(AlbumService.name, () => {
       expect(mocks.album.update).not.toHaveBeenCalled();
     });
 
+    it('does not write back an unchanged filter, so a paused ordinary save cannot undo a newer PIN-authorized edit', async () => {
+      const album = AlbumFactory.create({ kind: AlbumKind.Smart, filter: { isFavorite: false } });
+      const owner = album.albumUsers[0].user;
+      const ordinary = AuthFactory.from(owner).session({ hasElevatedPermission: false }).build();
+      const elevated = AuthFactory.from(owner).session({ hasElevatedPermission: true }).build();
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.access.album.checkSharedAlbumAccess.mockResolvedValue(new Set());
+      mocks.lock.isAlbumHiddenForViewer.mockResolvedValue(false);
+      mocks.user.getForPinCode.mockResolvedValue({ pinCode: 'configured-pin' } as never);
+      mocks.lock.hasAnyLocks.mockResolvedValue(true);
+      let row = structuredClone(album);
+      mocks.album.getById.mockImplementation(() => Promise.resolve(structuredClone(row) as never));
+      let ordinaryAtSave!: () => void;
+      const reachedSave = new Promise<void>((resolve) => (ordinaryAtSave = resolve));
+      let releaseSave!: () => void;
+      const saveReleased = new Promise<void>((resolve) => (releaseSave = resolve));
+      mocks.album.update.mockImplementation(async (_id, changes) => {
+        if (changes.description === 'ordinary rename') {
+          ordinaryAtSave();
+          await saveReleased;
+        }
+        row = { ...row, ...Object.fromEntries(Object.entries(changes).filter(([, value]) => value !== undefined)) };
+        return structuredClone(row) as never;
+      });
+
+      // ordinary session re-sends the stored filter A alongside a metadata change, then pauses at the write
+      const normalSave = sut.update(ordinary, album.id, {
+        description: 'ordinary rename',
+        filter: { isFavorite: false },
+      });
+      await reachedSave;
+      expect(mocks.user.getForPinCode).not.toHaveBeenCalled();
+      // an elevated session commits filter B in the meantime
+      await sut.update(elevated, album.id, { filter: { isFavorite: true } });
+      releaseSave();
+      await normalSave;
+
+      expect(row.filter).toEqual({ isFavorite: true });
+      expect(row.description).toBe('ordinary rename');
+      expect(mocks.album.update.mock.calls[0][1]).not.toHaveProperty('filter');
+    });
+
     it('should allow updating a locked album in an elevated session', async () => {
       const album = AlbumFactory.create();
       const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;

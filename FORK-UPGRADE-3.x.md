@@ -69,7 +69,7 @@ commits.
 - **Expect blank avatars for about 1 minute** (measured; bound 30 s to 3 min)
   for prod's 232 people. Unverified avatars return 404, and the web UI shows an
   image-error glyph instead of initials. Tell users beforehand.
-- **107 people have no faces** and stay without avatars. This is harmless.
+- **About 108 people have no faces** (108 in the 2026-11-09 dump; recount on the deployment dump) and stay without avatars. This is harmless.
 - **Do not restart during the first-boot geodata import (about 15 s).**
   Interrupting it can produce a transient schema-drift warning on the next
   start (missing `geodata_places` indexes, then re-imported). Harmless but
