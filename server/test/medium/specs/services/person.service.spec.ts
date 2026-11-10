@@ -34,7 +34,7 @@ import { SearchService } from 'src/services/search.service.js';
 import { checkAccess } from 'src/utils/access.js';
 import { getMyPartnerIds } from 'src/utils/asset.util.js';
 import { newMediumService } from 'test/medium.factory.js';
-import { factory, newUuid } from 'test/small.factory.js';
+import { factory, newEmbedding, newUuid } from 'test/small.factory.js';
 import { getKyselyDB } from 'test/utils.js';
 
 let defaultDatabase: Kysely<DB>;
@@ -2629,6 +2629,51 @@ describe(PersonService.name, () => {
       await ctx.database.deleteFrom('user').where('id', '=', member.id).execute();
       await sut.handlePersonCleanup();
       await expectStillProtected('after the member is deleted');
+    });
+
+    it("recognition does not bring back a merged-away person through a group kept for another owner's hidden photos", async () => {
+      const { sut, ctx } = setup();
+      mockJobs(ctx);
+      const { user: member } = await ctx.newUser();
+      const owner = await lockedByPerson(ctx, { clusterGroupId: member.clusterGroupId });
+      await ctx.newPerson({ ownerId: member.id, personGroupId: owner.groupId });
+      const { person: target } = await ctx.newPerson({ ownerId: member.id });
+      await sut.mergePeople(factory.auth({ user: member }), { ids: [target.personGroupId, owner.groupId] });
+      // the owner's hidden faces are still assigned to the group the member merged away, which has no person left
+      await expect(groupOf(ctx, owner.protectedOnly.face.id)).resolves.toBe(owner.groupId);
+
+      // new faces of the member that look exactly like the owner's hidden ones
+      const embedding = newEmbedding();
+      const memberFaces: string[] = [];
+      for (let index = 0; index < 3; index++) {
+        const { face } = await newFaceOn(ctx, { ownerId: member.id, personGroupId: null as unknown as string });
+        memberFaces.push(face.id);
+      }
+      await ctx.database
+        .insertInto('face_search')
+        .values(
+          [owner.protectedOnly.face.id, owner.alsoLocked.face.id, ...memberFaces].map((faceId) => ({
+            faceId,
+            embedding,
+          })),
+        )
+        .execute();
+
+      await sut.handleRecognizeFaces({ id: memberFaces[0], deferred: true });
+
+      // the member's face found a person, but not the id they merged away: that would tell them it is still in use
+      const assigned = await groupOf(ctx, memberFaces[0]);
+      expect(assigned).toEqual(expect.any(String));
+      expect(assigned).not.toBe(owner.groupId);
+      await expect(
+        ctx.get(PersonRepository).getByGroupId({ ownerId: member.id, personGroupId: owner.groupId }),
+      ).resolves.toBeUndefined();
+      await expect(groupOf(ctx, owner.protectedOnly.face.id)).resolves.toBe(owner.groupId);
+      await expect(readableAssetIds(ctx, owner.ordinary, owner.ids)).resolves.toEqual([owner.visible.asset.id]);
+
+      // control: a group somebody still has a person in keeps attracting matching faces
+      await sut.handleRecognizeFaces({ id: memberFaces[1], deferred: true });
+      await expect(groupOf(ctx, memberFaces[1])).resolves.toBe(assigned);
     });
 
     it("an elevated owner's unrelated person delete keeps the group their hidden photos use", async () => {

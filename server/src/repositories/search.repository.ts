@@ -1,5 +1,12 @@
 import { Injectable } from '@nestjs/common';
-import { type Kysely, type OrderByDirection, type Selectable, type ShallowDehydrateObject, sql } from 'kysely';
+import {
+  type ExpressionBuilder,
+  type Kysely,
+  type OrderByDirection,
+  type Selectable,
+  type ShallowDehydrateObject,
+  sql,
+} from 'kysely';
 import { InjectKysely } from 'nestjs-kysely';
 import z from 'zod';
 import { columns } from 'src/database.js';
@@ -233,6 +240,15 @@ export interface GetCameraLensModelsOptions {
   model?: string;
 }
 
+/** Whether anyone has a person in the face's group. */
+const hasPersonRow = (eb: ExpressionBuilder<DB, 'asset_face'>) =>
+  eb.exists(
+    eb
+      .selectFrom('person')
+      .select('person.personGroupId')
+      .whereRef('person.personGroupId', '=', 'asset_face.personGroupId'),
+  );
+
 @Injectable()
 export class SearchRepository {
   constructor(@InjectKysely() private db: Kysely<DB>) {}
@@ -410,16 +426,19 @@ export class SearchRepository {
             .selectFrom('asset_face')
             .innerJoin('asset', 'asset.id', 'asset_face.assetId')
             .innerJoin('face_search', 'face_search.faceId', 'asset_face.id')
-            .select([
+            .select((eb) => [
               'asset_face.id',
-              'asset_face.personGroupId',
+              // Fork (ruling R71): a group nobody has a person in only exists for faces on photos hidden for their
+              // owner. Its faces count as unassigned here, so recognition never puts another face into it - that
+              // would hand the id back to someone who merged or deleted the person, and show it is still in use.
+              eb.case().when(hasPersonRow(eb)).then(eb.ref('asset_face.personGroupId')).end().as('personGroupId'),
               sql<number>`face_search.embedding <=> ${embedding}`.as('distance'),
             ])
             .where('asset.ownerId', 'in', (eb) =>
               eb.selectFrom('user').select('user.id').where('user.clusterGroupId', '=', clusterGroupId),
             )
             .where('asset.deletedAt', 'is', null)
-            .$if(!!hasPerson, (qb) => qb.where('asset_face.personGroupId', 'is not', null))
+            .$if(!!hasPerson, (qb) => qb.where('asset_face.personGroupId', 'is not', null).where(hasPersonRow))
             .$if(!!minBirthDate, (qb) =>
               qb.where((eb) =>
                 eb.not(

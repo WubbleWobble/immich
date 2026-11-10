@@ -237,7 +237,16 @@ with
   "cte" as (
     select
       "asset_face"."id",
-      "asset_face"."personGroupId",
+      case
+        when exists (
+          select
+            "person"."personGroupId"
+          from
+            "person"
+          where
+            "person"."personGroupId" = "asset_face"."personGroupId"
+        ) then "asset_face"."personGroupId"
+      end as "personGroupId",
       face_search.embedding <=> $1 as "distance"
     from
       "asset_face"
