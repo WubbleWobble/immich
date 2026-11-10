@@ -97,6 +97,7 @@ commits.
 | Delete a tag, delete a person, merge people, as a user who has a PIN (R71, R72) | Needs an elevated session; otherwise the same 401 |
 | `DELETE /tags/:id/assets` for a photo hidden for a non-elevated caller (R71) | That id answers `{ success: false, error: "not_found" }`, like a photo that does not carry the tag; the other ids are untagged as usual |
 | `PUT /tags/:id/assets` for a photo hidden for a non-elevated caller (R32) | That id answers `{ success: false, error: "no_permission" }`, like a missing or foreign photo, whether or not it already carries the tag (was `duplicate` when it did) |
+| HLS segment, heartbeat and end-session requests (F4) | The session id must belong to the asset in the URL. A session of another asset answers 404 `Session not found`, like a missing or expired session, and nothing is sent to the transcoder. `DELETE` of such a session (or of a missing one) is a silent no-op (was: always forwarded). Applies to upstream behaviour too: v3.3.6 only checked the URL's asset |
 | Asset bytes (thumbnail, preview, original, video playback, asset files, HLS segments) (R50) | `Cache-Control: private, no-cache, no-transform` (was `private, max-age=86400, ... stale-while-revalidate=2592000, stale-if-error=2592000`) |
 
 ## Shared folders in the web app
@@ -136,6 +137,17 @@ State these plainly to users.
   device by sync. Your own device's streams are unchanged and still carry
   every deletion. Audit rows written before this release have no verdict
   and stream as before.
+- **Face sync (`AssetFacesV3`) is lock-filtered for other cluster members'
+  photos (F3).** Members of a recognition cluster get each other's faces on
+  their phones. A face streams to another member only when its photo passes
+  its owner's own locks; the receiving user's PIN or reveal never counts.
+  Removing a face from a photo that is hidden for its owner is not sent to
+  other members either. Your own photos' faces still all reach your own
+  phone. Same residuals as the partner streams: faces already on a phone
+  before a lock stay there until a re-sync, and faces withheld while locked
+  are not re-sent after an unlock until a re-sync (a face change also
+  re-sends it). Face removals caused by deleting the photo itself were never
+  sent through this stream and still are not.
 - **Locking does not revoke shared links already handed out.** To revoke a
   link to your own locked content, elevate your session (PIN) first, then
   delete it. While you are not elevated, such a link is neither listed nor
