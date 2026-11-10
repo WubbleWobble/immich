@@ -8,6 +8,7 @@ import { MemoryType } from 'src/enum.js';
 import { DB } from 'src/schema/index.js';
 import {
   OwnerLockVisibility,
+  anyUuid,
   joinDeduplicationPlugin,
   lockVisibilityExpression,
   lockVisibleLivePhotoVideoId,
@@ -35,6 +36,15 @@ const dummyCreateAfterOptions = {
   nowId: DummyValue.UUID,
   userId: DummyValue.UUID,
   afterCreateId: DummyValue.UUID,
+};
+
+/**
+ * Fork (F3): the asset owners a cluster stream may carry - the requester and the peers whose lock entries
+ * (`lockVisibility`) were computed. Rows of any other owner are never streamed.
+ */
+export type JudgedOwners = {
+  ownerIds: string[];
+  lockVisibility: OwnerLockVisibility[];
 };
 
 export type SyncQueryOptions = {
@@ -479,15 +489,15 @@ class AssetFaceSync extends BaseSync {
   }
 
   /**
-   * Fork (F3): the other members of the requester's recognition cluster (live users), whose photos' faces reach the
-   * requester through AssetFacesV3. The requester is excluded: their own rows stay unfiltered (R43).
+   * Fork (F3): the other members of the requester's recognition cluster, whose photos' faces reach the requester
+   * through AssetFacesV3. The requester is excluded: their own rows stay unfiltered (R43). Soft-deleted members are
+   * INCLUDED: their faces still stream during the deletion grace period (as upstream), so their locks must be judged.
    */
   @GenerateSql({ params: [DummyValue.UUID] })
   async getClusterPeerIds(userId: string): Promise<string[]> {
     const rows = await this.db
       .selectFrom('user')
       .select('user.id')
-      .where('user.deletedAt', 'is', null)
       .where('user.id', '!=', userId)
       .where('user.clusterGroupId', '=', (eb) =>
         eb.selectFrom('user as requester').select('requester.clusterGroupId').where('requester.id', '=', userId),
@@ -497,14 +507,16 @@ class AssetFaceSync extends BaseSync {
   }
 
   /**
-   * Fork (F3): `lockVisibility` holds the lock entries of the requester's cluster PEERS (their own locks, no reveal,
-   * never the requester's elevation). A deletion record streams only while its asset still exists (inner join, as
+   * Fork (F3): `judged.lockVisibility` holds the lock entries of the requester's cluster PEERS (their own locks, no
+   * reveal, never the requester's elevation), computed over `judged.ownerIds` (the requester plus those peers). Only
+   * rows of those owners stream - fail-closed: an owner whose locks were not judged (e.g. one who joined the cluster
+   * after the list was read) never streams. A deletion record streams only while its asset still exists (inner join, as
    * upstream), so it is judged against that live asset: a face removed from a peer's lock-hidden photo is withheld.
    * Records of deleted assets never stream here (the device drops their faces with the asset), so `asset_audit`'s
    * `ownerHidden` verdict is not needed. The requester has no entry, so their own rows are untouched.
    */
-  @GenerateSql({ params: [dummyQueryOptions], stream: true })
-  getDeletesV3(options: SyncQueryOptions, lockVisibility: OwnerLockVisibility[] = []) {
+  @GenerateSql({ params: [dummyQueryOptions, { ownerIds: [DummyValue.UUID], lockVisibility: [] }], stream: true })
+  getDeletesV3(options: SyncQueryOptions, { ownerIds, lockVisibility }: JudgedOwners) {
     return this.auditQuery('asset_face_audit', options)
       .select(['asset_face_audit.id', 'assetFaceId'])
       .innerJoin('asset', 'asset.id', 'asset_face_audit.assetId')
@@ -512,6 +524,7 @@ class AssetFaceSync extends BaseSync {
       .where('owner.clusterGroupId', '=', ({ selectFrom }) =>
         selectFrom('user').select('user.clusterGroupId').where('user.id', '=', options.userId),
       )
+      .where('asset.ownerId', '=', anyUuid(ownerIds))
       .$if(lockVisibility.length > 0, (qb) =>
         qb
           .where((eb) => lockVisibilityExpression(eb as ExpressionBuilder<DB, 'asset'>, this.db, lockVisibility))
@@ -536,8 +549,8 @@ class AssetFaceSync extends BaseSync {
   }
 
   /** Fork (F3): a peer's face streams iff its asset passes that owner's locks (see {@link getDeletesV3}). */
-  @GenerateSql({ params: [dummyQueryOptions], stream: true })
-  getUpsertsV3(options: SyncQueryOptions, lockVisibility: OwnerLockVisibility[] = []) {
+  @GenerateSql({ params: [dummyQueryOptions, { ownerIds: [DummyValue.UUID], lockVisibility: [] }], stream: true })
+  getUpsertsV3(options: SyncQueryOptions, { ownerIds, lockVisibility }: JudgedOwners) {
     return this.upsertQuery('asset_face', options)
       .select(columns.syncAssetFace)
       .select('asset_face.updateId')
@@ -546,6 +559,7 @@ class AssetFaceSync extends BaseSync {
       .where('owner.clusterGroupId', '=', ({ selectFrom }) =>
         selectFrom('user').select('user.clusterGroupId').where('user.id', '=', options.userId),
       )
+      .where('asset.ownerId', '=', anyUuid(ownerIds))
       .$if(lockVisibility.length > 0, (qb) =>
         qb
           .where((eb) => lockVisibilityExpression(eb as ExpressionBuilder<DB, 'asset'>, this.db, lockVisibility))

@@ -538,8 +538,7 @@ select
 from
   "user"
 where
-  "user"."deletedAt" is null
-  and "user"."id" != $1
+  "user"."id" != $1
   and "user"."clusterGroupId" = (
     select
       "requester"."clusterGroupId"
@@ -568,6 +567,7 @@ where
     where
       "user"."id" = $3
   )
+  and "asset"."ownerId" = any ($4::uuid[])
 order by
   "asset_face_audit"."id" asc
 
@@ -626,6 +626,7 @@ where
     where
       "user"."id" = $3
   )
+  and "asset"."ownerId" = any ($4::uuid[])
 order by
   "asset_face"."updateId" asc
 

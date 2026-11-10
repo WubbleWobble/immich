@@ -2,10 +2,11 @@ import { Kysely } from 'kysely';
 import { SyncEntityType, SyncRequestType } from 'src/enum.js';
 import { LockRepository } from 'src/repositories/lock.repository.js';
 import { PersonRepository } from 'src/repositories/person.repository.js';
+import { SyncRepository } from 'src/repositories/sync.repository.js';
 import { DB } from 'src/schema/index.js';
 import { SyncTestContext } from 'test/medium.factory.js';
-import { factory } from 'test/small.factory.js';
-import { getKyselyDB } from 'test/utils.js';
+import { factory, newUuidV7 } from 'test/small.factory.js';
+import { getKyselyDB, wait } from 'test/utils.js';
 
 let defaultDatabase: Kysely<DB>;
 
@@ -128,5 +129,87 @@ describe('AssetFacesV3 honours foreign cluster owners locks', () => {
     const response = await ctx.syncStream(outsider, [SyncRequestType.AssetFacesV3]);
     expect(JSON.stringify(response)).not.toContain(hiddenFace.id);
     expect(JSON.stringify(response)).not.toContain(visibleFace.id);
+  });
+});
+
+/** A cluster peer whose photo is hidden by a lock on an album the peer is a SHAREE of (kept by admin soft-delete). */
+const setupShareeLock = async () => {
+  const ctx = new SyncTestContext(defaultDatabase);
+  const { auth, user } = await ctx.newSyncAuthUser();
+  const { user: peer } = await ctx.newUser({ clusterGroupId: user.clusterGroupId });
+  const { user: albumOwner } = await ctx.newUser();
+  const { asset: hidden } = await ctx.newAsset({ ownerId: peer.id });
+  const { asset: visible } = await ctx.newAsset({ ownerId: peer.id });
+  const { assetFace: hiddenFace } = await ctx.newAssetFace({ assetId: hidden.id });
+  const { assetFace: visibleFace } = await ctx.newAssetFace({ assetId: visible.id });
+  const { album } = await ctx.newAlbum({ ownerId: albumOwner.id }, [hidden.id]);
+  await ctx.newAlbumUser({ albumId: album.id, userId: peer.id });
+  await ctx.get(LockRepository).lockAlbum(peer.id, album.id);
+  return { ctx, auth, user, peer, hidden, hiddenFace, visibleFace };
+};
+
+const softDelete = (ctx: SyncTestContext, userId: string) =>
+  ctx.database.updateTable('user').set({ deletedAt: new Date() }).where('id', '=', userId).execute();
+
+/**
+ * Fork (F3 fix round 1): the V3 streams only carry rows of owners that were judged - the requester and the peers the
+ * lock entries were computed from. A soft-deleted peer is still a peer (judged by their own locks during the grace
+ * period, so their visible faces keep streaming as upstream did); an owner outside the judged list never streams.
+ */
+describe('AssetFacesV3 only streams judged owners', () => {
+  it("withholds a soft-deleted peer's lock-hidden face and its deletion record", async () => {
+    const { ctx, auth, peer, hiddenFace, visibleFace } = await setupShareeLock();
+    await softDelete(ctx, peer.id);
+
+    const upserts = await ctx.syncStream(auth, [SyncRequestType.AssetFacesV3]);
+    expect(JSON.stringify(upserts)).not.toContain(hiddenFace.id);
+    await ctx.syncAckAll(auth, upserts);
+
+    await ctx.get(PersonRepository).deleteAssetFace(hiddenFace.id);
+    await ctx.get(PersonRepository).deleteAssetFace(visibleFace.id);
+    const deletes = await ctx.syncStream(auth, [SyncRequestType.AssetFacesV3]);
+    expect(deletedFaceIds(deletes)).toEqual([visibleFace.id]);
+    expect(JSON.stringify(deletes)).not.toContain(hiddenFace.id);
+  });
+
+  it("keeps streaming a soft-deleted peer's visible faces, judged by the peer's locks", async () => {
+    const { ctx, auth, peer, visibleFace } = await setupShareeLock();
+    await softDelete(ctx, peer.id);
+
+    const response = await ctx.syncStream(auth, [SyncRequestType.AssetFacesV3]);
+    expect(faceIds(response)).toEqual([visibleFace.id]);
+  });
+
+  it('does not stream a peer that joined after the owner list was judged', async () => {
+    const { ctx, user, hiddenFace, visibleFace } = await setupShareeLock();
+    const { asset: own } = await ctx.newAsset({ ownerId: user.id });
+    const { assetFace: ownFace } = await ctx.newAssetFace({ assetId: own.id });
+    await ctx.get(PersonRepository).deleteAssetFace(visibleFace.id);
+    await wait(2);
+
+    // the judged list predates the peer: only the requester was judged
+    const options = { nowId: newUuidV7(), userId: user.id };
+    const judged = { ownerIds: [user.id], lockVisibility: [] };
+    const sync = ctx.get(SyncRepository).assetFace;
+    const upserts = [];
+    for await (const row of sync.getUpsertsV3(options, judged)) {
+      upserts.push(row.id);
+    }
+    const deletes = [];
+    for await (const row of sync.getDeletesV3(options, judged)) {
+      deletes.push(row.assetFaceId);
+    }
+    expect(upserts).toEqual([ownFace.id]);
+    expect(deletes).toEqual([]);
+    expect([...upserts, ...deletes]).not.toContain(hiddenFace.id);
+  });
+
+  it('leaves own rows and live peers unchanged', async () => {
+    const { ctx, auth, user, visibleFace } = await setupShareeLock();
+    const { asset: own } = await ctx.newAsset({ ownerId: user.id });
+    const { assetFace: ownFace } = await ctx.newAssetFace({ assetId: own.id });
+
+    const response = await ctx.syncStream(auth, [SyncRequestType.AssetFacesV3]);
+    expect(faceIds(response)).toEqual([ownFace.id, visibleFace.id].toSorted());
   });
 });

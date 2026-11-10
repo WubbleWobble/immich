@@ -148,6 +148,15 @@ State these plainly to users.
   are not re-sent after an unlock until a re-sync (a face change also
   re-sends it). Face removals caused by deleting the photo itself were never
   sent through this stream and still are not.
+  Grant policy (deliberate over-restriction): face sync follows the face
+  owner's locks exactly like partner sync does. Cluster membership is not a
+  grant, and neither is any other path: a member's photo the viewer can open
+  through a shared album, but which its owner has locked, is still withheld
+  from face sync. A member in the deletion grace period (soft-deleted) is
+  judged the same way, so their unlocked faces keep syncing until the user
+  is purged. Only the faces of members whose locks were judged for that
+  sync run are sent; a user who joins the cluster mid-run arrives on the
+  next sync.
 - **Locking does not revoke shared links already handed out.** To revoke a
   link to your own locked content, elevate your session (PIN) first, then
   delete it. While you are not elevated, such a link is neither listed nor

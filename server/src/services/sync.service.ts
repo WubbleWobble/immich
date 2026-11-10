@@ -14,7 +14,7 @@ import {
   syncAlbumV2ToV1,
 } from 'src/dtos/sync.dto.js';
 import { JobName, MemoryType, QueueName, SyncEntityType, SyncRequestType } from 'src/enum.js';
-import { SyncQueryOptions } from 'src/repositories/sync.repository.js';
+import { JudgedOwners, SyncQueryOptions } from 'src/repositories/sync.repository.js';
 import { SessionSyncCheckpointTable } from 'src/schema/tables/sync-checkpoint.table.js';
 import { BaseService } from 'src/services/base.service.js';
 import { hexOrBufferToBase64 } from 'src/utils/bytes.js';
@@ -986,35 +986,31 @@ export class SyncService extends BaseService {
    * elevated (the viewer's elevation does not bypass another owner's locks). Cluster membership is not a lock grant.
    * The requester gets no entry, so their own rows stay unfiltered (R43 own-device deferral).
    */
-  private async getClusterLockVisibility(userId: string) {
-    const ownerIds = await this.syncRepository.assetFace.getClusterPeerIds(userId);
-    if (ownerIds.length === 0) {
-      return [];
-    }
-    return this.lockRepository.getOwnerLockVisibility({
-      viewerId: userId,
-      ownerIds,
-      revealed: NO_REVEALED_LOCKS,
-      isElevated: false,
-    });
+  private async getClusterJudgedOwners(userId: string): Promise<JudgedOwners> {
+    const peerIds = await this.syncRepository.assetFace.getClusterPeerIds(userId);
+    const lockVisibility =
+      peerIds.length === 0
+        ? []
+        : await this.lockRepository.getOwnerLockVisibility({
+            viewerId: userId,
+            ownerIds: peerIds,
+            revealed: NO_REVEALED_LOCKS,
+            isElevated: false,
+          });
+    // fail-closed: the streams carry exactly the owners judged here (see SyncRepository.assetFace.getUpsertsV3)
+    return { ownerIds: [userId, ...peerIds], lockVisibility };
   }
 
   private async syncAssetFacesV3(options: SyncQueryOptions, response: Writable, checkpointMap: CheckpointMap) {
-    const lockVisibility = await this.getClusterLockVisibility(options.userId);
+    const judged = await this.getClusterJudgedOwners(options.userId);
     const deleteType = SyncEntityType.AssetFaceDeleteV1;
-    const deletes = this.syncRepository.assetFace.getDeletesV3(
-      { ...options, ack: checkpointMap[deleteType] },
-      lockVisibility,
-    );
+    const deletes = this.syncRepository.assetFace.getDeletesV3({ ...options, ack: checkpointMap[deleteType] }, judged);
     for await (const { id, ...data } of deletes) {
       await send(response, { type: deleteType, ids: [id], data });
     }
 
     const upsertType = SyncEntityType.AssetFaceV3;
-    const upserts = this.syncRepository.assetFace.getUpsertsV3(
-      { ...options, ack: checkpointMap[upsertType] },
-      lockVisibility,
-    );
+    const upserts = this.syncRepository.assetFace.getUpsertsV3({ ...options, ack: checkpointMap[upsertType] }, judged);
     for await (const { updateId, ...data } of upserts) {
       await send(response, { type: upsertType, ids: [updateId], data });
     }
