@@ -455,6 +455,32 @@ describe(AlbumService.name, () => {
   });
 
   describe('create', () => {
+    it('should require elevation to create a smart album once the owner holds a lock (R70)', async () => {
+      const auth = AuthFactory.from().session({ hasElevatedPermission: false }).build();
+      mocks.lock.hasAnyLocks.mockResolvedValue(true);
+
+      await expect(
+        sut.create(auth, { albumName: 'Smart Album', kind: AlbumKind.Smart, filter: { isFavorite: true } }),
+      ).rejects.toThrow('Elevated permission is required');
+
+      expect(mocks.album.create).not.toHaveBeenCalled();
+      // the filter is never evaluated to decide
+      expect(mocks.lock.getOwnerLockVisibility).not.toHaveBeenCalled();
+      expect(mocks.search.searchStatistics).not.toHaveBeenCalled();
+    });
+
+    it('should not consult the locks to create a regular album', async () => {
+      const auth = AuthFactory.from().session({ hasElevatedPermission: false }).build();
+      mocks.lock.hasAnyLocks.mockResolvedValue(true);
+      mocks.album.create.mockResolvedValue(getForAlbum(AlbumFactory.create()));
+      mocks.user.getMetadata.mockResolvedValue([]);
+
+      await sut.create(auth, { albumName: 'Regular Album', kind: AlbumKind.Regular });
+
+      expect(mocks.album.create).toHaveBeenCalled();
+      expect(mocks.lock.hasAnyLocks).not.toHaveBeenCalled();
+    });
+
     it('should create a smart album with a filter', async () => {
       const owner = UserFactory.create();
       const auth = AuthFactory.create(owner);

@@ -1,12 +1,13 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { Kysely } from 'kysely';
 import { AuthDto } from 'src/dtos/auth.dto.js';
-import { AlbumKind, AlbumUserRole, AssetVisibility } from 'src/enum.js';
+import { AlbumKind, AlbumUserRole, AssetVisibility, Permission } from 'src/enum.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { AlbumContainerRepository } from 'src/repositories/album-container.repository.js';
 import { AlbumUserRepository } from 'src/repositories/album-user.repository.js';
 import { AlbumRepository } from 'src/repositories/album.repository.js';
 import { AssetRepository } from 'src/repositories/asset.repository.js';
+import { EventRepository } from 'src/repositories/event.repository.js';
 import { LockRepository } from 'src/repositories/lock.repository.js';
 import { LoggingRepository } from 'src/repositories/logging.repository.js';
 import { SearchRepository } from 'src/repositories/search.repository.js';
@@ -14,6 +15,7 @@ import { UserRepository } from 'src/repositories/user.repository.js';
 import { DB } from 'src/schema/index.js';
 import { AlbumService } from 'src/services/album.service.js';
 import { LockService } from 'src/services/lock.service.js';
+import { checkAccess } from 'src/utils/access.js';
 import { newMediumService } from 'test/medium.factory.js';
 import { factory } from 'test/small.factory.js';
 import { getKyselyDB } from 'test/utils.js';
@@ -33,7 +35,7 @@ const setup = (db?: Kysely<DB>) => {
       SearchRepository,
       UserRepository,
     ],
-    mock: [LoggingRepository],
+    mock: [EventRepository, LoggingRepository],
   });
 };
 
@@ -140,6 +142,32 @@ const roleSeenBy = async (sut: AlbumService, user: { id: string }, albumId: stri
   const listed = albums.find(({ id }) => id === albumId);
   expect(listed?.viewerRole).toEqual(single.viewerRole);
   return single.viewerRole;
+};
+
+/** Which of `assetIds` `auth` may read, through every grant path (owner, album, partner, smart album, locks). */
+const readable = async (ctx: Ctx, auth: AuthDto, assetIds: string[]) =>
+  [
+    ...(await checkAccess(ctx.get(AccessRepository), { auth, permission: Permission.AssetRead, ids: assetIds })),
+  ].toSorted();
+
+/** A favorite photo hidden by the owner's locked regular album, next to a favorite photo that is visible. */
+const lockedFavorite = async (ctx: Ctx) => {
+  const { user } = await ctx.newUser();
+  const { user: partner } = await ctx.newUser();
+  await ctx.newPartner({ sharedById: user.id, sharedWithId: partner.id });
+  const { asset: hidden } = await ctx.newAsset({ ownerId: user.id, isFavorite: true });
+  const { asset: visible } = await ctx.newAsset({ ownerId: user.id, isFavorite: true });
+  const { album: locked } = await ctx.newAlbum({ ownerId: user.id }, [hidden.id]);
+  await ctx.get(LockRepository).lockAlbum(user.id, locked.id);
+  return {
+    user,
+    hidden,
+    visible,
+    locked,
+    ordinary: factory.auth({ user, session: { hasElevatedPermission: false } }),
+    elevated: factory.auth({ user, session: { hasElevatedPermission: true } }),
+    partnerAuth: factory.auth({ user: partner }),
+  };
 };
 
 describe(AlbumService.name, () => {
@@ -314,8 +342,11 @@ describe(AlbumService.name, () => {
       const { user } = await ctx.newUser();
       const folder = await hiddenDestination(ctx, user.id, depth);
 
+      // R70: a lock-holding owner's ordinary smart-album create is refused before any folder check
       await expect(sut.create(factory.auth({ user }), dtoFor(kind, folder.id))).rejects.toThrow(
-        new BadRequestException('Not found or no albumContainer.read access'),
+        kind === AlbumKind.Smart
+          ? new UnauthorizedException('Elevated permission is required')
+          : new BadRequestException('Not found or no albumContainer.read access'),
       );
       await expect(albumsIn(ctx, folder.id)).resolves.toEqual([]);
     });
@@ -347,6 +378,151 @@ describe(AlbumService.name, () => {
       await expect(sut.update(elevated, album.id, { containerId: folder.id })).resolves.toMatchObject({
         containerId: folder.id,
       });
+    });
+  });
+
+  describe('smart album create/filter edit with locks (R70)', () => {
+    const needsElevation = new UnauthorizedException('Elevated permission is required');
+
+    const smartAlbums = (ctx: Ctx, ownerId: string) =>
+      ctx.database
+        .selectFrom('album')
+        .innerJoin('album_user', 'album_user.albumId', 'album.id')
+        .select(['album.id', 'album.filter'])
+        .where('album_user.userId', '=', ownerId)
+        .where('album.kind', '=', AlbumKind.Smart)
+        .execute();
+
+    const smartDto = { albumName: 'Rescue', kind: AlbumKind.Smart, filter: { isFavorite: true } };
+
+    it('refuses an ordinary create by a lock-holding owner: no album row, the hidden photo stays hidden', async () => {
+      const { sut, ctx } = setup();
+      const { user, hidden, visible, ordinary, partnerAuth } = await lockedFavorite(ctx);
+      const ids = [hidden.id, visible.id];
+
+      await expect(readable(ctx, ordinary, ids)).resolves.toEqual([visible.id]);
+      await expect(sut.create(ordinary, smartDto)).rejects.toThrow(needsElevation);
+      // a filter that matches only already-visible photos is refused just the same: the decision never evaluates
+      // the filter, so it is no oracle about hidden content
+      await expect(
+        sut.create(ordinary, { ...smartDto, filter: { isFavorite: true, takenAfter: new Date('2999-01-01') } }),
+      ).rejects.toThrow(needsElevation);
+
+      await expect(smartAlbums(ctx, user.id)).resolves.toEqual([]);
+      await expect(readable(ctx, ordinary, ids)).resolves.toEqual([visible.id]);
+      await expect(readable(ctx, partnerAuth, ids)).resolves.toEqual([visible.id]);
+    });
+
+    it('refuses an ordinary create with sharees or inside an unlocked folder', async () => {
+      const { sut, ctx } = setup();
+      const { user, hidden, ordinary } = await lockedFavorite(ctx);
+      const { user: sharee } = await ctx.newUser();
+      const folder = await ctx.get(AlbumContainerRepository).create({ ownerId: user.id, name: 'Open', parentId: null });
+
+      await expect(
+        sut.create(ordinary, { ...smartDto, albumUsers: [{ userId: sharee.id, role: AlbumUserRole.Viewer }] }),
+      ).rejects.toThrow(needsElevation);
+      await expect(sut.create(ordinary, { ...smartDto, containerId: folder.id })).rejects.toThrow(needsElevation);
+
+      await expect(smartAlbums(ctx, user.id)).resolves.toEqual([]);
+      await expect(readable(ctx, factory.auth({ user: sharee }), [hidden.id])).resolves.toEqual([]);
+    });
+
+    it('refuses an ordinary filter edit by a lock-holding owner: the filter is unchanged', async () => {
+      const { sut, ctx } = setup();
+      const { user, hidden, visible, ordinary, partnerAuth } = await lockedFavorite(ctx);
+      const album = await newSmartAlbum(ctx, user.id, { filter: { isFavorite: false } });
+      const ids = [hidden.id, visible.id];
+
+      await expect(sut.update(ordinary, album.id, { filter: { isFavorite: true } })).rejects.toThrow(needsElevation);
+
+      await expect(smartAlbums(ctx, user.id)).resolves.toEqual([{ id: album.id, filter: { isFavorite: false } }]);
+      await expect(readable(ctx, ordinary, ids)).resolves.toEqual([visible.id]);
+      await expect(readable(ctx, partnerAuth, ids)).resolves.toEqual([visible.id]);
+    });
+
+    it('a reveal header without elevation authorizes neither create nor filter edit', async () => {
+      const { sut, ctx } = setup();
+      const { user, hidden, locked, ordinary } = await lockedFavorite(ctx);
+      const album = await newSmartAlbum(ctx, user.id, { filter: { isFavorite: false } });
+      const revealing = { ...ordinary, revealedLocks: { albumIds: [locked.id], containerIds: [] } };
+
+      await expect(sut.create(revealing, smartDto)).rejects.toThrow(needsElevation);
+      await expect(sut.update(revealing, album.id, { filter: { isFavorite: true } })).rejects.toThrow(needsElevation);
+
+      await expect(smartAlbums(ctx, user.id)).resolves.toEqual([{ id: album.id, filter: { isFavorite: false } }]);
+      await expect(readable(ctx, ordinary, [hidden.id])).resolves.toEqual([]);
+    });
+
+    it('allows an elevated create, and the unlocked smart album then rescues as designed', async () => {
+      const { sut, ctx } = setup();
+      const { hidden, visible, ordinary, elevated, partnerAuth } = await lockedFavorite(ctx);
+      const ids = [hidden.id, visible.id].toSorted();
+
+      await expect(sut.create(elevated, smartDto)).resolves.toMatchObject({ kind: AlbumKind.Smart });
+
+      await expect(readable(ctx, ordinary, ids)).resolves.toEqual(ids);
+      await expect(readable(ctx, partnerAuth, ids)).resolves.toEqual(ids);
+    });
+
+    it('allows an elevated filter edit, and the unlocked smart album then rescues as designed', async () => {
+      const { sut, ctx } = setup();
+      const { user, hidden, visible, ordinary, elevated } = await lockedFavorite(ctx);
+      const album = await newSmartAlbum(ctx, user.id, { filter: { isFavorite: false } });
+      const ids = [hidden.id, visible.id].toSorted();
+
+      await expect(sut.update(elevated, album.id, { filter: { isFavorite: true } })).resolves.toMatchObject({
+        id: album.id,
+      });
+
+      await expect(readable(ctx, ordinary, ids)).resolves.toEqual(ids);
+    });
+
+    it('leaves an owner without locks alone: ordinary create and filter edit work', async () => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser();
+      const auth = factory.auth({ user, session: { hasElevatedPermission: false } });
+
+      const created = await sut.create(auth, smartDto);
+      await expect(sut.update(auth, created.id, { filter: { isFavorite: false } })).resolves.toMatchObject({
+        id: created.id,
+      });
+
+      await expect(smartAlbums(ctx, user.id)).resolves.toEqual([{ id: created.id, filter: { isFavorite: false } }]);
+    });
+
+    it('a lock-holding owner still renames, re-sends the same filter and shares in an ordinary session', async () => {
+      const { sut, ctx } = setup();
+      ctx.getMock(EventRepository).emit.mockResolvedValue();
+      const { user, hidden, ordinary } = await lockedFavorite(ctx);
+      const { user: sharee } = await ctx.newUser();
+      const album = await newSmartAlbum(ctx, user.id, { filter: { isFavorite: false } });
+
+      await expect(sut.update(ordinary, album.id, { albumName: 'Renamed' })).resolves.toMatchObject({
+        albumName: 'Renamed',
+      });
+      await expect(sut.update(ordinary, album.id, { filter: { isFavorite: false } })).resolves.toMatchObject({
+        id: album.id,
+      });
+      await expect(
+        sut.addUsers(ordinary, album.id, { albumUsers: [{ userId: sharee.id, role: AlbumUserRole.Viewer }] }),
+      ).resolves.toMatchObject({ id: album.id });
+
+      await expect(readable(ctx, ordinary, [hidden.id])).resolves.toEqual([]);
+    });
+
+    it('a sharee who holds locks still cannot edit the filter, and gets the owner-only error', async () => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser();
+      const { user: editor } = await ctx.newUser();
+      const album = await newSmartAlbum(ctx, user.id);
+      await ctx.newAlbumUser({ albumId: album.id, userId: editor.id, role: AlbumUserRole.Editor });
+      const { album: own } = await ctx.newAlbum({ ownerId: editor.id });
+      await ctx.get(LockRepository).lockAlbum(editor.id, own.id);
+
+      await expect(
+        sut.update(factory.auth({ user: editor }), album.id, { filter: { isFavorite: false } }),
+      ).rejects.toThrow(new BadRequestException('Only the album owner can update a smart album filter'));
     });
   });
 
