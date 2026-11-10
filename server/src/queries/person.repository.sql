@@ -1550,3 +1550,18 @@ from
   "person"
 where
   "person"."personGroupId" in ($1)
+  and "person"."ownerId" in (
+    select
+      "user"."id"
+    from
+      "user"
+    where
+      "user"."clusterGroupId" = (
+        select
+          "caller"."clusterGroupId"
+        from
+          "user" as "caller"
+        where
+          "caller"."id" = $2
+      )
+  )

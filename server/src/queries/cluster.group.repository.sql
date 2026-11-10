@@ -17,6 +17,28 @@ where
   and "user"."id" != $2
   and "user"."deletedAt" is null
 
+-- ClusterGroupRepository.hasMembers
+select
+  "user"."id"
+from
+  "user"
+where
+  "user"."clusterGroupId" = $1
+limit
+  $2
+
+-- ClusterGroupRepository.deleteRequestsForMemberlessClusters
+delete from "cluster_group_request"
+where
+  not exists (
+    select
+      "user"."id"
+    from
+      "user"
+    where
+      "user"."clusterGroupId" = "cluster_group_request"."clusterGroupId"
+  )
+
 -- ClusterGroupRepository.createRequest
 insert into
   "cluster_group_request" ("clusterGroupId", "userId")

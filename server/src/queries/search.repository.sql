@@ -240,14 +240,16 @@ with
       case
         when exists (
           select
-            "person"."personGroupId"
+            "person_group"."id"
           from
-            "person"
+            "person_group"
+            inner join "person" on "person"."personGroupId" = "person_group"."id"
           where
-            "person"."personGroupId" = "asset_face"."personGroupId"
+            "person_group"."id" = "asset_face"."personGroupId"
+            and "person_group"."clusterGroupId" = $1
         ) then "asset_face"."personGroupId"
       end as "personGroupId",
-      face_search.embedding <=> $1 as "distance"
+      face_search.embedding <=> $2 as "distance"
     from
       "asset_face"
       inner join "asset" on "asset"."id" = "asset_face"."assetId"
@@ -259,20 +261,20 @@ with
         from
           "user"
         where
-          "user"."clusterGroupId" = $2
+          "user"."clusterGroupId" = $3
       )
       and "asset"."deletedAt" is null
     order by
       "distance"
     limit
-      $3
+      $4
   )
 select
   *
 from
   "cte"
 where
-  "cte"."distance" <= $4
+  "cte"."distance" <= $5
 rollback
 
 -- SearchRepository.searchPlaces
