@@ -478,7 +478,43 @@ describe(AlbumService.name, () => {
       await expect(readable(ctx, ordinary, ids)).resolves.toEqual(ids);
     });
 
-    it('leaves an owner without locks alone: ordinary create and filter edit work', async () => {
+    it.each([
+      ['a PIN and no locks', true, false],
+      ['a PIN and locks', true, true],
+      ['locks left behind without a PIN', false, true],
+    ])(
+      'refuses ordinary create and filter edit for a user with %s, with one and the same error (R72)',
+      async (_label, pin, locks) => {
+        const { sut, ctx } = setup();
+        const { user } = await ctx.newUser(pin ? { pinCode: 'hashed-pin' } : {});
+        if (locks) {
+          const { album } = await ctx.newAlbum({ ownerId: user.id });
+          await ctx.get(LockRepository).lockAlbum(user.id, album.id);
+        }
+        const existing = await newSmartAlbum(ctx, user.id, { filter: { isFavorite: false } });
+        const ordinary = factory.auth({ user });
+        const uniform = { message: 'Elevated permission is required', error: 'Unauthorized', statusCode: 401 };
+
+        // spec section 9: the response does not depend on whether the user holds locks
+        for (const attempt of [
+          () => sut.create(ordinary, smartDto),
+          () => sut.update(ordinary, existing.id, { filter: { isFavorite: true } }),
+        ]) {
+          const error = await attempt().catch((error) => error);
+          expect(error).toBeInstanceOf(UnauthorizedException);
+          expect(error.getResponse()).toEqual(uniform);
+        }
+        await expect(smartAlbums(ctx, user.id)).resolves.toEqual([{ id: existing.id, filter: { isFavorite: false } }]);
+
+        const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+        await expect(sut.create(elevated, smartDto)).resolves.toMatchObject({ kind: AlbumKind.Smart });
+        await expect(sut.update(elevated, existing.id, { filter: { isFavorite: true } })).resolves.toMatchObject({
+          id: existing.id,
+        });
+      },
+    );
+
+    it('leaves an owner without a PIN or locks alone: ordinary create and filter edit work', async () => {
       const { sut, ctx } = setup();
       const { user } = await ctx.newUser();
       const auth = factory.auth({ user, session: { hasElevatedPermission: false } });

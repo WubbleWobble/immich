@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { Kysely } from 'kysely';
 import { DateTime } from 'luxon';
 import { AuthDto } from 'src/dtos/auth.dto.js';
@@ -2584,7 +2584,49 @@ describe(PersonService.name, () => {
       await expect(readableAssetIds(ctx, owner.partnerAuth, owner.ids)).resolves.toEqual([owner.visible.asset.id]);
     });
 
-    it('leaves an owner without locks alone: ordinary delete and merge work', async () => {
+    it.each([
+      ['a PIN and no locks', true, false],
+      ['a PIN and locks', true, true],
+      ['locks left behind without a PIN', false, true],
+    ])(
+      'refuses ordinary delete and merge for a user with %s, with one and the same error (R72)',
+      async (_label, pin, locks) => {
+        const { sut, ctx } = setup();
+        mockJobs(ctx);
+        const { user } = await ctx.newUser(pin ? { pinCode: 'hashed-pin' } : {});
+        if (locks) {
+          const { album } = await ctx.newAlbum({ ownerId: user.id });
+          await ctx.get(LockRepository).lockAlbum(user.id, album.id);
+        }
+        const { person: target } = await ctx.newPerson({ ownerId: user.id });
+        const { person: source } = await ctx.newPerson({ ownerId: user.id });
+        const { face } = await newFaceOn(ctx, { ownerId: user.id, personGroupId: source.personGroupId });
+        const ordinary = factory.auth({ user });
+        const uniform = { message: 'Elevated permission is required', error: 'Unauthorized', statusCode: 401 };
+
+        // spec section 9: the response does not depend on whether the user holds locks
+        for (const attempt of [
+          () => sut.deleteAll(ordinary, { ids: [source.personGroupId] }),
+          () => sut.mergePeople(ordinary, { ids: [target.personGroupId, source.personGroupId] }),
+        ]) {
+          const error = await attempt().catch((error) => error);
+          expect(error).toBeInstanceOf(UnauthorizedException);
+          expect(error.getResponse()).toEqual(uniform);
+        }
+        await expect(groupOf(ctx, face.id)).resolves.toBe(source.personGroupId);
+
+        const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+        await expect(sut.mergePeople(elevated, { ids: [target.personGroupId, source.personGroupId] })).resolves.toEqual(
+          [
+            { id: target.personGroupId, success: true },
+            { id: source.personGroupId, success: true },
+          ],
+        );
+        await expect(sut.deleteAll(elevated, { ids: [target.personGroupId] })).resolves.toBeUndefined();
+      },
+    );
+
+    it('leaves an owner without a PIN or locks alone: ordinary delete and merge work', async () => {
       const { sut, ctx } = setup();
       mockJobs(ctx);
       const { user } = await ctx.newUser();

@@ -25,7 +25,6 @@ import { StructureLockedTx } from 'src/repositories/album-container.repository.j
 import { AlbumAssetCount, AlbumInfoOptions } from 'src/repositories/album.repository.js';
 import { BaseService } from 'src/services/base.service.js';
 import { LockService } from 'src/services/lock.service.js';
-import { requireElevatedPermission } from 'src/utils/access.js';
 import { addAssets, removeAssets } from 'src/utils/asset.util.js';
 import { asDateTimeString } from 'src/utils/date.js';
 import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
@@ -245,7 +244,7 @@ export class AlbumService extends BaseService {
     }
 
     if (kind === AlbumKind.Smart) {
-      await this.requireElevationForSmartFilterWrite(auth);
+      await this.requireElevationForLockSensitiveWrite(auth);
     }
 
     // Smart albums are read-only and single-owner, so shares collapse to Viewer. An Editor
@@ -300,23 +299,6 @@ export class AlbumService extends BaseService {
     return mapAlbum(album);
   }
 
-  /**
-   * Fork (ruling R70): a smart album's filter is a rescue input - an unlocked smart album makes every photo it
-   * matches visible, whatever locked album holds it. So once the owner holds any lock, publishing a filter (creating
-   * a smart album, or changing an existing one's filter) needs the PIN, exactly like adding a hidden photo to an
-   * unlocked regular album does. The decision deliberately never evaluates the filter: "refused only when it would
-   * match something hidden" would tell an ordinary session which criteria hidden photos have. Reveal headers do not
-   * count - they never authorize writes. Owners without locks are untouched.
-   */
-  private async requireElevationForSmartFilterWrite(auth: AuthDto): Promise<void> {
-    if (auth.session?.hasElevatedPermission) {
-      return;
-    }
-    if (await this.lockRepository.hasAnyLocks(auth.user.id)) {
-      requireElevatedPermission(auth);
-    }
-  }
-
   /** Destination-folder checks for placing an album, on the caller's folder-structure transaction. */
   private async assertAlbumDestination(
     auth: AuthDto,
@@ -361,9 +343,10 @@ export class AlbumService extends BaseService {
       if (isEmptySmartAlbumFilter(dto.filter)) {
         throw new BadRequestException('Smart album filter must contain at least one criterion');
       }
-      // Re-sending the stored filter changes nothing, so it needs no PIN.
+      // Fork (rulings R70, R72): an unlocked smart album makes every photo its filter matches visible, whatever
+      // locked album holds it, so publishing a filter needs the PIN. Re-sending the stored filter changes nothing.
       if (!isDeepStrictEqual(dto.filter, album.filter)) {
-        await this.requireElevationForSmartFilterWrite(auth);
+        await this.requireElevationForLockSensitiveWrite(auth);
       }
     }
 

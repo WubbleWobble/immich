@@ -16,7 +16,6 @@ import { JobName, JobStatus, Permission, QueueName } from 'src/enum.js';
 import { TagAssetTable } from 'src/schema/tables/tag-asset.table.js';
 import { AlbumService } from 'src/services/album.service.js';
 import { BaseService } from 'src/services/base.service.js';
-import { requireElevatedPermission } from 'src/utils/access.js';
 import { addAssets, removeAssets } from 'src/utils/asset.util.js';
 import { updateLockedColumns } from 'src/utils/database.js';
 import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
@@ -94,13 +93,9 @@ export class TagService extends BaseService {
 
   async remove(auth: AuthDto, id: string): Promise<void> {
     await this.requireAccess({ auth, permission: Permission.TagDelete, ids: [id] });
-    // Fork (ruling R71): deleting a tag (or an ancestor) untags every photo below it at once, hidden ones included,
-    // and a photo that only a locked smart album filtering on the tag was hiding would become visible. A lock holder
-    // therefore needs the PIN. The decision is the owner's lock state alone - never whether the tag is on something
-    // hidden - so it is no oracle about hidden photos.
-    if (!auth.session?.hasElevatedPermission && (await this.lockRepository.hasAnyLocks(auth.user.id))) {
-      requireElevatedPermission(auth);
-    }
+    // Fork (rulings R71, R72): deleting a tag (or an ancestor) untags every photo below it at once, hidden ones
+    // included, and a photo that only a locked smart album filtering on the tag was hiding would become visible.
+    await this.requireElevationForLockSensitiveWrite(auth);
 
     const assetIds = await this.tagRepository.getAssetIdsByTagId(id);
     await this.tagRepository.delete(id);
@@ -144,10 +139,22 @@ export class TagService extends BaseService {
   async addAssets(auth: AuthDto, id: string, dto: BulkIdsDto): Promise<BulkIdResponseDto[]> {
     await this.requireAccess({ auth, permission: Permission.TagAsset, ids: [id] });
 
-    const results = await addAssets(
+    // Fork (ruling R32): the helper answers `duplicate` before it checks the asset, which would tell an ordinary
+    // session that a photo hidden for it carries this tag. Only photos the caller may update reach it; every other id
+    // gets the answer of a missing or foreign photo.
+    const updatableIds = await this.checkAccess({ auth, permission: Permission.AssetUpdate, ids: dto.ids });
+    const added = await addAssets(
       auth,
       { access: this.accessRepository, bulk: this.tagRepository },
-      { parentId: id, assetIds: dto.ids, permission: Permission.AssetUpdate },
+      {
+        parentId: id,
+        assetIds: dto.ids.filter((assetId) => updatableIds.has(assetId)),
+        permission: Permission.AssetUpdate,
+      },
+    );
+    const addedById = new Map(added.map((result) => [result.id, result]));
+    const results: BulkIdResponseDto[] = dto.ids.map(
+      (assetId) => addedById.get(assetId) ?? { id: assetId, success: false, error: BulkIdErrorReason.NO_PERMISSION },
     );
 
     const taggedAssetIds: string[] = [];

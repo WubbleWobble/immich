@@ -93,9 +93,10 @@ commits.
 | Per-asset `visibility=locked` | Retired and rejected; enforced by a DB CHECK constraint |
 | Album responses (`AlbumResponseDto`) | New required field `viewerRole` (`owner`, `editor`, `viewer` or `null`): the requesting user's effective role, the strongest of their direct album role and any role inherited from a shared ancestor folder. `albumUsers` still lists direct members only; the folder share graph is not exposed. `null` for shared-link visitors |
 | Upload duplicate of an asset hidden for a non-elevated session (R49) | `x-immich-checksum` pre-check falls through; `bulk-upload-check` answers `accept`; the upload answers `201 { id: <fresh uuid>, status: created }` and stores nothing. Elevated sessions get the real `duplicate` + id |
-| Create a smart album, or change a smart album's `filter`, when the album owner holds any lock (R70) | Needs an elevated (PIN) session; otherwise 401 `Elevated permission is required`. Decided on the owner's lock state alone, never on what the filter matches. Owners without locks, renames, re-sending the stored filter and sharing are unchanged |
-| Delete a tag, delete a person, merge people, when the caller holds any lock (R71) | Needs an elevated session; otherwise 401 `Elevated permission is required` |
+| Create a smart album, or change a smart album's `filter`, as a user who has a PIN (R70, R72) | Needs an elevated (PIN) session; otherwise 401 `Elevated permission is required`, the same response the lock endpoints give. The response is the same whether or not the user holds locks, and never depends on what the filter matches. Users with no PIN and no locks, renames, re-sending the stored filter and sharing are unchanged |
+| Delete a tag, delete a person, merge people, as a user who has a PIN (R71, R72) | Needs an elevated session; otherwise the same 401 |
 | `DELETE /tags/:id/assets` for a photo hidden for a non-elevated caller (R71) | That id answers `{ success: false, error: "not_found" }`, like a photo that does not carry the tag; the other ids are untagged as usual |
+| `PUT /tags/:id/assets` for a photo hidden for a non-elevated caller (R32) | That id answers `{ success: false, error: "no_permission" }`, like a missing or foreign photo, whether or not it already carries the tag (was `duplicate` when it did) |
 | Asset bytes (thumbnail, preview, original, video playback, asset files, HLS segments) (R50) | `Cache-Control: private, no-cache, no-transform` (was `private, max-age=86400, ... stale-while-revalidate=2592000, stale-if-error=2592000`) |
 
 ## Shared folders in the web app
@@ -225,18 +226,18 @@ State these plainly to users.
     an album from it purges nothing. The exposure is limited to requests
     already in flight; nothing completed is reused.
 
-- **Changing what a smart album matches needs the PIN once you hold a
-  lock (R70, R71).** An unlocked smart album shows every photo it matches,
+- **Changing what a smart album matches needs the PIN once you have one
+  (R70, R71, R72).** An unlocked smart album shows every photo it matches,
   and a locked one hides them, so the filter, the tags and the people
-  behind it decide what a lock protects. For a user with at least one
-  lock, these need an elevated (PIN) session: creating a smart album,
-  changing a smart album's filter, deleting a tag (or a parent tag),
-  deleting a person and merging people. Removing a tag from single photos
-  needs no PIN, but skips photos that are hidden in that session. Users
-  without locks see no change. The rule looks only at whether the user
-  holds a lock, never at what a filter, tag or person matches, so a
-  refusal says nothing about hidden photos. It does tell whoever holds the
-  unlocked device that this account has locks.
+  behind it decide what a lock protects. A user who has set a PIN needs an
+  elevated (PIN) session for: creating a smart album, changing a smart
+  album's filter, deleting a tag (or a parent tag), deleting a person and
+  merging people. Removing a tag from single photos needs no PIN, but
+  skips photos that are hidden in that session. Users with no PIN (and no
+  locks) see no change. The rule asks only whether the user has a PIN,
+  so the refusal is the same with or without locks and says nothing about
+  locks or hidden photos. A user whose PIN was removed while locks remain
+  is treated like a user with a PIN.
 - **Other people's actions and background jobs leave the faces on hidden
   photos alone (R71).** These rewrite face data for several users at once:
   a cluster member's "regenerate people", the admin's forced face
@@ -257,9 +258,13 @@ State these plainly to users.
     (D12), so a locked smart album keeps hiding the same photos.
   - A person group with no person left is kept while it still carries a
     face on a hidden photo.
-  Not covered: tags and face regions read from the photo file or its
-  sidecar. A user who can edit those files outside Immich can still change
-  what a filter matches on the next metadata scan.
+- **External file or sidecar edits can change classification.** Tags and
+  face regions are read from the photo file and its sidecar on metadata
+  extraction and replace the stored ones. Someone who can edit those
+  files outside Immich can change what a smart-album filter matches, and
+  so what a locked smart album hides. Re-running face detection on a
+  single photo is not affected: it needs edit access to the photo, which
+  an ordinary session does not have for hidden photos.
 
 ## Deploy checklist
 

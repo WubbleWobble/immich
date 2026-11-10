@@ -5,6 +5,7 @@ import type { ClassConstructor } from 'src/types.js';
 import { SALT_ROUNDS } from 'src/constants.js';
 import { StorageCore } from 'src/cores/storage.core.js';
 import { UserAdmin } from 'src/database.js';
+import { AuthDto } from 'src/dtos/auth.dto.js';
 import { SystemConfig } from 'src/dtos/config.dto.js';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { ActivityRepository } from 'src/repositories/activity.repository.js';
@@ -71,6 +72,7 @@ import {
   checkAccess,
   checkPersonAccess,
   requireAccess,
+  requireElevatedPermission,
   requirePersonAccess,
 } from 'src/utils/access.js';
 import { getConfig, updateConfig } from 'src/utils/config.js';
@@ -314,6 +316,24 @@ export class BaseService {
 
   checkPersonAccess(request: AccessPersonRequest) {
     return checkPersonAccess(this.accessRepository, request);
+  }
+
+  /**
+   * Fork (rulings R70-R72): writes that change what a lock protects without touching a locked album - publishing a
+   * smart-album filter, deleting a tag, deleting or merging people - need the PIN from every user who has one. The
+   * condition is "has a PIN", not "holds locks": answering differently for lock holders would tell an ordinary
+   * session whether the account has locks (spec section 9). `hasAnyLocks` only fails closed for locks left behind by a
+   * PIN reset. It never looks at what the filter, tag or person matches, and reveal headers do not count. Users with
+   * no PIN and no locks are untouched. The error is the lock-toggle endpoints' own.
+   */
+  async requireElevationForLockSensitiveWrite(auth: AuthDto): Promise<void> {
+    if (auth.session?.hasElevatedPermission) {
+      return;
+    }
+    const user = await this.userRepository.getForPinCode(auth.user.id);
+    if (user?.pinCode || (await this.lockRepository.hasAnyLocks(auth.user.id))) {
+      requireElevatedPermission(auth);
+    }
   }
 
   async isSetupAvailable(): Promise<boolean> {

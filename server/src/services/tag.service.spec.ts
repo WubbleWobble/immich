@@ -201,6 +201,15 @@ describe(TagService.name, () => {
       expect(mocks.tag.delete).not.toHaveBeenCalled();
     });
 
+    it('should require elevation from a user with a PIN, without asking about locks (R72)', async () => {
+      mocks.user.getForPinCode.mockResolvedValue({ pinCode: 'hashed-pin', password: null });
+
+      await expect(sut.remove(authStub.admin, 'tag-1')).rejects.toThrow('Elevated permission is required');
+
+      expect(mocks.lock.hasAnyLocks).not.toHaveBeenCalled();
+      expect(mocks.tag.delete).not.toHaveBeenCalled();
+    });
+
     it('should require elevation once the owner holds a lock (R71)', async () => {
       mocks.lock.hasAnyLocks.mockResolvedValue(true);
 
@@ -318,7 +327,8 @@ describe(TagService.name, () => {
       await expect(sut.addAssets(authStub.admin, 'tag-1', { ids: ['asset-1'] })).resolves.toEqual([
         { id: 'asset-1', success: false, error: 'no_permission' },
       ]);
-      expect(mocks.tag.getAssetIds).toHaveBeenCalledWith('tag-1', ['asset-1']);
+      // R32: an asset the caller may not update never reaches the duplicate check
+      expect(mocks.tag.getAssetIds).toHaveBeenCalledWith('tag-1', []);
       expect(mocks.tag.addAssetIds).not.toHaveBeenCalled();
     });
 
@@ -327,7 +337,7 @@ describe(TagService.name, () => {
       mocks.tag.getAssetIds.mockResolvedValue(new Set(['asset-1']));
       mocks.tag.addAssetIds.mockResolvedValue();
       mocks.asset.getForUpdateTags.mockResolvedValue({ tags: [{ value: 'tag-1' }] });
-      mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set(['asset-2']));
+      mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set(['asset-1', 'asset-2']));
 
       await expect(
         sut.addAssets(authStub.admin, 'tag-1', {

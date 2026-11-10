@@ -49,7 +49,6 @@ import { FaceSearchTable } from 'src/schema/tables/face-search.table.js';
 import { PersonUserTable } from 'src/schema/tables/person-user.table.js';
 import { AlbumService } from 'src/services/album.service.js';
 import { BaseService } from 'src/services/base.service.js';
-import { requireElevatedPermission } from 'src/utils/access.js';
 import { getDimensions, getMyPartnerIds } from 'src/utils/asset.util.js';
 import { OwnerLockVisibility } from 'src/utils/database.js';
 import { ImmichFileResponse } from 'src/utils/file.js';
@@ -421,27 +420,18 @@ export class PersonService extends BaseService {
       permission: Permission.PersonDelete,
       ids: ids.map((id) => ({ personGroupId: id, ownerId })),
     });
-    await this.requireElevationForPersonRemoval(auth);
+    // Fork (rulings R71, R72): deleting or merging people rewrites face assignments on every photo of the person at
+    // once, hidden ones included: a locked smart album filtering on the person stops matching (delete, merge source),
+    // or an unlocked one starts matching (merge target).
+    await this.requireElevationForLockSensitiveWrite(auth);
     await this.removeAllPersonGroups(ids, ownerId);
     await this.personRepository.deleteEmptyGroups(await this.getHiddenFaceGuard(auth.user.id));
   }
 
   /**
-   * Fork (ruling R71): deleting or merging people rewrites face assignments on every photo of the person at once,
-   * hidden ones included. A locked smart album filtering on the person would stop matching (delete, merge source), or
-   * an unlocked one would start matching (merge target), and photos would become visible. A lock holder therefore
-   * needs the PIN. The decision is the caller's lock state alone, never whether the person is on something hidden.
-   */
-  private async requireElevationForPersonRemoval(auth: AuthDto): Promise<void> {
-    if (!auth.session?.hasElevatedPermission && (await this.lockRepository.hasAnyLocks(auth.user.id))) {
-      requireElevatedPermission(auth);
-    }
-  }
-
-  /**
    * Fork (ruling R71): the lock entries (job context: each owner's own locks, no reveal) of everyone whose hidden
    * photos a classification write must leave alone. A user action passes the caller as `exceptOwnerId`: by the time it
-   * gets here the caller either holds no locks or proved the PIN, so their own photos are theirs to reclassify -
+   * gets here the caller either has no PIN and no locks or proved the PIN, so their own photos are theirs to reclassify -
    * everybody else's lock state is neither bypassed by the caller's PIN nor revealed by a refusal. Jobs pass nothing.
    */
   private async getHiddenFaceGuard(exceptOwnerId?: string): Promise<OwnerLockVisibility[]> {
@@ -818,7 +808,7 @@ export class PersonService extends BaseService {
       permission: Permission.PersonMerge,
       ids: ids.map((id) => ({ personGroupId: id, ownerId: auth.user.id })),
     });
-    await this.requireElevationForPersonRemoval(auth);
+    await this.requireElevationForLockSensitiveWrite(auth);
     // Fork (ruling R71): a merge also rewrites the people of every other owner in the cluster. Their faces on photos
     // hidden for them stay in the source group (see getHiddenFaceGuard).
     const hiddenFaceGuard = await this.getHiddenFaceGuard(auth.user.id);

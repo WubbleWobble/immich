@@ -1,3 +1,4 @@
+import { UnauthorizedException } from '@nestjs/common';
 import { Kysely } from 'kysely';
 import { BulkIdErrorReason } from 'src/dtos/asset-ids.response.dto.js';
 import { AuthDto } from 'src/dtos/auth.dto.js';
@@ -12,6 +13,7 @@ import { LockRepository } from 'src/repositories/lock.repository.js';
 import { LoggingRepository } from 'src/repositories/logging.repository.js';
 import { SearchRepository } from 'src/repositories/search.repository.js';
 import { TagRepository } from 'src/repositories/tag.repository.js';
+import { UserRepository } from 'src/repositories/user.repository.js';
 import { DB } from 'src/schema/index.js';
 import { AlbumService } from 'src/services/album.service.js';
 import { BaseService } from 'src/services/base.service.js';
@@ -35,6 +37,7 @@ const setup = (db?: Kysely<DB>) => {
       TagRepository,
       AccessRepository,
       SearchRepository,
+      UserRepository,
     ],
     mock: [EventRepository, JobRepository, LoggingRepository],
   });
@@ -461,7 +464,64 @@ describe(TagService.name, () => {
       );
     });
 
-    it('leaves an owner without locks alone: ordinary untag and tag delete work', async () => {
+    it.each([
+      ['a PIN and no locks', true, false],
+      ['a PIN and locks', true, true],
+      ['locks left behind without a PIN', false, true],
+    ])(
+      'refuses an ordinary tag delete for a user with %s, with one and the same error (R72)',
+      async (_label, pin, locks) => {
+        const { sut, ctx } = setup();
+        ctx.getMock(JobRepository).queueAll.mockResolvedValue();
+        const { user } = await ctx.newUser(pin ? { pinCode: 'hashed-pin' } : {});
+        const [tag] = await upsertTags(ctx.get(TagRepository), { userId: user.id, tags: ['trip'] });
+        if (locks) {
+          const { album } = await ctx.newAlbum({ ownerId: user.id });
+          await ctx.get(LockRepository).lockAlbum(user.id, album.id);
+        }
+
+        // spec section 9: the response does not depend on whether the user holds locks
+        const error = await sut.remove(factory.auth({ user }), tag.id).catch((error) => error);
+        expect(error).toBeInstanceOf(UnauthorizedException);
+        expect(error.getResponse()).toEqual({
+          message: 'Elevated permission is required',
+          error: 'Unauthorized',
+          statusCode: 401,
+        });
+        await expect(ctx.get(TagRepository).get(tag.id)).resolves.toBeDefined();
+
+        await expect(
+          sut.remove(factory.auth({ user, session: { hasElevatedPermission: true } }), tag.id),
+        ).resolves.toBeUndefined();
+      },
+    );
+
+    it('tagging answers for a hidden photo exactly as for a missing or foreign one, never `duplicate` (R32)', async () => {
+      const { sut, ctx } = setup();
+      ctx.getMock(EventRepository).emit.mockResolvedValue();
+      const { tag, protectedOnly, visible, alsoLocked, ordinary, elevated } = await lockedByTag(ctx);
+      const { user: stranger } = await ctx.newUser();
+      const { asset: foreign } = await ctx.newAsset({ ownerId: stranger.id });
+      const missing = factory.uuid();
+
+      await expect(
+        sut.addAssets(ordinary, tag.id, { ids: [protectedOnly.id, alsoLocked.id, foreign.id, missing, visible.id] }),
+      ).resolves.toEqual([
+        { id: protectedOnly.id, success: false, error: BulkIdErrorReason.NO_PERMISSION },
+        { id: alsoLocked.id, success: false, error: BulkIdErrorReason.NO_PERMISSION },
+        { id: foreign.id, success: false, error: BulkIdErrorReason.NO_PERMISSION },
+        { id: missing, success: false, error: BulkIdErrorReason.NO_PERMISSION },
+        { id: visible.id, success: false, error: BulkIdErrorReason.DUPLICATE },
+      ]);
+      expect(ctx.getMock(EventRepository).emit).not.toHaveBeenCalled();
+
+      // the PIN holder gets the real answer
+      await expect(sut.addAssets(elevated, tag.id, { ids: [protectedOnly.id] })).resolves.toEqual([
+        { id: protectedOnly.id, success: false, error: BulkIdErrorReason.DUPLICATE },
+      ]);
+    });
+
+    it('leaves an owner without a PIN or locks alone: ordinary untag and tag delete work', async () => {
       const { sut, ctx } = setup();
       ctx.getMock(EventRepository).emit.mockResolvedValue();
       ctx.getMock(JobRepository).queueAll.mockResolvedValue();
