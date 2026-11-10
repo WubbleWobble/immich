@@ -92,11 +92,7 @@ export class HlsService extends BaseService {
     initSegment?: number,
   ) {
     await this.requireAccess({ auth, permission: Permission.AssetView, ids: [assetId] });
-
-    const session = await this.videoStreamRepository.getSession(sessionId);
-    if (!session) {
-      throw new NotFoundException('Session not found');
-    }
+    await this.requireSession(assetId, sessionId);
 
     const variantDir = StorageCore.getHlsVariantFolder({ ownerId: auth.user.id, sessionId, variantIndex });
     const path = join(variantDir, filename);
@@ -124,7 +120,26 @@ export class HlsService extends BaseService {
   async endSession(auth: AuthDto, assetId: string, sessionId: string): Promise<void> {
     await this.requireAccess({ auth, permission: Permission.AssetView, ids: [assetId] });
 
+    // Fork (F4): ending a missing session - or one backed by another asset - is a silent no-op (no end event), so the
+    // two cannot be told apart and a session can only be ended through an asset the caller may view.
+    const session = await this.videoStreamRepository.getSession(sessionId, assetId);
+    if (!session) {
+      return;
+    }
+
     this.websocketRepository.serverSend('HlsSessionEnd', { sessionId });
+  }
+
+  /**
+   * Fork (F4): the session must be backed by the asset just authorized; a session of another asset fails exactly like
+   * a missing session, before any heartbeat, segment request or file access.
+   */
+  private async requireSession(assetId: string, sessionId: string) {
+    const session = await this.videoStreamRepository.getSession(sessionId, assetId);
+    if (!session) {
+      throw new NotFoundException('Session not found');
+    }
+    return session;
   }
 
   private generateMainPlaylist(sessionId: string, ffmpeg: ConfigFFmpegDto, asset: AssetWithStreamInfo) {

@@ -131,9 +131,11 @@ export class TranscodingService extends BaseService {
   }
 
   @OnEvent({ name: 'HlsSegmentRequest', server: true, workers: [ImmichWorker.Microservices] })
-  async onSegmentRequest({ sessionId, variantIndex, segmentIndex }: ArgOf<'HlsSegmentRequest'>) {
+  async onSegmentRequest({ sessionId, assetId, variantIndex, segmentIndex }: ArgOf<'HlsSegmentRequest'>) {
     const session = this.sessions.get(sessionId);
-    if (!session) {
+    // Fork (F4): the API authorizes the request's asset and binds it to the session first; a request naming another
+    // asset than the session's own is never transcoded from the session's source.
+    if (!session || session.assetId !== assetId) {
       return;
     }
 

@@ -26,12 +26,18 @@ export class VideoStreamRepository {
     await this.db.insertInto('video_stream_segment').values(segment).execute();
   }
 
-  @GenerateSql({ params: [DummyValue.UUID] })
-  getSession(id: string) {
+  /**
+   * Fork (F4): a live session is only ever loaded together with the asset named by the request (like
+   * {@link getForMediaPlaylist}), so the asset the caller was authorized for is the session's backing asset. A session
+   * paired with another asset is indistinguishable from a missing one.
+   */
+  @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID] })
+  getSession(id: string, assetId: string) {
     return this.db
       .selectFrom('video_stream_session')
       .selectAll()
       .where('id', '=', id)
+      .where('assetId', '=', assetId)
       .where('expiresAt', '>', new Date())
       .executeTakeFirst();
   }

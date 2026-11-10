@@ -430,8 +430,157 @@ describe(HlsService.name, () => {
       const auth = factory.auth();
       const assetId = 'asset-1';
       mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set([assetId]));
+      mocks.videoStream.getSession.mockResolvedValue({ id: sessionId, assetId } as never);
       await sut.endSession(auth, assetId, sessionId);
+      expect(mocks.videoStream.getSession).toHaveBeenCalledWith(sessionId, assetId);
       expect(mocks.websocket.serverSend).toHaveBeenCalledWith('HlsSessionEnd', { sessionId });
+    });
+
+    it('emits nothing for a session that does not exist', async () => {
+      const auth = factory.auth();
+      const assetId = 'asset-1';
+      mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set([assetId]));
+      await sut.endSession(auth, assetId, sessionId);
+      expect(mocks.websocket.serverSend).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * Fork (F4): every session operation loads the session by (sessionId AND the URL's assetId), like the media playlist,
+   * so the asset the access check authorized is the session's backing asset. A session paired with another asset fails
+   * exactly like a missing one and emits no heartbeat, segment request or end event.
+   */
+  describe('session/asset binding', () => {
+    const privateVideo = 'private-video';
+    const visibleVideo = 'visible-video';
+    const session = { id: sessionId, assetId: privateVideo, expiresAt: new Date(Date.now() + 60_000) };
+
+    beforeEach(() => {
+      // the row store: a lookup naming an asset only matches the session's own asset
+      mocks.videoStream.getSession.mockImplementation(((id: string, assetId?: string) =>
+        Promise.resolve(
+          id === session.id && (assetId === undefined || assetId === session.assetId) ? session : undefined,
+        )) as never);
+      // the worker completes any requested segment
+      mocks.websocket.serverSend.mockImplementation(((event: string, data: any) => {
+        if (event === 'HlsSegmentRequest') {
+          setTimeout(() => sut.onSegmentResult({ ...data, success: true }), 0);
+        }
+      }) as never);
+    });
+
+    it('serves the matching pair (existing and newly generated segments)', async () => {
+      const auth = factory.auth();
+      mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set([privateVideo]));
+      mocks.storage.checkFileExists.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+      await expect(sut.getSegment(auth, privateVideo, sessionId, 0, 'seg_1.m4s')).resolves.toBeDefined();
+      await expect(sut.getSegment(auth, privateVideo, sessionId, 0, 'seg_2.m4s')).resolves.toBeDefined();
+      expect(mocks.videoStream.getSession).toHaveBeenCalledWith(sessionId, privateVideo);
+      expect(mocks.websocket.serverSend.mock.calls.filter(([event]) => event === 'HlsSegmentRequest')).toEqual([
+        ['HlsSegmentRequest', { sessionId, assetId: privateVideo, variantIndex: 0, segmentIndex: 2 }],
+      ]);
+      await sut.endSession(auth, privateVideo, sessionId);
+      expect(mocks.websocket.serverSend).toHaveBeenCalledWith('HlsSessionEnd', { sessionId });
+    });
+
+    it.each([
+      { segment: 'existing', exists: true },
+      { segment: 'not-yet-generated', exists: false },
+    ])(
+      'refuses a session paired with another readable asset ($segment segment), emitting nothing',
+      async ({ exists }) => {
+        const auth = factory.auth();
+        mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set([visibleVideo]));
+        mocks.storage.checkFileExists.mockResolvedValue(exists);
+
+        await expect(sut.getSegment(auth, visibleVideo, sessionId, 0, 'seg_12.m4s')).rejects.toBeInstanceOf(
+          NotFoundException,
+        );
+        await expect(sut.getSegment(auth, visibleVideo, sessionId, 0, 'init.mp4')).rejects.toBeInstanceOf(
+          NotFoundException,
+        );
+        await sut.endSession(auth, visibleVideo, sessionId);
+        expect(mocks.storage.checkFileExists).not.toHaveBeenCalled();
+        expect(mocks.websocket.serverSend).not.toHaveBeenCalled();
+      },
+    );
+
+    it('fails a mismatched pair exactly like a missing session', async () => {
+      const auth = factory.auth();
+      mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set([visibleVideo]));
+      const mismatched = await sut.getSegment(auth, visibleVideo, sessionId, 0, 'seg_1.m4s').catch((error) => error);
+      const missing = await sut
+        .getSegment(auth, visibleVideo, 'ffffffff-ffff-4fff-8fff-ffffffffffff', 0, 'seg_1.m4s')
+        .catch((error) => error);
+      expect(mismatched).toBeInstanceOf(NotFoundException);
+      expect(mismatched.getResponse()).toEqual(missing.getResponse());
+    });
+
+    it('refuses the session after an elevated-to-ordinary transition, by its own asset or another', async () => {
+      const elevated = factory.auth({ session: { hasElevatedPermission: true } });
+      const ordinary = factory.auth({ session: { id: elevated.session!.id }, user: { id: elevated.user.id } });
+      mocks.access.asset.checkOwnerAccess.mockImplementation((_userId, ids) => Promise.resolve(new Set(ids)));
+      // the private video is hidden by the viewer's own lock outside elevation
+      mocks.access.asset.excludeHiddenForLocker.mockImplementation((_userId, ids) =>
+        Promise.resolve(new Set([...ids].filter((id) => id !== privateVideo))),
+      );
+      mocks.storage.checkFileExists.mockResolvedValue(true);
+      await expect(sut.getSegment(elevated, privateVideo, sessionId, 0, 'seg_1.m4s')).resolves.toBeDefined();
+      mocks.websocket.serverSend.mockClear();
+
+      for (const exists of [true, false]) {
+        mocks.storage.checkFileExists.mockResolvedValue(exists);
+        await expect(sut.getSegment(ordinary, privateVideo, sessionId, 0, 'seg_1.m4s')).rejects.toThrow();
+        await expect(sut.getSegment(ordinary, visibleVideo, sessionId, 0, 'seg_9.m4s')).rejects.toThrow();
+      }
+      await expect(sut.endSession(ordinary, privateVideo, sessionId)).rejects.toThrow();
+      await sut.endSession(ordinary, visibleVideo, sessionId);
+      expect(mocks.websocket.serverSend).not.toHaveBeenCalled();
+    });
+
+    it('refuses the session after the partner grant is revoked, by its own asset or another', async () => {
+      const auth = factory.auth();
+      mocks.access.asset.checkOwnerAccess.mockImplementation((_userId, ids) =>
+        Promise.resolve(new Set([...ids].filter((id) => id === visibleVideo))),
+      );
+      mocks.access.asset.checkPartnerAccess.mockResolvedValueOnce(new Set([privateVideo]));
+      mocks.storage.checkFileExists.mockResolvedValue(true);
+      await expect(sut.getSegment(auth, privateVideo, sessionId, 0, 'seg_1.m4s')).resolves.toBeDefined();
+      mocks.websocket.serverSend.mockClear();
+
+      // revoked: the partner path no longer grants the private video
+      mocks.access.asset.checkPartnerAccess.mockResolvedValue(new Set());
+      await expect(sut.getSegment(auth, privateVideo, sessionId, 0, 'seg_2.m4s')).rejects.toThrow();
+      await expect(sut.getSegment(auth, visibleVideo, sessionId, 0, 'seg_2.m4s')).rejects.toThrow();
+      await sut.endSession(auth, visibleVideo, sessionId);
+      expect(mocks.websocket.serverSend).not.toHaveBeenCalled();
+    });
+
+    it("confines a shared link to its own assets' sessions", async () => {
+      const auth = factory.auth({ sharedLink: {} });
+      mocks.access.asset.checkSharedLinkAccess.mockImplementation((_linkId, ids) =>
+        Promise.resolve(new Set([...ids].filter((id) => id === visibleVideo))),
+      );
+      mocks.storage.checkFileExists.mockResolvedValue(false);
+
+      await expect(sut.getSegment(auth, privateVideo, sessionId, 0, 'seg_1.m4s')).rejects.toThrow();
+      await expect(sut.getSegment(auth, visibleVideo, sessionId, 0, 'seg_1.m4s')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      await sut.endSession(auth, visibleVideo, sessionId);
+      expect(mocks.websocket.serverSend).not.toHaveBeenCalled();
+    });
+
+    it('does not prewarm a media playlist for a mismatched pair', async () => {
+      const auth = factory.auth();
+      mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set([visibleVideo]));
+      mocks.videoStream.getForMediaPlaylist.mockResolvedValue(undefined as never);
+      await expect(sut.getMediaPlaylist(auth, visibleVideo, sessionId, 0, 10)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(mocks.videoStream.getForMediaPlaylist).toHaveBeenCalledWith(visibleVideo, sessionId);
+      expect(mocks.websocket.serverSend).not.toHaveBeenCalled();
     });
   });
 });

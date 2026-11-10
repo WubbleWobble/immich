@@ -172,6 +172,13 @@ describe(TranscodingService.name, () => {
       expect(mocks.process.spawn).toHaveBeenCalledTimes(2);
     });
 
+    it('does not spawn for a request naming another asset than the session (F4)', async () => {
+      await sut.onSegmentRequest({ sessionId, assetId: 'other-asset', variantIndex: 0, segmentIndex: 0 });
+
+      expect(mocks.videoStream.getForTranscoding).not.toHaveBeenCalled();
+      expect(mocks.process.spawn).not.toHaveBeenCalled();
+    });
+
     it('does not spawn when the session is unknown', async () => {
       await sut.onSegmentRequest({ sessionId: 'never-created', assetId, variantIndex: 0, segmentIndex: 0 });
 
