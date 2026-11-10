@@ -2584,6 +2584,75 @@ describe(PersonService.name, () => {
       await expect(readableAssetIds(ctx, owner.partnerAuth, owner.ids)).resolves.toEqual([owner.visible.asset.id]);
     });
 
+    it("an emptied cluster keeps the groups another owner's hidden photos use (merge, leave, join, cleanup)", async () => {
+      const { sut, ctx } = setup();
+      mockJobs(ctx);
+      const clusters = BaseService.create(ClusterGroupService, sut);
+      const { user: member } = await ctx.newUser();
+      const { user: inviter } = await ctx.newUser();
+      const oldCluster = member.clusterGroupId;
+      const owner = await lockedByPerson(ctx, { clusterGroupId: oldCluster });
+      await ctx.newPerson({ ownerId: member.id, personGroupId: owner.groupId });
+      const { person: target } = await ctx.newPerson({ ownerId: member.id });
+      const expectStillProtected = async (label: string) => {
+        await expect(groupOf(ctx, owner.protectedOnly.face.id), label).resolves.toBe(owner.groupId);
+        await expect(groupOf(ctx, owner.alsoLocked.face.id), label).resolves.toBe(owner.groupId);
+        await expect(readableAssetIds(ctx, owner.ordinary, owner.ids), label).resolves.toEqual([
+          owner.visible.asset.id,
+        ]);
+        await expect(readableAssetIds(ctx, owner.partnerAuth, owner.ids), label).resolves.toEqual([
+          owner.visible.asset.id,
+        ]);
+      };
+      await expectStillProtected('before');
+
+      // the member merges the person away: the owner's hidden faces stay in a group nobody has a person in
+      await sut.mergePeople(factory.auth({ user: member }), { ids: [target.personGroupId, owner.groupId] });
+      await expectStillProtected('after the merge');
+
+      // both leave the cluster the group lives in: the member by leaving, the owner by joining another one
+      await clusters.leave(factory.auth({ user: member }), oldCluster);
+      const request = await ctx
+        .get(ClusterGroupRepository)
+        .createRequest({ clusterGroupId: inviter.clusterGroupId, userId: owner.user.id });
+      await clusters.acceptRequest(owner.ordinary, request!.id);
+      await expect(
+        ctx.database.selectFrom('user').select('id').where('clusterGroupId', '=', oldCluster).execute(),
+      ).resolves.toEqual([]);
+      await expectStillProtected('after leave and join');
+
+      // the cleanup job must not delete the memberless cluster: that cascades to the group and unassigns the faces
+      await sut.handlePersonCleanup();
+      await expectStillProtected('after cleanup');
+
+      // nor when the last member is deleted outright rather than leaving
+      await ctx.database.deleteFrom('user').where('id', '=', member.id).execute();
+      await sut.handlePersonCleanup();
+      await expectStillProtected('after the member is deleted');
+    });
+
+    it("an elevated owner's unrelated person delete keeps the group their hidden photos use", async () => {
+      const { sut, ctx } = setup();
+      mockJobs(ctx);
+      const { user: member } = await ctx.newUser();
+      const owner = await lockedByPerson(ctx, { clusterGroupId: member.clusterGroupId });
+      await ctx.newPerson({ ownerId: member.id, personGroupId: owner.groupId });
+      const { person: target } = await ctx.newPerson({ ownerId: member.id });
+      const { person: unrelated } = await ctx.newPerson({ ownerId: owner.user.id });
+      await sut.mergePeople(factory.auth({ user: member }), { ids: [target.personGroupId, owner.groupId] });
+      await BaseService.create(ClusterGroupService, sut).leave(factory.auth({ user: member }), member.clusterGroupId);
+
+      // the PIN authorizes deleting `unrelated`, not releasing what the kept group protects
+      await sut.deleteAll(owner.elevated, { ids: [unrelated.personGroupId] });
+
+      await expect(groupOf(ctx, owner.protectedOnly.face.id)).resolves.toBe(owner.groupId);
+      await expect(readableAssetIds(ctx, owner.ordinary, owner.ids)).resolves.toEqual([owner.visible.asset.id]);
+      await expect(readableAssetIds(ctx, owner.partnerAuth, owner.ids)).resolves.toEqual([owner.visible.asset.id]);
+      await expect(
+        ctx.database.selectFrom('person_group').select('id').where('id', '=', unrelated.personGroupId).execute(),
+      ).resolves.toEqual([]);
+    });
+
     it.each([
       ['a PIN and no locks', true, false],
       ['a PIN and locks', true, true],

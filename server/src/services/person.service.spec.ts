@@ -1226,6 +1226,7 @@ describe(PersonService.name, () => {
         preserveHidden: entries,
       });
       expect(mocks.person.deleteEmptyGroups).toHaveBeenCalledWith(entries);
+      expect(mocks.person.deleteOrphanedClusterGroups).toHaveBeenCalledWith(entries);
     });
 
     it('should delete existing people if forced', async () => {
@@ -1817,7 +1818,15 @@ describe(PersonService.name, () => {
       expect(mocks.person.reassignFaces).toHaveBeenCalledWith(
         expect.objectContaining({ ownerId: otherTarget.ownerId, preserveHidden: [lockEntry(otherTarget.ownerId)] }),
       );
-      expect(mocks.person.deleteEmptyGroups).toHaveBeenCalledWith([lockEntry(otherTarget.ownerId)]);
+      // the groups merged away are judged without the caller's entry; every other empty group with everyone's
+      expect(mocks.person.deleteEmptyGroups).toHaveBeenCalledWith(
+        [lockEntry(otherTarget.ownerId)],
+        [source.personGroupId],
+      );
+      expect(mocks.person.deleteEmptyGroups).toHaveBeenCalledWith([
+        lockEntry(auth.user.id),
+        lockEntry(otherTarget.ownerId),
+      ]);
     });
 
     it('should not invalidate smart-album caches when the merge fails', async () => {

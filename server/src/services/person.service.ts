@@ -425,7 +425,21 @@ export class PersonService extends BaseService {
     // or an unlocked one starts matching (merge target).
     await this.requireElevationForLockSensitiveWrite(auth);
     await this.removeAllPersonGroups(ids, ownerId);
-    await this.personRepository.deleteEmptyGroups(await this.getHiddenFaceGuard(auth.user.id));
+    await this.deleteEmptyGroupsAfter(auth, ids);
+  }
+
+  /**
+   * Fork (ruling R71): group cleanup after a user deleted or merged away the people in `actedOnIds`. Only those
+   * groups are judged without the caller's own lock entry - the caller's PIN (or lack of one) covers what they acted
+   * on. Every other empty group, including one kept for the caller's own hidden photos, is judged with everyone's.
+   */
+  private async deleteEmptyGroupsAfter(auth: AuthDto, actedOnIds: string[]): Promise<void> {
+    const guard = await this.getHiddenFaceGuard();
+    await this.personRepository.deleteEmptyGroups(
+      guard.filter(({ ownerId }) => ownerId !== auth.user.id),
+      actedOnIds,
+    );
+    await this.personRepository.deleteEmptyGroups(guard);
   }
 
   /**
@@ -476,8 +490,10 @@ export class PersonService extends BaseService {
 
     // Fork (ruling R71): a group without person rows can still carry faces on photos hidden for their owner (see
     // mergePeople and the forced resets); deleting it would unassign them.
-    const personGroups = await this.personRepository.deleteEmptyGroups(await this.getHiddenFaceGuard());
-    const clusterGroups = await this.personRepository.deleteOrphanedClusterGroups();
+    const guard = await this.getHiddenFaceGuard();
+    const personGroups = await this.personRepository.deleteEmptyGroups(guard);
+    // a memberless cluster can still hold such a group: deleting it cascades to the group
+    const clusterGroups = await this.personRepository.deleteOrphanedClusterGroups(guard);
 
     this.logger.debug(`Deleted ${personGroups} empty person groups and ${clusterGroups} orphaned cluster groups`);
 
@@ -906,7 +922,7 @@ export class PersonService extends BaseService {
       }
     }
 
-    await this.personRepository.deleteEmptyGroups(hiddenFaceGuard);
+    await this.deleteEmptyGroupsAfter(auth, sourceIds);
 
     return results.values().toArray();
   }

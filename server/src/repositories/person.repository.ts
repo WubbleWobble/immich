@@ -387,14 +387,19 @@ export class PersonRepository {
    * Fork (ruling R71): deleting a group clears `asset_face.personGroupId` on its faces (FK SET NULL), so with
    * `preserveHidden` a group that still has a face on an asset hidden for its owner is kept, person rows or not.
    * The candidates (groups without person rows) are few, so each lock entry is only checked against their faces.
+   * `onlyIds` limits the deletion to those groups.
    */
   @GenerateSql()
-  async deleteEmptyGroups(preserveHidden: OwnerLockVisibility[] = []): Promise<number> {
-    let deletableIds: string[] | undefined;
+  async deleteEmptyGroups(preserveHidden: OwnerLockVisibility[] = [], onlyIds?: string[]): Promise<number> {
+    if (onlyIds?.length === 0) {
+      return 0;
+    }
+    let deletableIds = onlyIds;
     if (preserveHidden.length > 0) {
       const candidates = await this.db
         .selectFrom('person_group')
         .select('person_group.id')
+        .$if(!!onlyIds, (qb) => qb.where('person_group.id', '=', anyUuid(onlyIds!)))
         .where(({ not, exists, selectFrom }) =>
           not(
             exists(
@@ -448,13 +453,55 @@ export class PersonRepository {
     return Number(result.numDeletedRows);
   }
 
+  /**
+   * Fork (ruling R71): deleting a cluster cascades to its person groups, which clears `asset_face.personGroupId` on
+   * their faces. With `preserveHidden` a memberless cluster is kept while one of its groups still has a face on an
+   * asset hidden for its owner - the owner may long since be in another cluster (see deleteEmptyGroups).
+   */
   @GenerateSql()
-  async deleteOrphanedClusterGroups(): Promise<number> {
+  async deleteOrphanedClusterGroups(preserveHidden: OwnerLockVisibility[] = []): Promise<number> {
+    let deletableIds: string[] | undefined;
+    if (preserveHidden.length > 0) {
+      const candidates = await this.db
+        .selectFrom('cluster_group')
+        .select('cluster_group.id')
+        .where(({ not, exists, selectFrom }) =>
+          not(exists(selectFrom('user').whereRef('user.clusterGroupId', '=', 'cluster_group.id').select('user.id'))),
+        )
+        .execute();
+      if (candidates.length === 0) {
+        return 0;
+      }
+      const candidateIds = candidates.map(({ id }) => id);
+      const kept = new Set<string>();
+      for (const entry of preserveHidden) {
+        const rows = await this.db
+          .withPlugin(joinDeduplicationPlugin)
+          .selectFrom('asset_face')
+          .innerJoin('person_group', 'person_group.id', 'asset_face.personGroupId')
+          .select('person_group.clusterGroupId')
+          .distinct()
+          .where('person_group.clusterGroupId', '=', anyUuid(candidateIds))
+          .where('asset_face.ownerId', '=', entry.ownerId)
+          .where((eb) => faceLockHidden(eb as unknown as ExpressionBuilder<DB, 'asset_face'>, this.db, [entry]))
+          .execute();
+        for (const { clusterGroupId } of rows) {
+          kept.add(clusterGroupId);
+        }
+      }
+      // only the judged candidates: a cluster that lost its last member meanwhile waits for the next run
+      deletableIds = candidateIds.filter((id) => !kept.has(id));
+      if (deletableIds.length === 0) {
+        return 0;
+      }
+    }
+
     const result = await this.db
       .deleteFrom('cluster_group')
       .where(({ not, exists, selectFrom }) =>
         not(exists(selectFrom('user').whereRef('user.clusterGroupId', '=', 'cluster_group.id').select('user.id'))),
       )
+      .$if(!!deletableIds, (qb) => qb.where('cluster_group.id', '=', anyUuid(deletableIds!)))
       .executeTakeFirst();
 
     return Number(result.numDeletedRows);
