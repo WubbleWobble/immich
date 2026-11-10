@@ -2805,6 +2805,51 @@ describe(PersonService.name, () => {
       await expect(readableAssetIds(ctx, owner.ordinary, owner.ids)).resolves.toEqual([owner.visible.asset.id]);
     });
 
+    it('hard-deleting the last member of the cluster that holds a kept group keeps the cluster and the protection', async () => {
+      const { sut, ctx } = setup();
+      mockJobs(ctx);
+      const { user: lastMember } = await ctx.newUser();
+      const { user: inviter } = await ctx.newUser();
+      const cluster = lastMember.clusterGroupId;
+      const owner = await lockedByPerson(ctx, { clusterGroupId: cluster });
+      await ctx.newPerson({ ownerId: lastMember.id, personGroupId: owner.groupId });
+      const { person: target } = await ctx.newPerson({ ownerId: lastMember.id });
+      const verdicts = async () => ({
+        face: await groupOf(ctx, owner.protectedOnly.face.id),
+        ordinary: await readableAssetIds(ctx, owner.ordinary, owner.ids),
+        partner: await readableAssetIds(ctx, owner.partnerAuth, owner.ids),
+      });
+      const protectedState = {
+        face: owner.groupId,
+        ordinary: [owner.visible.asset.id],
+        partner: [owner.visible.asset.id],
+      };
+      await expect(verdicts()).resolves.toEqual(protectedState);
+
+      // the member merges the person away, the owner moves to another cluster: the member is now the last one in
+      // the cluster holding the person-less group with the owner's hidden faces
+      await sut.mergePeople(factory.auth({ user: lastMember }), { ids: [target.personGroupId, owner.groupId] });
+      const request = await ctx
+        .get(ClusterGroupRepository)
+        .createRequest({ clusterGroupId: inviter.clusterGroupId, userId: owner.user.id });
+      await BaseService.create(ClusterGroupService, sut).acceptRequest(owner.ordinary, request!.id);
+      await expect(
+        ctx.database.selectFrom('user').select('id').where('clusterGroupId', '=', cluster).execute(),
+      ).resolves.toEqual([{ id: lastMember.id }]);
+      await expect(
+        ctx.database.selectFrom('person_group').select('clusterGroupId').where('id', '=', owner.groupId).execute(),
+      ).resolves.toEqual([{ clusterGroupId: cluster }]);
+
+      // the last member is hard-deleted (their people go with them), then the nightly cleanup runs
+      await ctx.database.deleteFrom('user').where('id', '=', lastMember.id).execute();
+      await sut.handlePersonCleanup();
+
+      await expect(
+        ctx.database.selectFrom('cluster_group').select('id').where('id', '=', cluster).execute(),
+      ).resolves.toEqual([{ id: cluster }]);
+      await expect(verdicts()).resolves.toEqual(protectedState);
+    });
+
     it("an elevated owner's unrelated person delete keeps the group their hidden photos use", async () => {
       const { sut, ctx } = setup();
       mockJobs(ctx);
