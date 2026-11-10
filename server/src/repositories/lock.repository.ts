@@ -16,6 +16,7 @@ import {
   anyHasLocksQuery,
   getHiddenAlbumIdsQuery,
   getHiddenContainerIdsQuery,
+  getLockHolderVisibility,
   getOwnerLockVisibility,
   hasAnyLocksQuery,
   isAlbumHiddenForViewerQuery,
@@ -104,6 +105,14 @@ export class LockRepository {
    */
   getOwnerLockVisibility(request: LockVisibilityRequest): Promise<OwnerLockVisibility[]> {
     return getOwnerLockVisibility(this.db, request);
+  }
+
+  /**
+   * Fork (ruling R71): lock entries in job context (own locks, no reveal, no elevation) for `ownerIds`, or for every
+   * lock holder when omitted. See getLockHolderVisibility in utils/lock-visibility.ts.
+   */
+  getLockHolderVisibility(ownerIds?: string[]): Promise<OwnerLockVisibility[]> {
+    return getLockHolderVisibility(this.db, ownerIds);
   }
 
   /** Whether one asset passes the given per-owner lock entries (an empty list passes everything that exists). */

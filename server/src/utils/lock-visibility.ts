@@ -56,6 +56,16 @@ export async function anyHasLocksQuery(db: Kysely<DB>, userIds: string[]): Promi
   return row !== undefined;
 }
 
+/** Every user holding at least one lock row. */
+export async function getLockHolderIdsQuery(db: Kysely<DB>): Promise<string[]> {
+  const rows = await db
+    .selectFrom('locked_album')
+    .select('userId')
+    .union((eb) => eb.selectFrom('locked_container').select('userId'))
+    .execute();
+  return rows.map(({ userId }) => userId);
+}
+
 /**
  * The user's effectively-hidden album ids: directly-locked albums (minus the revealed set)
  * plus every live album inside a folder subtree whose root is locked (minus revealed
@@ -180,6 +190,25 @@ export async function getOwnerLockVisibility(
     entries.push({ ownerId, hiddenAlbumIds, hiddenSmartFilters, visibleSmartFilters });
   }
   return entries;
+}
+
+/**
+ * Fork (ruling R71): the lock entries of lock holders as a background job sees them - each owner's own locks, no
+ * reveal, nobody's elevation. `ownerIds` narrows the result to those owners; without it every lock holder is
+ * included. Used by writes that rebuild classification data (faces, person groups) for many owners at once, so they
+ * can leave alone whatever is hidden for its owner.
+ */
+export async function getLockHolderVisibility(db: Kysely<DB>, ownerIds?: string[]): Promise<OwnerLockVisibility[]> {
+  const holders = ownerIds ?? (await getLockHolderIdsQuery(db));
+  if (holders.length === 0) {
+    return [];
+  }
+  return getOwnerLockVisibility(db, {
+    viewerId: holders[0],
+    ownerIds: holders,
+    revealed: NO_REVEALED_LOCKS,
+    isElevated: false,
+  });
 }
 
 /**

@@ -63,7 +63,7 @@ export class ClusterGroupService extends BaseService {
 
     const request = await findOrFail(() => this.clusterGroupRepository.getRequest(id), 'Request');
 
-    await this.personRepository.reassignCluster({ userId: auth.user.id, newClusterId: request.clusterGroupId });
+    await this.reassignCluster(auth.user.id, request.clusterGroupId);
     await this.userRepository.update(auth.user.id, { clusterGroupId: request.clusterGroupId });
     await this.invalidatePersonFilteredSmartAlbums(auth.user.id);
     await this.clusterGroupRepository.deleteRequest(request.id);
@@ -95,9 +95,19 @@ export class ClusterGroupService extends BaseService {
     }
 
     const clusterGroup = await this.clusterGroupRepository.create();
-    await this.personRepository.reassignCluster({ userId: auth.user.id, newClusterId: clusterGroup.id });
+    await this.reassignCluster(auth.user.id, clusterGroup.id);
     await this.userRepository.update(auth.user.id, { clusterGroupId: clusterGroup.id });
     await this.invalidatePersonFilteredSmartAlbums(auth.user.id);
+  }
+
+  /**
+   * Fork (ruling R71): joining or leaving a cluster gives the user's shared person groups new ids. Faces on photos
+   * hidden for the user keep the old group id (the user's own locks, no reveal, elevated or not), so a locked smart
+   * album filtering on it keeps hiding them; only the faces on visible photos follow the user's person rows.
+   */
+  private async reassignCluster(userId: string, newClusterId: string) {
+    const preserveHidden = await this.lockRepository.getLockHolderVisibility([userId]);
+    await this.personRepository.reassignCluster({ userId, newClusterId, preserveHidden });
   }
 
   /**

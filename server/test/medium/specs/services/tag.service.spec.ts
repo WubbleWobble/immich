@@ -83,6 +83,49 @@ beforeAll(async () => {
   defaultDatabase = await getKyselyDB();
 });
 
+/**
+ * `protectedOnly` is hidden by nothing but the owner's locked smart album filtering on the tag; `visible` carries
+ * the tag too but an unlocked regular album rescues it; `alsoLocked` additionally sits in a locked regular album.
+ */
+const lockedByTag = async (ctx: Ctx, tags = ['trip']) => {
+  const { user } = await ctx.newUser();
+  const { user: partner } = await ctx.newUser();
+  await ctx.newPartner({ sharedById: user.id, sharedWithId: partner.id });
+  const upserted = await upsertTags(ctx.get(TagRepository), { userId: user.id, tags });
+  const tag = upserted.at(-1)!;
+  const { asset: protectedOnly } = await ctx.newAsset({ ownerId: user.id });
+  const { asset: visible } = await ctx.newAsset({ ownerId: user.id });
+  const { asset: alsoLocked } = await ctx.newAsset({ ownerId: user.id });
+  await ctx.newTagAsset({ tagIds: [tag.id], assetIds: [protectedOnly.id, visible.id, alsoLocked.id] });
+  for (const asset of [protectedOnly, visible, alsoLocked]) {
+    await ctx.newExif({ assetId: asset.id, tags: [tag.value] });
+  }
+  await ctx.newAlbum({ ownerId: user.id }, [visible.id]);
+  const { album: lockedRegular } = await ctx.newAlbum({ ownerId: user.id }, [alsoLocked.id]);
+  const { album: lockedSmart } = await ctx.newAlbum({
+    ownerId: user.id,
+    kind: AlbumKind.Smart,
+    filter: { tagIds: [upserted[0].id] } as any,
+  });
+  await ctx.get(LockRepository).lockAlbum(user.id, lockedRegular.id);
+  await ctx.get(LockRepository).lockAlbum(user.id, lockedSmart.id);
+  return {
+    user,
+    tag,
+    root: upserted[0],
+    protectedOnly,
+    visible,
+    alsoLocked,
+    ids: [protectedOnly.id, visible.id, alsoLocked.id],
+    ordinary: factory.auth({ user, session: { hasElevatedPermission: false } }),
+    elevated: factory.auth({ user, session: { hasElevatedPermission: true } }),
+    partnerAuth: factory.auth({ user: partner }),
+  };
+};
+
+const taggedAssetIds = async (ctx: Ctx, tagId: string, assetIds: string[]) =>
+  [...(await ctx.get(TagRepository).getAssetIds(tagId, assetIds))].toSorted();
+
 describe(TagService.name, () => {
   describe('get', () => {
     it('should not return a tag of another user', async () => {
@@ -185,7 +228,9 @@ describe(TagService.name, () => {
         expect.not.arrayContaining([{ name: JobName.SidecarWrite, data: { id: foreign.id } }]),
       );
 
-      await expect(sut.remove(auth, tag.id)).resolves.toBeUndefined();
+      // R71: a lock holder deletes a tag in an elevated session
+      const elevated = factory.auth({ user, session: { hasElevatedPermission: true } });
+      await expect(sut.remove(elevated, tag.id)).resolves.toBeUndefined();
       await expect(exifTags()).resolves.toEqual(
         expect.arrayContaining([
           { assetId: visible.id, tags: [] },
@@ -285,7 +330,8 @@ describe(TagService.name, () => {
 
       await expect(readableAssetIds(ctx, ownerAuth, [hidden.id])).resolves.toEqual([]);
 
-      await sut.remove(ownerAuth, a.id);
+      // R71: a lock holder deletes a tag in an elevated session
+      await sut.remove(factory.auth({ user: owner, session: { hasElevatedPermission: true } }), a.id);
 
       await expect(readableAssetIds(ctx, ownerAuth, [hidden.id])).resolves.toEqual([]);
       await expect(getFilter(ctx, album.id)).resolves.toHaveProperty('tagIds', [a.id, b.id]);
@@ -297,6 +343,140 @@ describe(TagService.name, () => {
         .where('id', '=', album.id)
         .execute();
       await expect(readableAssetIds(ctx, ownerAuth, [hidden.id])).resolves.toEqual([hidden.id]);
+    });
+  });
+
+  describe('classification removals and locked smart albums (R71)', () => {
+    const needsElevation = 'Elevated permission is required';
+
+    it('untagging skips a hidden photo in an ordinary session like one that is not tagged, and untags the visible one', async () => {
+      const { sut, ctx } = setup();
+      ctx.getMock(EventRepository).emit.mockResolvedValue();
+      const { tag, protectedOnly, visible, alsoLocked, ids, ordinary, partnerAuth, user } = await lockedByTag(ctx);
+      const { asset: untagged } = await ctx.newAsset({ ownerId: user.id });
+
+      await expect(readableAssetIds(ctx, ordinary, ids)).resolves.toEqual([visible.id]);
+      await expect(readableAssetIds(ctx, partnerAuth, ids)).resolves.toEqual([visible.id]);
+
+      await expect(
+        sut.removeAssets(ordinary, tag.id, { ids: [protectedOnly.id, visible.id, alsoLocked.id, untagged.id] }),
+      ).resolves.toEqual([
+        { id: protectedOnly.id, success: false, error: BulkIdErrorReason.NOT_FOUND },
+        { id: visible.id, success: true },
+        { id: alsoLocked.id, success: false, error: BulkIdErrorReason.NOT_FOUND },
+        // R32: the same answer as for a photo of the caller's that simply does not carry the tag
+        { id: untagged.id, success: false, error: BulkIdErrorReason.NOT_FOUND },
+      ]);
+
+      await expect(taggedAssetIds(ctx, tag.id, ids)).resolves.toEqual([protectedOnly.id, alsoLocked.id].toSorted());
+      await expect(readableAssetIds(ctx, ordinary, ids)).resolves.toEqual([visible.id]);
+      await expect(readableAssetIds(ctx, partnerAuth, ids)).resolves.toEqual([visible.id]);
+      // only the untagged photo's denormalized tags were rewritten
+      expect(ctx.getMock(EventRepository).emit).toHaveBeenCalledTimes(1);
+      expect(ctx.getMock(EventRepository).emit).toHaveBeenCalledWith('AssetUntag', { assetId: visible.id });
+    });
+
+    it('a reveal header does not make a hidden photo untaggable', async () => {
+      const { sut, ctx } = setup();
+      ctx.getMock(EventRepository).emit.mockResolvedValue();
+      const { tag, protectedOnly, ordinary, user } = await lockedByTag(ctx);
+      const { lockedAlbumIds } = await ctx.get(LockRepository).getLocks(user.id);
+      const revealing = { ...ordinary, revealedLocks: { albumIds: lockedAlbumIds, containerIds: [] } };
+
+      await expect(sut.removeAssets(revealing, tag.id, { ids: [protectedOnly.id] })).resolves.toEqual([
+        { id: protectedOnly.id, success: false, error: BulkIdErrorReason.NOT_FOUND },
+      ]);
+      await expect(readableAssetIds(ctx, ordinary, [protectedOnly.id])).resolves.toEqual([]);
+      expect(ctx.getMock(EventRepository).emit).not.toHaveBeenCalled();
+    });
+
+    it('untagging a hidden photo works in an elevated session; a locked regular album still protects', async () => {
+      const { sut, ctx } = setup();
+      ctx.getMock(EventRepository).emit.mockResolvedValue();
+      const { tag, protectedOnly, visible, alsoLocked, ids, ordinary, elevated, partnerAuth } = await lockedByTag(ctx);
+
+      await expect(sut.removeAssets(elevated, tag.id, { ids: [protectedOnly.id, alsoLocked.id] })).resolves.toEqual([
+        { id: protectedOnly.id, success: true },
+        { id: alsoLocked.id, success: true },
+      ]);
+
+      // the PIN holder released the photo that only the tag filter was hiding; the regular lock is untouched
+      const expected = [protectedOnly.id, visible.id].toSorted();
+      await expect(readableAssetIds(ctx, ordinary, ids)).resolves.toEqual(expected);
+      await expect(readableAssetIds(ctx, partnerAuth, ids)).resolves.toEqual(expected);
+    });
+
+    it('refuses deleting a tag in an ordinary session when the owner holds locks', async () => {
+      const { sut, ctx } = setup();
+      ctx.getMock(JobRepository).queueAll.mockResolvedValue();
+      const { tag, visible, ids, ordinary, partnerAuth, user } = await lockedByTag(ctx);
+      const { lockedAlbumIds } = await ctx.get(LockRepository).getLocks(user.id);
+
+      await expect(sut.remove(ordinary, tag.id)).rejects.toThrow(needsElevation);
+      await expect(
+        sut.remove({ ...ordinary, revealedLocks: { albumIds: lockedAlbumIds, containerIds: [] } }, tag.id),
+      ).rejects.toThrow(needsElevation);
+
+      await expect(ctx.get(TagRepository).get(tag.id)).resolves.toBeDefined();
+      await expect(taggedAssetIds(ctx, tag.id, ids)).resolves.toEqual(ids.toSorted());
+      await expect(readableAssetIds(ctx, ordinary, ids)).resolves.toEqual([visible.id]);
+      await expect(readableAssetIds(ctx, partnerAuth, ids)).resolves.toEqual([visible.id]);
+      expect(ctx.getMock(JobRepository).queueAll).not.toHaveBeenCalled();
+    });
+
+    it('refuses deleting an ancestor tag in an ordinary session when the owner holds locks', async () => {
+      const { sut, ctx } = setup();
+      ctx.getMock(JobRepository).queueAll.mockResolvedValue();
+      // the locked smart album filters on `trips`; the photos carry its descendant `trips/2024`
+      const { tag, root, visible, ids, ordinary, partnerAuth } = await lockedByTag(ctx, ['trips', 'trips/2024']);
+      expect(tag.id).not.toEqual(root.id);
+
+      await expect(sut.remove(ordinary, root.id)).rejects.toThrow(needsElevation);
+      await expect(sut.remove(ordinary, tag.id)).rejects.toThrow(needsElevation);
+
+      await expect(taggedAssetIds(ctx, tag.id, ids)).resolves.toEqual(ids.toSorted());
+      await expect(readableAssetIds(ctx, ordinary, ids)).resolves.toEqual([visible.id]);
+      await expect(readableAssetIds(ctx, partnerAuth, ids)).resolves.toEqual([visible.id]);
+    });
+
+    it('deletes a tag in an elevated session, keeping exif tags in sync; a locked regular album still protects', async () => {
+      const { sut, ctx } = setup();
+      ctx.getMock(JobRepository).queueAll.mockResolvedValue();
+      const { root, protectedOnly, visible, ids, ordinary, elevated, partnerAuth } = await lockedByTag(ctx, [
+        'trips',
+        'trips/2024',
+      ]);
+
+      await expect(sut.remove(elevated, root.id)).resolves.toBeUndefined();
+
+      const expected = [protectedOnly.id, visible.id].toSorted();
+      await expect(readableAssetIds(ctx, ordinary, ids)).resolves.toEqual(expected);
+      await expect(readableAssetIds(ctx, partnerAuth, ids)).resolves.toEqual(expected);
+      // no stale tag is left behind in the denormalized exif tags (or the sidecars queued from them)
+      await expect(
+        ctx.database.selectFrom('asset_exif').select('tags').where('assetId', 'in', ids).execute(),
+      ).resolves.toEqual([{ tags: [] }, { tags: [] }, { tags: [] }]);
+      expect(ctx.getMock(JobRepository).queueAll).toHaveBeenCalledWith(
+        expect.arrayContaining(ids.map((id) => ({ name: JobName.SidecarWrite, data: { id } }))),
+      );
+    });
+
+    it('leaves an owner without locks alone: ordinary untag and tag delete work', async () => {
+      const { sut, ctx } = setup();
+      ctx.getMock(EventRepository).emit.mockResolvedValue();
+      ctx.getMock(JobRepository).queueAll.mockResolvedValue();
+      const { user } = await ctx.newUser();
+      const auth = factory.auth({ user, session: { hasElevatedPermission: false } });
+      const [tag] = await upsertTags(ctx.get(TagRepository), { userId: user.id, tags: ['trip'] });
+      const { asset: first } = await ctx.newAsset({ ownerId: user.id });
+      const { asset: second } = await ctx.newAsset({ ownerId: user.id });
+      await ctx.newTagAsset({ tagIds: [tag.id], assetIds: [first.id, second.id] });
+
+      await expect(sut.removeAssets(auth, tag.id, { ids: [first.id] })).resolves.toEqual([
+        { id: first.id, success: true },
+      ]);
+      await expect(sut.remove(auth, tag.id)).resolves.toBeUndefined();
+      await expect(ctx.get(TagRepository).get(tag.id)).resolves.toBeUndefined();
     });
   });
 

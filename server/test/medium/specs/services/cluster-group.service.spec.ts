@@ -2,6 +2,7 @@ import { Kysely } from 'kysely';
 import { AccessRepository } from 'src/repositories/access.repository.js';
 import { ClusterGroupRepository } from 'src/repositories/cluster-group.repository.js';
 import { EventRepository } from 'src/repositories/event.repository.js';
+import { LockRepository } from 'src/repositories/lock.repository.js';
 import { LoggingRepository } from 'src/repositories/logging.repository.js';
 import { PersonRepository } from 'src/repositories/person.repository.js';
 import { UserRepository } from 'src/repositories/user.repository.js';
@@ -16,7 +17,7 @@ let defaultDatabase: Kysely<DB>;
 const setup = (db?: Kysely<DB>) => {
   const ctx = newMediumService(ClusterGroupService, {
     database: db || defaultDatabase,
-    real: [AccessRepository, ClusterGroupRepository, PersonRepository, UserRepository],
+    real: [AccessRepository, ClusterGroupRepository, LockRepository, PersonRepository, UserRepository],
     mock: [LoggingRepository, EventRepository],
   });
 

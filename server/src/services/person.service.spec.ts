@@ -40,6 +40,14 @@ const visibleProvenance = (assetOwnerId: string) => ({
   assetOwnerId,
 });
 
+/** A lock entry of `ownerId` with one hidden album. */
+const lockEntry = (ownerId: string) => ({
+  ownerId,
+  hiddenAlbumIds: ['album'],
+  hiddenSmartFilters: [],
+  visibleSmartFilters: [],
+});
+
 const setupMerge = (mocks: ServiceMocks, auth: AuthDto) => {
   const target = PersonFactory.create({ ownerId: auth.user.id });
   const source = PersonFactory.create({ ownerId: auth.user.id });
@@ -888,7 +896,7 @@ describe(PersonService.name, () => {
       await sut.handlePersonCleanup();
 
       expect(mocks.person.delete).toHaveBeenCalledWith([person.personGroupId], undefined);
-      expect(mocks.person.deleteEmptyGroups).toHaveBeenCalledWith();
+      expect(mocks.person.deleteEmptyGroups).toHaveBeenCalledWith([]);
       expect(mocks.storage.unlink).toHaveBeenCalledWith(person.thumbnailPath);
     });
 
@@ -954,9 +962,12 @@ describe(PersonService.name, () => {
 
       await sut.handleQueueDetectFaces({ force: true });
 
-      expect(mocks.person.deleteFaces).toHaveBeenCalledWith({ sourceType: SourceType.MachineLearning });
+      expect(mocks.person.deleteFaces).toHaveBeenCalledWith({
+        sourceType: SourceType.MachineLearning,
+        preserveHidden: [],
+      });
       expect(mocks.person.delete).toHaveBeenCalledWith([person.personGroupId], undefined);
-      expect(mocks.person.deleteEmptyGroups).toHaveBeenCalledWith();
+      expect(mocks.person.deleteEmptyGroups).toHaveBeenCalledWith([]);
       expect(mocks.database.vacuum).toHaveBeenCalledWith({ analyze: true, table: 'asset_face' });
       expect(mocks.database.vacuum).toHaveBeenCalledWith({ analyze: true, table: 'person' });
       expect(mocks.database.vacuum).toHaveBeenCalledWith({ analyze: true, table: 'face_search' });
@@ -1012,7 +1023,7 @@ describe(PersonService.name, () => {
         },
       ]);
       expect(mocks.person.delete).toHaveBeenCalledWith([person.personGroupId], undefined);
-      expect(mocks.person.deleteEmptyGroups).toHaveBeenCalledWith();
+      expect(mocks.person.deleteEmptyGroups).toHaveBeenCalledWith([]);
       expect(mocks.storage.unlink).toHaveBeenCalledWith(person.thumbnailPath);
       expect(mocks.database.vacuum).toHaveBeenCalledWith({ analyze: true, table: 'asset_face' });
       expect(mocks.database.vacuum).toHaveBeenCalledWith({ analyze: true, table: 'person' });
@@ -1189,6 +1200,34 @@ describe(PersonService.name, () => {
       expect(mocks.database.vacuum).not.toHaveBeenCalled();
     });
 
+    it('should keep the faces on assets hidden for their owner assigned if forced (R71)', async () => {
+      const entries = [
+        { ownerId: 'owner', hiddenAlbumIds: ['album'], hiddenSmartFilters: [], visibleSmartFilters: [] },
+      ];
+      mocks.lock.getLockHolderVisibility.mockResolvedValue(entries);
+      mocks.job.getJobCounts.mockResolvedValue({
+        active: 1,
+        waiting: 0,
+        paused: 0,
+        completed: 0,
+        failed: 0,
+        delayed: 0,
+      });
+      mocks.person.getAllFaces.mockReturnValue(makeStream([]));
+      mocks.person.getAllWithoutFaces.mockResolvedValue([]);
+
+      await sut.handleQueueRecognizeFaces({ force: true, clusterGroupId: 'cluster' });
+
+      // job context: every lock holder's own locks, asked for without an owner filter
+      expect(mocks.lock.getLockHolderVisibility).toHaveBeenCalledWith();
+      expect(mocks.person.unassignFaces).toHaveBeenCalledWith({
+        clusterGroupId: 'cluster',
+        sourceType: SourceType.MachineLearning,
+        preserveHidden: entries,
+      });
+      expect(mocks.person.deleteEmptyGroups).toHaveBeenCalledWith(entries);
+    });
+
     it('should delete existing people if forced', async () => {
       const face = AssetFaceFactory.from().person().build();
       const person = PersonFactory.create();
@@ -1210,7 +1249,11 @@ describe(PersonService.name, () => {
       await sut.handleQueueRecognizeFaces({ force: true });
 
       expect(mocks.person.deleteFaces).not.toHaveBeenCalled();
-      expect(mocks.person.unassignFaces).toHaveBeenCalledWith({ sourceType: SourceType.MachineLearning });
+      expect(mocks.person.unassignFaces).toHaveBeenCalledWith({
+        clusterGroupId: undefined,
+        sourceType: SourceType.MachineLearning,
+        preserveHidden: [],
+      });
       expect(mocks.job.queueAll).toHaveBeenCalledWith([
         {
           name: JobName.FacialRecognition,
@@ -1218,7 +1261,7 @@ describe(PersonService.name, () => {
         },
       ]);
       expect(mocks.person.delete).toHaveBeenCalledWith([person.personGroupId], undefined);
-      expect(mocks.person.deleteEmptyGroups).toHaveBeenCalledWith();
+      expect(mocks.person.deleteEmptyGroups).toHaveBeenCalledWith([]);
       expect(mocks.storage.unlink).toHaveBeenCalledWith(person.thumbnailPath);
       expect(mocks.database.vacuum).toHaveBeenCalledWith({ analyze: true, table: 'asset_face' });
       expect(mocks.database.vacuum).toHaveBeenCalledWith({ analyze: true, table: 'person' });
@@ -1736,6 +1779,45 @@ describe(PersonService.name, () => {
         expect.arrayContaining([source.personGroupId, target.personGroupId]),
       );
       expect(mocks.album.markCacheInvalidated).toHaveBeenCalledWith(['smart-album']);
+    });
+
+    it('should require elevation once the caller holds a lock (R71)', async () => {
+      const auth = AuthFactory.from().session({ hasElevatedPermission: false }).build();
+      const { target, source } = setupMerge(mocks, auth);
+      mocks.lock.hasAnyLocks.mockResolvedValue(true);
+
+      await expect(sut.mergePeople(auth, { ids: [target.personGroupId, source.personGroupId] })).rejects.toThrow(
+        'Elevated permission is required',
+      );
+
+      expect(mocks.person.reassignFaces).not.toHaveBeenCalled();
+      expect(mocks.person.updateGroupId).not.toHaveBeenCalled();
+      expect(mocks.person.delete).not.toHaveBeenCalled();
+    });
+
+    it("should leave another owner's hidden faces out, and never guard the caller's own (R71)", async () => {
+      const auth = AuthFactory.from().session({ hasElevatedPermission: true }).build();
+      const { target, source } = setupMerge(mocks, auth);
+      const otherTarget = PersonFactory.create({ personGroupId: target.personGroupId });
+      const otherSource = PersonFactory.create({
+        ownerId: otherTarget.ownerId,
+        personGroupId: source.personGroupId,
+        name: '',
+        birthDate: null,
+      });
+      mocks.person.getForMergePerson.mockResolvedValue([target, source, otherTarget, otherSource]);
+      mocks.person.reassignFaces.mockResolvedValue(1);
+      mocks.lock.getLockHolderVisibility.mockResolvedValue([lockEntry(auth.user.id), lockEntry(otherTarget.ownerId)]);
+
+      await sut.mergePeople(auth, { ids: [target.personGroupId, source.personGroupId] });
+
+      expect(mocks.person.reassignFaces).toHaveBeenCalledWith(
+        expect.objectContaining({ ownerId: auth.user.id, preserveHidden: [] }),
+      );
+      expect(mocks.person.reassignFaces).toHaveBeenCalledWith(
+        expect.objectContaining({ ownerId: otherTarget.ownerId, preserveHidden: [lockEntry(otherTarget.ownerId)] }),
+      );
+      expect(mocks.person.deleteEmptyGroups).toHaveBeenCalledWith([lockEntry(otherTarget.ownerId)]);
     });
 
     it('should not invalidate smart-album caches when the merge fails', async () => {

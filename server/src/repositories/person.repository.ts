@@ -24,6 +24,7 @@ import {
   type OwnerLockVisibility,
   anyUuid,
   dummy,
+  faceLockHidden,
   faceLockVisible,
   getViewerHiddenAlbumIds,
   inSharedAlbum,
@@ -66,13 +67,22 @@ export interface AssetFaceId {
   personGroupId: string;
 }
 
-export interface UpdateGroupIdData {
+/**
+ * Fork (ruling R71): job-context lock entries (see LockRepository.getLockHolderVisibility). A write that takes them
+ * leaves the faces on assets hidden for their owner exactly as they are, so a locked smart album filtering by person
+ * keeps matching - and keeps hiding - those assets.
+ */
+export interface PreserveHiddenFaces {
+  preserveHidden?: OwnerLockVisibility[];
+}
+
+export interface UpdateGroupIdData extends PreserveHiddenFaces {
   oldPersonGroupId: string;
   ownerId: string;
   newPersonGroupId: string;
 }
 
-export interface UpdateFacesData {
+export interface UpdateFacesData extends PreserveHiddenFaces {
   oldPersonGroupId?: string;
   faceIds?: string[];
   ownerId?: string;
@@ -83,7 +93,7 @@ export interface PersonStatistics {
   assets: number;
 }
 
-export interface DeleteFacesOptions {
+export interface DeleteFacesOptions extends PreserveHiddenFaces {
   sourceType: SourceType;
 }
 
@@ -145,7 +155,7 @@ export type GetFacesOptions = WithPersonOptions & { isVisible?: boolean };
 /** a person is identified by its owner and the group it belongs to */
 export type PersonId = { ownerId: string; personGroupId: string };
 
-export type ReassignCluster = { userId: string; newClusterId: string };
+export type ReassignCluster = PreserveHiddenFaces & { userId: string; newClusterId: string };
 
 export type WithPersonOptions = {
   /** whose version of the person to select */
@@ -258,8 +268,15 @@ export class PersonRepository {
   constructor(@InjectKysely() private db: Kysely<DB>) {}
 
   @GenerateSql({ params: [{ oldPersonGroupId: DummyValue.UUID, newPersonGroupId: DummyValue.UUID }] })
-  async reassignFaces({ oldPersonGroupId, faceIds, ownerId, newPersonGroupId }: UpdateFacesData): Promise<number> {
+  async reassignFaces({
+    oldPersonGroupId,
+    faceIds,
+    ownerId,
+    newPersonGroupId,
+    preserveHidden = [],
+  }: UpdateFacesData): Promise<number> {
     const result = await this.db
+      .withPlugin(joinDeduplicationPlugin)
       .updateTable('asset_face')
       .from('asset')
       .whereRef('asset_face.assetId', '=', 'asset.id')
@@ -267,21 +284,24 @@ export class PersonRepository {
       .$if(!!oldPersonGroupId, (qb) => qb.where('asset_face.personGroupId', '=', oldPersonGroupId!))
       .$if(!!faceIds, (qb) => qb.where('asset_face.id', 'in', faceIds!))
       .$if(!!ownerId, (qb) => qb.where('asset.ownerId', '=', ownerId!))
+      .$if(preserveHidden.length > 0, (qb) => qb.where(this.notHiddenFace(preserveHidden)))
       .executeTakeFirst();
 
     return Number(result.numUpdatedRows ?? 0);
   }
 
   @GenerateSql({ params: [{ oldPersonGroupId: DummyValue.UUID, newPersonGroupId: DummyValue.UUID }] })
-  updateGroupId({ oldPersonGroupId, ownerId, newPersonGroupId }: UpdateGroupIdData) {
+  updateGroupId({ oldPersonGroupId, ownerId, newPersonGroupId, preserveHidden = [] }: UpdateGroupIdData) {
     return this.db.transaction().execute(async (trx) => {
       await trx
+        .withPlugin(joinDeduplicationPlugin)
         .updateTable('asset_face')
         .from('asset')
         .whereRef('asset_face.assetId', '=', 'asset.id')
         .set({ personGroupId: newPersonGroupId })
         .where('asset_face.personGroupId', '=', oldPersonGroupId)
         .where('asset.ownerId', '=', ownerId)
+        .$if(preserveHidden.length > 0, (qb) => qb.where(this.notHiddenFace(preserveHidden)))
         .executeTakeFirst();
 
       return trx
@@ -295,17 +315,47 @@ export class PersonRepository {
   }
 
   @GenerateSql({ params: [{ sourceType: SourceType.MachineLearning, clusterGroupId: DummyValue.UUID }] })
-  async unassignFaces({ sourceType, clusterGroupId }: UnassignFacesOptions): Promise<void> {
-    await this.db
-      .updateTable('asset_face')
-      .set({ personGroupId: null })
-      .from('asset')
-      .whereRef('asset_face.assetId', '=', 'asset.id')
-      .where('asset_face.sourceType', '=', sourceType)
-      .$if(!!clusterGroupId, (qb) =>
-        qb.innerJoin('user', 'user.id', 'asset.ownerId').where('user.clusterGroupId', '=', clusterGroupId!),
-      )
-      .execute();
+  async unassignFaces({ sourceType, clusterGroupId, preserveHidden = [] }: UnassignFacesOptions): Promise<void> {
+    for (const scope of this.faceWriteScopes(preserveHidden)) {
+      await this.db
+        .withPlugin(joinDeduplicationPlugin)
+        .updateTable('asset_face')
+        .set({ personGroupId: null })
+        .from('asset')
+        .whereRef('asset_face.assetId', '=', 'asset.id')
+        .where('asset_face.sourceType', '=', sourceType)
+        .$if(!!clusterGroupId, (qb) =>
+          qb.innerJoin('user', 'user.id', 'asset.ownerId').where('user.clusterGroupId', '=', clusterGroupId!),
+        )
+        .$if(!!scope, (qb) => qb.where(scope!))
+        .execute();
+    }
+  }
+
+  /** Fork (ruling R71): the where-clause that leaves faces on assets hidden for their owner out of a face write. */
+  private notHiddenFace(entries: OwnerLockVisibility[]) {
+    return (eb: ExpressionBuilder<DB, any>) =>
+      faceLockVisible(eb as ExpressionBuilder<DB, 'asset_face'>, this.db, entries);
+  }
+
+  /**
+   * Fork (ruling R71): a face write over many owners, split so that no statement carries more than one owner's lock
+   * entry - one statement for the faces of everybody without an entry, then one per entry for that owner's faces on
+   * assets that are not hidden for them. A single statement embedding every lock holder's entry (each with its smart
+   * filters) is far too expensive to plan. Without entries it is one unscoped statement, as upstream.
+   */
+  private faceWriteScopes(entries: OwnerLockVisibility[]) {
+    if (entries.length === 0) {
+      return [undefined];
+    }
+    const ownerIds = entries.map(({ ownerId }) => ownerId);
+    return [
+      (eb: ExpressionBuilder<DB, any>) => eb.not(eb('asset_face.ownerId', '=', anyUuid(ownerIds))),
+      ...entries.map(
+        (entry) => (eb: ExpressionBuilder<DB, any>) =>
+          eb.and([eb('asset_face.ownerId', '=', entry.ownerId), this.notHiddenFace([entry])(eb)]),
+      ),
+    ];
   }
 
   @GenerateSql({ params: [[DummyValue.UUID], DummyValue.UUID] })
@@ -333,8 +383,54 @@ export class PersonRepository {
     await this.db.deleteFrom('person_group').where('person_group.id', 'in', ids).execute();
   }
 
+  /**
+   * Fork (ruling R71): deleting a group clears `asset_face.personGroupId` on its faces (FK SET NULL), so with
+   * `preserveHidden` a group that still has a face on an asset hidden for its owner is kept, person rows or not.
+   * The candidates (groups without person rows) are few, so each lock entry is only checked against their faces.
+   */
   @GenerateSql()
-  async deleteEmptyGroups(): Promise<number> {
+  async deleteEmptyGroups(preserveHidden: OwnerLockVisibility[] = []): Promise<number> {
+    let deletableIds: string[] | undefined;
+    if (preserveHidden.length > 0) {
+      const candidates = await this.db
+        .selectFrom('person_group')
+        .select('person_group.id')
+        .where(({ not, exists, selectFrom }) =>
+          not(
+            exists(
+              selectFrom('person')
+                .whereRef('person.personGroupId', '=', 'person_group.id')
+                .select('person.personGroupId'),
+            ),
+          ),
+        )
+        .execute();
+      if (candidates.length === 0) {
+        return 0;
+      }
+      const candidateIds = candidates.map(({ id }) => id);
+      const kept = new Set<string>();
+      for (const entry of preserveHidden) {
+        const rows = await this.db
+          .withPlugin(joinDeduplicationPlugin)
+          .selectFrom('asset_face')
+          .select('asset_face.personGroupId')
+          .distinct()
+          .where('asset_face.personGroupId', '=', anyUuid(candidateIds))
+          .where('asset_face.ownerId', '=', entry.ownerId)
+          .where((eb) => faceLockHidden(eb, this.db, [entry]))
+          .execute();
+        for (const { personGroupId } of rows) {
+          kept.add(personGroupId!);
+        }
+      }
+      // only the judged candidates: a group that became empty meanwhile waits for the next run
+      deletableIds = candidateIds.filter((id) => !kept.has(id));
+      if (deletableIds.length === 0) {
+        return 0;
+      }
+    }
+
     const result = await this.db
       .deleteFrom('person_group')
       .where(({ not, exists, selectFrom }) =>
@@ -346,6 +442,7 @@ export class PersonRepository {
           ),
         ),
       )
+      .$if(!!deletableIds, (qb) => qb.where('person_group.id', '=', anyUuid(deletableIds!)))
       .executeTakeFirst();
 
     return Number(result.numDeletedRows);
@@ -363,8 +460,15 @@ export class PersonRepository {
     return Number(result.numDeletedRows);
   }
 
-  async deleteFaces({ sourceType }: DeleteFacesOptions): Promise<void> {
-    await this.db.deleteFrom('asset_face').where('asset_face.sourceType', '=', sourceType).execute();
+  async deleteFaces({ sourceType, preserveHidden = [] }: DeleteFacesOptions): Promise<void> {
+    for (const scope of this.faceWriteScopes(preserveHidden)) {
+      await this.db
+        .withPlugin(joinDeduplicationPlugin)
+        .deleteFrom('asset_face')
+        .where('asset_face.sourceType', '=', sourceType)
+        .$if(!!scope, (qb) => qb.where(scope!))
+        .execute();
+    }
   }
 
   @GenerateSql({
@@ -1022,7 +1126,7 @@ export class PersonRepository {
   }
 
   @GenerateSql({ params: [{ userId: DummyValue.UUID, newClusterId: DummyValue.UUID }] })
-  async reassignCluster({ userId, newClusterId }: ReassignCluster): Promise<void> {
+  async reassignCluster({ userId, newClusterId, preserveHidden = [] }: ReassignCluster): Promise<void> {
     await this.db.transaction().execute(async (trx) => {
       // a group nobody else has people in moves across as it is
       await trx
@@ -1097,7 +1201,10 @@ export class PersonRepository {
         .where('person.ownerId', '=', userId)
         .execute();
 
+      // Fork (ruling R71): faces on the user's hidden assets keep the old group id, so the user's locked smart
+      // albums filtering by it keep hiding them.
       await trx
+        .withPlugin(joinDeduplicationPlugin)
         .updateTable('asset_face')
         .from(remapped)
         .set((eb) => ({ personGroupId: eb.ref('mapping.newId') }))
@@ -1110,6 +1217,7 @@ export class PersonRepository {
               .where('asset.ownerId', '=', userId),
           ),
         )
+        .$if(preserveHidden.length > 0, (qb) => qb.where(this.notHiddenFace(preserveHidden)))
         .execute();
     });
   }

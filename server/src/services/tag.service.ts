@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Insertable } from 'kysely';
 import { OnJob } from 'src/decorators.js';
-import { BulkIdResponseDto, BulkIdsDto } from 'src/dtos/asset-ids.response.dto.js';
+import { BulkIdErrorReason, BulkIdResponseDto, BulkIdsDto } from 'src/dtos/asset-ids.response.dto.js';
 import { AuthDto } from 'src/dtos/auth.dto.js';
 import {
   TagBulkAssetsDto,
@@ -16,6 +16,7 @@ import { JobName, JobStatus, Permission, QueueName } from 'src/enum.js';
 import { TagAssetTable } from 'src/schema/tables/tag-asset.table.js';
 import { AlbumService } from 'src/services/album.service.js';
 import { BaseService } from 'src/services/base.service.js';
+import { requireElevatedPermission } from 'src/utils/access.js';
 import { addAssets, removeAssets } from 'src/utils/asset.util.js';
 import { updateLockedColumns } from 'src/utils/database.js';
 import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
@@ -93,6 +94,13 @@ export class TagService extends BaseService {
 
   async remove(auth: AuthDto, id: string): Promise<void> {
     await this.requireAccess({ auth, permission: Permission.TagDelete, ids: [id] });
+    // Fork (ruling R71): deleting a tag (or an ancestor) untags every photo below it at once, hidden ones included,
+    // and a photo that only a locked smart album filtering on the tag was hiding would become visible. A lock holder
+    // therefore needs the PIN. The decision is the owner's lock state alone - never whether the tag is on something
+    // hidden - so it is no oracle about hidden photos.
+    if (!auth.session?.hasElevatedPermission && (await this.lockRepository.hasAnyLocks(auth.user.id))) {
+      requireElevatedPermission(auth);
+    }
 
     const assetIds = await this.tagRepository.getAssetIdsByTagId(id);
     await this.tagRepository.delete(id);
@@ -161,10 +169,23 @@ export class TagService extends BaseService {
   async removeAssets(auth: AuthDto, id: string, dto: BulkIdsDto): Promise<BulkIdResponseDto[]> {
     await this.requireAccess({ auth, permission: Permission.TagAsset, ids: [id] });
 
-    const results = await removeAssets(
+    // Fork (ruling R71): untagging edits the photo, so it takes the same permission as tagging it - asset.update,
+    // which leaves out photos hidden for the caller outside an elevated session. The tag owner's "can always remove"
+    // shortcut alone would untag a hidden photo and release it from a locked smart album filtering on the tag. A
+    // photo the caller may not update is reported like one that does not carry the tag (ruling R32).
+    const updatableIds = await this.checkAccess({ auth, permission: Permission.AssetUpdate, ids: dto.ids });
+    const removed = await removeAssets(
       auth,
       { access: this.accessRepository, bulk: this.tagRepository },
-      { parentId: id, assetIds: dto.ids, canAlwaysRemove: Permission.TagDelete },
+      {
+        parentId: id,
+        assetIds: dto.ids.filter((assetId) => updatableIds.has(assetId)),
+        canAlwaysRemove: Permission.TagDelete,
+      },
+    );
+    const removedById = new Map(removed.map((result) => [result.id, result]));
+    const results: BulkIdResponseDto[] = dto.ids.map(
+      (assetId) => removedById.get(assetId) ?? { id: assetId, success: false, error: BulkIdErrorReason.NOT_FOUND },
     );
 
     const untaggedAssetIds: string[] = [];

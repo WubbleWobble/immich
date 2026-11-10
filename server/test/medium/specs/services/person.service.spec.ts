@@ -191,6 +191,65 @@ const personOf = async (ctx: Ctx, faceId: string) => {
   return row;
 };
 
+/**
+ * R71 fixture: `user` holds a locked smart album filtering on their person `groupId`. `protectedOnly` is hidden by
+ * nothing else; `visible` has a face of the person too but an unlocked regular album rescues it; `alsoLocked`
+ * additionally sits in a locked regular album.
+ */
+const lockedByPerson = async (ctx: Ctx, options: { clusterGroupId?: string; personGroupId?: string } = {}) => {
+  const { user } = await ctx.newUser(options.clusterGroupId ? { clusterGroupId: options.clusterGroupId } : {});
+  const { user: partner } = await ctx.newUser();
+  await ctx.newPartner({ sharedById: user.id, sharedWithId: partner.id });
+  const { person } = await ctx.newPerson({ ownerId: user.id, personGroupId: options.personGroupId });
+  const groupId = person.personGroupId;
+  const faceOn = async (albumed: 'none' | 'open' | 'locked') => {
+    const { asset } = await ctx.newAsset({ ownerId: user.id });
+    const { assetFace: face } = await ctx.newAssetFace({ assetId: asset.id, personGroupId: groupId });
+    if (albumed !== 'none') {
+      const { album } = await ctx.newAlbum({ ownerId: user.id }, [asset.id]);
+      if (albumed === 'locked') {
+        await ctx.get(LockRepository).lockAlbum(user.id, album.id);
+      }
+    }
+    return { asset, face };
+  };
+  const protectedOnly = await faceOn('none');
+  const visible = await faceOn('open');
+  const alsoLocked = await faceOn('locked');
+  const { album: lockedSmart } = await ctx.newAlbum({
+    ownerId: user.id,
+    kind: AlbumKind.Smart,
+    filter: { personIds: [groupId] } as any,
+  });
+  await ctx.get(LockRepository).lockAlbum(user.id, lockedSmart.id);
+  return {
+    user,
+    groupId,
+    protectedOnly,
+    visible,
+    alsoLocked,
+    ids: [protectedOnly.asset.id, visible.asset.id, alsoLocked.asset.id],
+    ordinary: factory.auth({ user, session: { hasElevatedPermission: false } }),
+    elevated: factory.auth({ user, session: { hasElevatedPermission: true } }),
+    partnerAuth: factory.auth({ user: partner }),
+  };
+};
+
+const groupOf = async (ctx: Ctx, faceId: string) => {
+  const face = await personOf(ctx, faceId);
+  return face?.personGroupId;
+};
+
+const mockJobs = (ctx: Ctx) => {
+  const jobs = ctx.getMock(JobRepository);
+  jobs.waitForQueueCompletion.mockResolvedValue();
+  jobs.getJobCounts.mockResolvedValue({ active: 0, waiting: 0, completed: 0, delayed: 0, failed: 0, paused: 0 });
+  jobs.queueAll.mockResolvedValue();
+  jobs.queue.mockResolvedValue();
+  ctx.getMock(StorageRepository).unlink.mockResolvedValue();
+  return jobs;
+};
+
 describe(PersonService.name, () => {
   describe('reassignFaces', () => {
     it('should require access to the person the auth user is assigning to', async () => {
@@ -697,7 +756,8 @@ describe(PersonService.name, () => {
 
   describe('handleQueueRecognizeFaces', () => {
     it('should delete all people and queue faces for recognition', async () => {
-      const { sut, ctx } = setup();
+      // an isolated database: the forced reset keeps the people of lock holders (R71), and the shared one has some
+      const { sut, ctx } = setup(await isolatedDb());
       const jobRepo = ctx.getMock(JobRepository);
       ctx.getMock(StorageRepository).unlink.mockResolvedValue();
       jobRepo.waitForQueueCompletion.mockResolvedValue();
@@ -2199,7 +2259,10 @@ describe(PersonService.name, () => {
 
       await expect(readableAssetIds(ctx, ownerAuth, [hidden.id])).resolves.toEqual([]);
 
-      await sut.deleteAll(ownerAuth, { ids: [p.personGroupId] });
+      // R71: a lock holder deletes a person in an elevated session
+      await sut.deleteAll(factory.auth({ user: owner, session: { hasElevatedPermission: true } }), {
+        ids: [p.personGroupId],
+      });
 
       await expect(readableAssetIds(ctx, ownerAuth, [hidden.id])).resolves.toEqual([]);
       await expect(getFilter(ctx, album.id)).resolves.toHaveProperty('personIds', [p.personGroupId, q.personGroupId]);
@@ -2211,6 +2274,335 @@ describe(PersonService.name, () => {
         .where('id', '=', album.id)
         .execute();
       await expect(readableAssetIds(ctx, ownerAuth, [hidden.id])).resolves.toEqual([hidden.id]);
+    });
+  });
+
+  describe('classification removals and locked smart albums (R71)', () => {
+    const needsElevation = 'Elevated permission is required';
+
+    it('refuses deleting a person in an ordinary session when the owner holds locks', async () => {
+      const { sut, ctx } = setup();
+      mockJobs(ctx);
+      const { groupId, protectedOnly, visible, ids, ordinary, partnerAuth, user } = await lockedByPerson(ctx);
+      const { lockedAlbumIds } = await ctx.get(LockRepository).getLocks(user.id);
+
+      await expect(readableAssetIds(ctx, ordinary, ids)).resolves.toEqual([visible.asset.id]);
+      await expect(readableAssetIds(ctx, partnerAuth, ids)).resolves.toEqual([visible.asset.id]);
+
+      await expect(sut.deleteAll(ordinary, { ids: [groupId] })).rejects.toThrow(needsElevation);
+      await expect(sut.delete(ordinary, groupId, {})).rejects.toThrow(needsElevation);
+      await expect(
+        sut.deleteAll(
+          { ...ordinary, revealedLocks: { albumIds: lockedAlbumIds, containerIds: [] } },
+          { ids: [groupId] },
+        ),
+      ).rejects.toThrow(needsElevation);
+
+      await expect(groupOf(ctx, protectedOnly.face.id)).resolves.toBe(groupId);
+      await expect(
+        ctx.get(PersonRepository).getByGroupId({ ownerId: user.id, personGroupId: groupId }),
+      ).resolves.toBeDefined();
+      await expect(readableAssetIds(ctx, ordinary, ids)).resolves.toEqual([visible.asset.id]);
+      await expect(readableAssetIds(ctx, partnerAuth, ids)).resolves.toEqual([visible.asset.id]);
+    });
+
+    it('deletes the last person in an elevated session; a locked regular album still protects', async () => {
+      const { sut, ctx } = setup();
+      mockJobs(ctx);
+      const { groupId, protectedOnly, visible, ids, ordinary, elevated, partnerAuth } = await lockedByPerson(ctx);
+
+      await expect(sut.deleteAll(elevated, { ids: [groupId] })).resolves.toBeUndefined();
+
+      // the PIN holder released what only the person filter was hiding
+      await expect(groupOf(ctx, protectedOnly.face.id)).resolves.toBeNull();
+      const expected = [protectedOnly.asset.id, visible.asset.id].toSorted();
+      await expect(readableAssetIds(ctx, ordinary, ids)).resolves.toEqual(expected);
+      await expect(readableAssetIds(ctx, partnerAuth, ids)).resolves.toEqual(expected);
+    });
+
+    it('refuses merging in an ordinary session when the owner holds locks, as source and as target', async () => {
+      const { sut, ctx } = setup();
+      mockJobs(ctx);
+      const { groupId, protectedOnly, visible, ids, ordinary, partnerAuth, user } = await lockedByPerson(ctx);
+      const { person: other } = await ctx.newPerson({ ownerId: user.id });
+      // merging INTO a person can release too: an unlocked smart album filtering on the target rescues whatever
+      // gains its face. `inLockedAlbum` carries the other person and sits in a locked regular album.
+      const { asset: inLockedAlbum } = await newFaceOn(ctx, {
+        ownerId: user.id,
+        personGroupId: other.personGroupId,
+        locked: true,
+      });
+      const { album: rescue } = await ctx.newAlbum({
+        ownerId: user.id,
+        kind: AlbumKind.Smart,
+        filter: { personIds: [groupId] } as any,
+      });
+      const all = [...ids, inLockedAlbum.id];
+      // `rescue` (unlocked, same person filter) also rescues the fixture's photos; what matters is what changes
+      const before = await readableAssetIds(ctx, ordinary, all);
+      expect(before).not.toContain(inLockedAlbum.id);
+
+      await expect(sut.mergePeople(ordinary, { ids: [other.personGroupId, groupId] })).rejects.toThrow(needsElevation);
+      await expect(sut.mergePeople(ordinary, { ids: [groupId, other.personGroupId] })).rejects.toThrow(needsElevation);
+
+      await expect(groupOf(ctx, protectedOnly.face.id)).resolves.toBe(groupId);
+      await expect(groupOf(ctx, visible.face.id)).resolves.toBe(groupId);
+      await expect(readableAssetIds(ctx, ordinary, all)).resolves.toEqual(before);
+      await expect(readableAssetIds(ctx, partnerAuth, all)).resolves.toEqual(before);
+      await expect(getFilter(ctx, rescue.id)).resolves.toHaveProperty('personIds', [groupId]);
+    });
+
+    it('merges in an elevated session, moving the faces on hidden photos too', async () => {
+      const { sut, ctx } = setup();
+      mockJobs(ctx);
+      const { groupId, protectedOnly, visible, alsoLocked, ids, ordinary, elevated, user } = await lockedByPerson(ctx);
+      const { person: target } = await ctx.newPerson({ ownerId: user.id });
+
+      await expect(sut.mergePeople(elevated, { ids: [target.personGroupId, groupId] })).resolves.toEqual([
+        { id: target.personGroupId, success: true },
+        { id: groupId, success: true },
+      ]);
+
+      for (const { face } of [protectedOnly, visible, alsoLocked]) {
+        await expect(groupOf(ctx, face.id)).resolves.toBe(target.personGroupId);
+      }
+      // D12: the locked smart album's filter keeps the merged-away id, so it no longer hides `protectedOnly` - an
+      // authorized release; the locked regular album still protects
+      await expect(readableAssetIds(ctx, ordinary, ids)).resolves.toEqual(
+        [protectedOnly.asset.id, visible.asset.id].toSorted(),
+      );
+    });
+
+    it("another cluster member's merge leaves the faces on the owner's hidden photos alone", async () => {
+      const { sut, ctx } = setup();
+      mockJobs(ctx);
+      const { user: member } = await ctx.newUser();
+      // `withTarget` already has a person in the merge target (faces are reassigned); `withoutTarget` does not (their
+      // person row is moved to the target group)
+      const withTarget = await lockedByPerson(ctx, { clusterGroupId: member.clusterGroupId });
+      const withoutTarget = await lockedByPerson(ctx, {
+        clusterGroupId: member.clusterGroupId,
+        personGroupId: withTarget.groupId,
+      });
+      const source = withTarget.groupId;
+      await ctx.newPerson({ ownerId: member.id, personGroupId: source });
+      const { person: target } = await ctx.newPerson({ ownerId: member.id });
+      await ctx.newPerson({ ownerId: withTarget.user.id, personGroupId: target.personGroupId, name: undefined });
+      const memberAuth = factory.auth({ user: member, session: { hasElevatedPermission: true } });
+
+      // the member holds no locks, and their own PIN session says nothing about other owners
+      await expect(sut.mergePeople(memberAuth, { ids: [target.personGroupId, source] })).resolves.toEqual([
+        { id: target.personGroupId, success: true },
+        { id: source, success: true },
+      ]);
+
+      for (const owner of [withTarget, withoutTarget]) {
+        // visible photos are merged as usual
+        await expect(groupOf(ctx, owner.visible.face.id)).resolves.toBe(target.personGroupId);
+        // hidden ones keep the source group, so the locked smart album keeps hiding them
+        await expect(groupOf(ctx, owner.protectedOnly.face.id)).resolves.toBe(source);
+        await expect(groupOf(ctx, owner.alsoLocked.face.id)).resolves.toBe(source);
+        await expect(readableAssetIds(ctx, owner.ordinary, owner.ids)).resolves.toEqual([owner.visible.asset.id]);
+        await expect(readableAssetIds(ctx, owner.partnerAuth, owner.ids)).resolves.toEqual([owner.visible.asset.id]);
+        // nobody keeps a person row in the source group; the group itself survives for the hidden faces
+        await expect(
+          ctx.get(PersonRepository).getByGroupId({ ownerId: owner.user.id, personGroupId: source }),
+        ).resolves.toBeUndefined();
+      }
+      await expect(
+        ctx.database.selectFrom('person_group').select('id').where('id', '=', source).execute(),
+      ).resolves.toEqual([{ id: source }]);
+
+      // background cleanup keeps it as well
+      await sut.handlePersonCleanup();
+      await expect(groupOf(ctx, withTarget.protectedOnly.face.id)).resolves.toBe(source);
+      await expect(readableAssetIds(ctx, withTarget.ordinary, withTarget.ids)).resolves.toEqual([
+        withTarget.visible.asset.id,
+      ]);
+    });
+
+    it("deleting another owner's person row through an admin share keeps the group their hidden photos use", async () => {
+      const { sut, ctx } = setup();
+      mockJobs(ctx);
+      const { user: admin } = await ctx.newUser();
+      const owner = await lockedByPerson(ctx, { clusterGroupId: admin.clusterGroupId });
+      await ctx.newPersonUser({
+        personGroupId: owner.groupId,
+        sharedById: owner.user.id,
+        sharedWithId: admin.id,
+        role: PersonUserRole.Admin,
+      });
+      const expectStillProtected = async () => {
+        await expect(groupOf(ctx, owner.protectedOnly.face.id)).resolves.toBe(owner.groupId);
+        await expect(readableAssetIds(ctx, owner.ordinary, owner.ids)).resolves.toEqual([owner.visible.asset.id]);
+        await expect(readableAssetIds(ctx, owner.partnerAuth, owner.ids)).resolves.toEqual([owner.visible.asset.id]);
+      };
+
+      // the admin holds no locks; the owner's lock state neither refuses this nor is bypassed by it
+      await expect(
+        sut.deleteAll(factory.auth({ user: admin }), { ids: [owner.groupId], userId: owner.user.id }),
+      ).resolves.toBeUndefined();
+      await expect(
+        ctx.get(PersonRepository).getByGroupId({ ownerId: owner.user.id, personGroupId: owner.groupId }),
+      ).resolves.toBeUndefined();
+      await expectStillProtected();
+
+      // the admin's own copy (created by the share) is the group's last person row: without it the group is empty,
+      // yet it is kept while it carries faces on photos hidden for their owner
+      await expect(sut.deleteAll(factory.auth({ user: admin }), { ids: [owner.groupId] })).resolves.toBeUndefined();
+      await expect(
+        ctx.database.selectFrom('person').selectAll().where('personGroupId', '=', owner.groupId).execute(),
+      ).resolves.toEqual([]);
+      await expectStillProtected();
+      await sut.handlePersonCleanup();
+      await expectStillProtected();
+    });
+
+    it.each([
+      ['for the cluster a member asked to regenerate', true],
+      ['for every cluster', false],
+    ])("a forced recognition reset %s keeps another owner's hidden photos assigned", async (_label, scoped) => {
+      const { sut, ctx } = setup();
+      const jobs = mockJobs(ctx);
+      const { user: member } = await ctx.newUser();
+      const owner = await lockedByPerson(ctx, { clusterGroupId: member.clusterGroupId });
+      const { person: memberPerson } = await ctx.newPerson({ ownerId: member.id });
+      const { face: memberFace } = await newFaceOn(ctx, {
+        ownerId: member.id,
+        personGroupId: memberPerson.personGroupId,
+      });
+
+      // an ordinary member may ask for it: refusing because of another member's locks would reveal them
+      await expect(
+        BaseService.create(ClusterGroupService, sut).regeneratePeople(
+          factory.auth({ user: member }),
+          member.clusterGroupId,
+        ),
+      ).resolves.toBeUndefined();
+      expect(jobs.queue).toHaveBeenCalledWith({
+        name: JobName.FacialRecognitionQueueAll,
+        data: { clusterGroupId: member.clusterGroupId, force: true },
+      });
+
+      await sut.handleQueueRecognizeFaces({ force: true, clusterGroupId: scoped ? member.clusterGroupId : undefined });
+
+      // faces on visible photos are reset and re-clustered as usual
+      await expect(groupOf(ctx, memberFace.id)).resolves.toBeNull();
+      await expect(groupOf(ctx, owner.visible.face.id)).resolves.toBeNull();
+      // faces on photos hidden for their owner keep their person, during and after the rebuild
+      await expect(groupOf(ctx, owner.protectedOnly.face.id)).resolves.toBe(owner.groupId);
+      await expect(groupOf(ctx, owner.alsoLocked.face.id)).resolves.toBe(owner.groupId);
+      await expect(readableAssetIds(ctx, owner.ordinary, owner.ids)).resolves.toEqual([owner.visible.asset.id]);
+      await expect(readableAssetIds(ctx, owner.partnerAuth, owner.ids)).resolves.toEqual([owner.visible.asset.id]);
+      // the person the hidden faces belong to survives the cleanup; the member's now-faceless person does not
+      await expect(
+        ctx.database
+          .selectFrom('person')
+          .select(['ownerId', 'personGroupId'])
+          .where('ownerId', 'in', [owner.user.id, member.id])
+          .execute(),
+      ).resolves.toEqual([{ ownerId: owner.user.id, personGroupId: owner.groupId }]);
+    });
+
+    it('a forced recognition reset still unassigns everything when nobody holds locks', async () => {
+      const { sut, ctx } = setup(await isolatedDb());
+      mockJobs(ctx);
+      const { user } = await ctx.newUser();
+      const { person } = await ctx.newPerson({ ownerId: user.id });
+      const { face } = await newFaceOn(ctx, { ownerId: user.id, personGroupId: person.personGroupId });
+
+      await sut.handleQueueRecognizeFaces({ force: true });
+
+      await expect(groupOf(ctx, face.id)).resolves.toBeNull();
+      await expect(ctx.database.selectFrom('person').selectAll().execute()).resolves.toEqual([]);
+      await expect(ctx.database.selectFrom('person_group').selectAll().execute()).resolves.toEqual([]);
+    });
+
+    it('a forced detection reset keeps the faces on hidden photos and does not re-detect them', async () => {
+      const { sut, ctx } = setup();
+      const jobs = mockJobs(ctx);
+      const owner = await lockedByPerson(ctx);
+      for (const assetId of owner.ids) {
+        await ctx.newAssetFile({ assetId, type: AssetFileType.Preview, path: `/preview/${assetId}.jpg` });
+        await ctx.newJobStatus({ assetId });
+      }
+
+      await sut.handleQueueDetectFaces({ force: true });
+
+      await expect(personOf(ctx, owner.visible.face.id)).resolves.toBeUndefined();
+      await expect(groupOf(ctx, owner.protectedOnly.face.id)).resolves.toBe(owner.groupId);
+      await expect(groupOf(ctx, owner.alsoLocked.face.id)).resolves.toBe(owner.groupId);
+      await expect(readableAssetIds(ctx, owner.ordinary, owner.ids)).resolves.toEqual([owner.visible.asset.id]);
+      await expect(readableAssetIds(ctx, owner.partnerAuth, owner.ids)).resolves.toEqual([owner.visible.asset.id]);
+
+      const queued = jobs.queueAll.mock.calls.flatMap(([items]) => items);
+      const detectIds = new Set(
+        queued.filter(({ name }) => name === JobName.AssetDetectFaces).map(({ data }) => (data as { id: string }).id),
+      );
+      expect(detectIds.has(owner.visible.asset.id)).toBe(true);
+      expect(detectIds.has(owner.protectedOnly.asset.id)).toBe(false);
+      expect(detectIds.has(owner.alsoLocked.asset.id)).toBe(false);
+    });
+
+    it('leaving a cluster keeps the old group on hidden photos and remaps the visible ones', async () => {
+      const { sut, ctx } = setup();
+      mockJobs(ctx);
+      const { user: member } = await ctx.newUser();
+      const owner = await lockedByPerson(ctx, { clusterGroupId: member.clusterGroupId });
+      // the group is shared with the member, so leaving gives the leaver a new group id for it
+      await ctx.newPerson({ ownerId: member.id, personGroupId: owner.groupId });
+
+      await BaseService.create(ClusterGroupService, sut).leave(owner.ordinary, member.clusterGroupId);
+
+      const remapped = await groupOf(ctx, owner.visible.face.id);
+      expect(remapped).not.toBe(owner.groupId);
+      await expect(
+        ctx.get(PersonRepository).getByGroupId({ ownerId: owner.user.id, personGroupId: remapped! }),
+      ).resolves.toBeDefined();
+      await expect(groupOf(ctx, owner.protectedOnly.face.id)).resolves.toBe(owner.groupId);
+      await expect(groupOf(ctx, owner.alsoLocked.face.id)).resolves.toBe(owner.groupId);
+      await expect(readableAssetIds(ctx, owner.ordinary, owner.ids)).resolves.toEqual([owner.visible.asset.id]);
+      await expect(readableAssetIds(ctx, owner.partnerAuth, owner.ids)).resolves.toEqual([owner.visible.asset.id]);
+    });
+
+    it('joining a cluster keeps the old group on hidden photos and remaps the visible ones', async () => {
+      const { sut, ctx } = setup();
+      mockJobs(ctx);
+      const { user: member } = await ctx.newUser();
+      const { user: inviter } = await ctx.newUser();
+      const owner = await lockedByPerson(ctx, { clusterGroupId: member.clusterGroupId });
+      await ctx.newPerson({ ownerId: member.id, personGroupId: owner.groupId });
+      const request = await ctx
+        .get(ClusterGroupRepository)
+        .createRequest({ clusterGroupId: inviter.clusterGroupId, userId: owner.user.id });
+
+      await BaseService.create(ClusterGroupService, sut).acceptRequest(owner.ordinary, request!.id);
+
+      expect(await groupOf(ctx, owner.visible.face.id)).not.toBe(owner.groupId);
+      await expect(groupOf(ctx, owner.protectedOnly.face.id)).resolves.toBe(owner.groupId);
+      await expect(readableAssetIds(ctx, owner.ordinary, owner.ids)).resolves.toEqual([owner.visible.asset.id]);
+      await expect(readableAssetIds(ctx, owner.partnerAuth, owner.ids)).resolves.toEqual([owner.visible.asset.id]);
+    });
+
+    it('leaves an owner without locks alone: ordinary delete and merge work', async () => {
+      const { sut, ctx } = setup();
+      mockJobs(ctx);
+      const { user } = await ctx.newUser();
+      const auth = factory.auth({ user, session: { hasElevatedPermission: false } });
+      const { person: target } = await ctx.newPerson({ ownerId: user.id });
+      const { person: source } = await ctx.newPerson({ ownerId: user.id });
+      const { person: toDelete } = await ctx.newPerson({ ownerId: user.id });
+      const { face } = await newFaceOn(ctx, { ownerId: user.id, personGroupId: source.personGroupId });
+      const { face: deletedFace } = await newFaceOn(ctx, { ownerId: user.id, personGroupId: toDelete.personGroupId });
+
+      await expect(sut.mergePeople(auth, { ids: [target.personGroupId, source.personGroupId] })).resolves.toEqual([
+        { id: target.personGroupId, success: true },
+        { id: source.personGroupId, success: true },
+      ]);
+      await expect(sut.deleteAll(auth, { ids: [toDelete.personGroupId] })).resolves.toBeUndefined();
+
+      await expect(groupOf(ctx, face.id)).resolves.toBe(target.personGroupId);
+      await expect(groupOf(ctx, deletedFace.id)).resolves.toBeNull();
     });
   });
 

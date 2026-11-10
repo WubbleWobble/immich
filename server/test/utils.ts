@@ -402,6 +402,7 @@ export const getMocks = () => {
   // exercise read paths that consult these on every request.
   mocks.lock.hasAnyLocks.mockResolvedValue(false);
   mocks.lock.getOwnerLockVisibility.mockResolvedValue([]);
+  mocks.lock.getLockHolderVisibility.mockResolvedValue([]);
   mocks.lock.getHiddenAlbumIds.mockResolvedValue([]);
   mocks.lock.getHiddenContainerIds.mockResolvedValue([]);
   mocks.lock.getLocks.mockResolvedValue({ lockedAlbumIds: [], lockedContainerIds: [] });

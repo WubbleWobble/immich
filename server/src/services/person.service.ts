@@ -49,7 +49,9 @@ import { FaceSearchTable } from 'src/schema/tables/face-search.table.js';
 import { PersonUserTable } from 'src/schema/tables/person-user.table.js';
 import { AlbumService } from 'src/services/album.service.js';
 import { BaseService } from 'src/services/base.service.js';
+import { requireElevatedPermission } from 'src/utils/access.js';
 import { getDimensions, getMyPartnerIds } from 'src/utils/asset.util.js';
+import { OwnerLockVisibility } from 'src/utils/database.js';
 import { ImmichFileResponse } from 'src/utils/file.js';
 import { NO_REVEALED_LOCKS } from 'src/utils/lock-visibility.js';
 import { isHttpException } from 'src/utils/logger.js';
@@ -419,8 +421,32 @@ export class PersonService extends BaseService {
       permission: Permission.PersonDelete,
       ids: ids.map((id) => ({ personGroupId: id, ownerId })),
     });
+    await this.requireElevationForPersonRemoval(auth);
     await this.removeAllPersonGroups(ids, ownerId);
-    await this.personRepository.deleteEmptyGroups();
+    await this.personRepository.deleteEmptyGroups(await this.getHiddenFaceGuard(auth.user.id));
+  }
+
+  /**
+   * Fork (ruling R71): deleting or merging people rewrites face assignments on every photo of the person at once,
+   * hidden ones included. A locked smart album filtering on the person would stop matching (delete, merge source), or
+   * an unlocked one would start matching (merge target), and photos would become visible. A lock holder therefore
+   * needs the PIN. The decision is the caller's lock state alone, never whether the person is on something hidden.
+   */
+  private async requireElevationForPersonRemoval(auth: AuthDto): Promise<void> {
+    if (!auth.session?.hasElevatedPermission && (await this.lockRepository.hasAnyLocks(auth.user.id))) {
+      requireElevatedPermission(auth);
+    }
+  }
+
+  /**
+   * Fork (ruling R71): the lock entries (job context: each owner's own locks, no reveal) of everyone whose hidden
+   * photos a classification write must leave alone. A user action passes the caller as `exceptOwnerId`: by the time it
+   * gets here the caller either holds no locks or proved the PIN, so their own photos are theirs to reclassify -
+   * everybody else's lock state is neither bypassed by the caller's PIN nor revealed by a refusal. Jobs pass nothing.
+   */
+  private async getHiddenFaceGuard(exceptOwnerId?: string): Promise<OwnerLockVisibility[]> {
+    const entries = await this.lockRepository.getLockHolderVisibility();
+    return exceptOwnerId ? entries.filter(({ ownerId }) => ownerId !== exceptOwnerId) : entries;
   }
 
   @Chunked()
@@ -458,7 +484,9 @@ export class PersonService extends BaseService {
     const people = await this.personRepository.getAllWithoutFaces();
     await this.removeAllPersonGroups(people.map((person) => person.personGroupId));
 
-    const personGroups = await this.personRepository.deleteEmptyGroups();
+    // Fork (ruling R71): a group without person rows can still carry faces on photos hidden for their owner (see
+    // mergePeople and the forced resets); deleting it would unassign them.
+    const personGroups = await this.personRepository.deleteEmptyGroups(await this.getHiddenFaceGuard());
     const clusterGroups = await this.personRepository.deleteOrphanedClusterGroups();
 
     this.logger.debug(`Deleted ${personGroups} empty person groups and ${clusterGroups} orphaned cluster groups`);
@@ -473,17 +501,26 @@ export class PersonService extends BaseService {
       return JobStatus.Skipped;
     }
 
+    // Fork (ruling R71): a forced reset wipes the faces of every owner. Photos hidden for their owner keep their faces
+    // and assignments and are not re-detected - otherwise a locked smart album filtering by person would stop hiding
+    // them until (and unless) recognition rebuilt the same people. The price: hidden photos are not re-clustered by a
+    // forced reset.
+    const preserveHidden = force ? await this.getHiddenFaceGuard() : [];
     if (force) {
-      await this.personRepository.deleteFaces({ sourceType: SourceType.MachineLearning });
+      await this.personRepository.deleteFaces({ sourceType: SourceType.MachineLearning, preserveHidden });
       await this.handlePersonCleanup();
       await this.vacuum('asset_face', 'person', 'face_search');
       await BaseService.create(AlbumService, this).invalidateAllSmartAlbumsByPersonFilterSafe();
     }
 
     for await (const assets of batched(this.assetJobRepository.streamForDetectFacesJob(force))) {
-      await this.jobRepository.queueAll(
-        assets.map((asset) => ({ name: JobName.AssetDetectFaces, data: { id: asset.id } })),
-      );
+      // one lock entry per query: an entry passes every asset of other owners
+      let ids = assets.map(({ id }) => id);
+      for (const entry of preserveHidden) {
+        const visible = await this.lockRepository.getVisibleAssetIds(ids, [entry]);
+        ids = ids.filter((id) => visible.has(id));
+      }
+      await this.jobRepository.queueAll(ids.map((id) => ({ name: JobName.AssetDetectFaces, data: { id } })));
     }
 
     if (force === undefined) {
@@ -622,7 +659,15 @@ export class PersonService extends BaseService {
     const { waiting } = await this.jobRepository.getJobCounts(QueueName.FacialRecognition);
 
     if (force) {
-      await this.personRepository.unassignFaces({ clusterGroupId, sourceType: SourceType.MachineLearning });
+      // Fork (ruling R71): any cluster member (or an admin) can start this, for every owner in scope. Faces on photos
+      // hidden for their owner keep their person, so that owner's locked smart albums keep matching during and after
+      // the rebuild; recognition skips them below because they are still assigned. The requester's PIN never counts
+      // for other owners, and nothing is refused on their lock state.
+      await this.personRepository.unassignFaces({
+        clusterGroupId,
+        sourceType: SourceType.MachineLearning,
+        preserveHidden: await this.getHiddenFaceGuard(),
+      });
       await this.handlePersonCleanup();
       await this.vacuum('asset_face', 'person');
       await BaseService.create(AlbumService, this).invalidateAllSmartAlbumsByPersonFilterSafe();
@@ -773,6 +818,11 @@ export class PersonService extends BaseService {
       permission: Permission.PersonMerge,
       ids: ids.map((id) => ({ personGroupId: id, ownerId: auth.user.id })),
     });
+    await this.requireElevationForPersonRemoval(auth);
+    // Fork (ruling R71): a merge also rewrites the people of every other owner in the cluster. Their faces on photos
+    // hidden for them stay in the source group (see getHiddenFaceGuard).
+    const hiddenFaceGuard = await this.getHiddenFaceGuard(auth.user.id);
+    const guardFor = (ownerId: string) => hiddenFaceGuard.filter((entry) => entry.ownerId === ownerId);
     const allowedIds = new Set(allowed.values().map((item) => item.personGroupId));
     const results = new Map<string, BulkIdResponseDto>(
       ids.map((id) => [
@@ -819,7 +869,12 @@ export class PersonService extends BaseService {
             // user has no person in the target group yet, so this one is updated to it
             targets.set(
               ownerId,
-              await this.personRepository.updateGroupId({ ownerId, oldPersonGroupId: id, newPersonGroupId: targetId }),
+              await this.personRepository.updateGroupId({
+                ownerId,
+                oldPersonGroupId: id,
+                newPersonGroupId: targetId,
+                preserveHidden: guardFor(ownerId),
+              }),
             );
             // the owner's smart albums filtering either group shift membership
             await albumService.invalidateSmartAlbumsForPersonMergeSafe(ownerId, [id, targetId]);
@@ -838,7 +893,12 @@ export class PersonService extends BaseService {
             targets.set(ownerId, target);
           }
 
-          await this.personRepository.reassignFaces({ oldPersonGroupId: id, newPersonGroupId: targetId, ownerId });
+          await this.personRepository.reassignFaces({
+            oldPersonGroupId: id,
+            newPersonGroupId: targetId,
+            ownerId,
+            preserveHidden: guardFor(ownerId),
+          });
           await this.removeAllPersonGroups([id], ownerId);
           this.logger.log(`Merged ${source.name || id} into ${target.name || targetId}`);
 
@@ -856,7 +916,7 @@ export class PersonService extends BaseService {
       }
     }
 
-    await this.personRepository.deleteEmptyGroups();
+    await this.personRepository.deleteEmptyGroups(hiddenFaceGuard);
 
     return results.values().toArray();
   }

@@ -628,6 +628,20 @@ export function faceLockVisible(
 }
 
 /**
+ * Fork (ruling R71): the inverse of {@link faceLockVisible} for writes - true for a face whose asset is hidden for
+ * its owner under `entries` (job-context entries: the owner's own locks, no reveal). Classification rebuilds exclude
+ * these faces so a locked smart album filtering by person keeps matching. Callers apply it only when `entries` is
+ * non-empty, and the root query must attach {@link joinDeduplicationPlugin}.
+ */
+export function faceLockHidden(
+  eb: ExpressionBuilder<DB, 'asset_face'>,
+  db: Kysely<DB>,
+  entries: OwnerLockVisibility[],
+) {
+  return eb.not(faceLockVisible(eb, db, entries));
+}
+
+/**
  * Fork (ruling R56): a lock-filtered list's `livePhotoVideoId` for the `asset` row - the still's motion part id when
  * that motion part passes the same `entries` (judged as the 7A.2 Live Photo unit by its owner's entry), otherwise
  * null, so a visible still never enumerates a hidden motion part. `grant` is the list's album arm, if it has one: a

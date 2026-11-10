@@ -201,6 +201,15 @@ describe(TagService.name, () => {
       expect(mocks.tag.delete).not.toHaveBeenCalled();
     });
 
+    it('should require elevation once the owner holds a lock (R71)', async () => {
+      mocks.lock.hasAnyLocks.mockResolvedValue(true);
+
+      await expect(sut.remove(authStub.admin, 'tag-1')).rejects.toThrow('Elevated permission is required');
+
+      expect(mocks.tag.getAssetIdsByTagId).not.toHaveBeenCalled();
+      expect(mocks.tag.delete).not.toHaveBeenCalled();
+    });
+
     it('should remove a tag', async () => {
       mocks.tag.get.mockResolvedValue(tagStub.tag);
       mocks.tag.delete.mockResolvedValue();
@@ -357,7 +366,27 @@ describe(TagService.name, () => {
       ]);
     });
 
+    it('should skip assets the caller may not update, like untagged ones (R71)', async () => {
+      // asset-1 is the caller's but hidden for them: asset.update leaves it out outside an elevated session
+      mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set(['asset-1', 'asset-2']));
+      mocks.access.asset.excludeHiddenForLocker.mockResolvedValue(new Set(['asset-2']));
+      mocks.tag.getAssetIds.mockResolvedValue(new Set(['asset-2']));
+      mocks.tag.removeAssetIds.mockResolvedValue();
+      mocks.asset.getForUpdateTags.mockResolvedValue({ tags: [] });
+
+      await expect(sut.removeAssets(authStub.admin, 'tag-1', { ids: ['asset-1', 'asset-2'] })).resolves.toEqual([
+        { id: 'asset-1', success: false, error: BulkIdErrorReason.NOT_FOUND },
+        { id: 'asset-2', success: true },
+      ]);
+
+      expect(mocks.tag.getAssetIds).toHaveBeenCalledWith('tag-1', ['asset-2']);
+      expect(mocks.tag.removeAssetIds).toHaveBeenCalledWith('tag-1', ['asset-2']);
+      expect(mocks.asset.upsertExif).toHaveBeenCalledTimes(1);
+    });
+
     it('should accept accept ids that are tagged and reject the rest', async () => {
+      mocks.access.asset.checkOwnerAccess.mockResolvedValue(new Set(['asset-1', 'asset-2']));
+      mocks.access.asset.excludeHiddenForLocker.mockResolvedValue(new Set(['asset-1', 'asset-2']));
       mocks.tag.get.mockResolvedValue(tagStub.tag);
       mocks.tag.getAssetIds.mockResolvedValue(new Set(['asset-1']));
       mocks.tag.removeAssetIds.mockResolvedValue();
