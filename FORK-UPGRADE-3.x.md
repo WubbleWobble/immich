@@ -155,8 +155,10 @@ State these plainly to users.
   from face sync. A member in the deletion grace period (soft-deleted) is
   judged the same way, so their unlocked faces keep syncing until the user
   is purged. Only the faces of members whose locks were judged for that
-  sync run are sent; a user who joins the cluster mid-run arrives on the
-  next sync.
+  sync run are sent. A user who joins the cluster (mid-run or between
+  runs) only has faces changed after the device's sync checkpoint sent;
+  their older faces arrive when they change or on a full re-sync
+  (availability only, not privacy).
 - **Locking does not revoke shared links already handed out.** To revoke a
   link to your own locked content, elevate your session (PIN) first, then
   delete it. While you are not elevated, such a link is neither listed nor
