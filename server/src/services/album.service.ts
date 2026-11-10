@@ -345,7 +345,9 @@ export class AlbumService extends BaseService {
       }
       // Fork (rulings R70, R72): an unlocked smart album makes every photo its filter matches visible, whatever
       // locked album holds it, so publishing a filter needs the PIN. Re-sending the stored filter changes nothing.
-      if (!isDeepStrictEqual(dto.filter, album.filter)) {
+      // Compared as stored: the request carries Date objects where the stored JSON holds strings. Anything that does
+      // not compare equal asks for the PIN.
+      if (!isDeepStrictEqual(JSON.parse(JSON.stringify(dto.filter)), album.filter)) {
         await this.requireElevationForLockSensitiveWrite(auth);
       }
     }

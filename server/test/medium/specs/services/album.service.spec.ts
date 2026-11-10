@@ -547,6 +547,33 @@ describe(AlbumService.name, () => {
       await expect(readable(ctx, ordinary, [hidden.id])).resolves.toEqual([]);
     });
 
+    it('re-sending a stored filter that contains dates needs no PIN; changing a date does', async () => {
+      const { sut, ctx } = setup();
+      const { user } = await ctx.newUser({ pinCode: 'hashed-pin' });
+      const ordinary = factory.auth({ user });
+      const takenAfter = new Date('2024-01-01T00:00:00.000Z');
+      const takenBefore = new Date('2024-12-31T23:59:59.000Z');
+      const created = await sut.create(factory.auth({ user, session: { hasElevatedPermission: true } }), {
+        ...smartDto,
+        filter: { isFavorite: true, takenAfter, takenBefore },
+      });
+      const [{ filter: stored }] = await smartAlbums(ctx, user.id);
+
+      // the request carries Date objects (zod), the stored JSON holds strings
+      await expect(
+        sut.update(ordinary, created.id, {
+          filter: { takenBefore: new Date(takenBefore), takenAfter: new Date(takenAfter), isFavorite: true },
+        }),
+      ).resolves.toMatchObject({ id: created.id });
+      await expect(
+        sut.update(ordinary, created.id, {
+          filter: { isFavorite: true, takenAfter: new Date('2023-01-01T00:00:00.000Z'), takenBefore },
+        }),
+      ).rejects.toThrow(needsElevation);
+
+      await expect(smartAlbums(ctx, user.id)).resolves.toEqual([{ id: created.id, filter: stored }]);
+    });
+
     it('a sharee who holds locks still cannot edit the filter, and gets the owner-only error', async () => {
       const { sut, ctx } = setup();
       const { user } = await ctx.newUser();
