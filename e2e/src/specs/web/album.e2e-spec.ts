@@ -1,7 +1,7 @@
-import { LoginResponseDto } from '@immich/sdk';
+import { LoginResponseDto, getAssetInfo } from '@immich/sdk';
 import { expect, test } from '@playwright/test';
 import { readFileSync } from 'node:fs';
-import { testAssetDir, utils } from 'src/utils.js';
+import { asBearerAuth, testAssetDir, utils } from 'src/utils.js';
 
 test.describe('Album', () => {
   let admin: LoginResponseDto;
@@ -36,6 +36,17 @@ test.describe('Album', () => {
     });
 
     await utils.waitForQueueFinish(admin.accessToken, 'metadataExtraction');
+    // On a fresh database the server pauses metadata extraction while it imports geodata, and the
+    // queue helper only counts active/waiting jobs - wait for the GPS position itself.
+    await expect
+      .poll(
+        async () => {
+          const asset = await getAssetInfo({ id: mapAsset.id }, { headers: asBearerAuth(admin.accessToken) });
+          return asset.exifInfo?.latitude ?? null;
+        },
+        { timeout: 30_000 },
+      )
+      .not.toBeNull();
 
     const mapAlbum = await utils.createAlbum(admin.accessToken, {
       albumName: 'Map Test Album',
