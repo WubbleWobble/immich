@@ -1543,12 +1543,24 @@ export class PersonRepository {
       .executeTakeFirst();
   }
 
-  @GenerateSql({ params: [[DummyValue.UUID]] })
-  getForMergePerson(personGroupIds: string[]) {
+  /**
+   * Fork (ruling R74): every person in these groups that belongs to a user of `userId`'s recognition cluster. A
+   * merge rewrites all of them, and it must never reach a user of another cluster.
+   */
+  @GenerateSql({ params: [[DummyValue.UUID], DummyValue.UUID] })
+  getForMergePerson(personGroupIds: string[], userId: string) {
     return this.db
       .selectFrom('person')
       .selectAll('person')
       .where('person.personGroupId', 'in', personGroupIds)
+      .where('person.ownerId', 'in', (eb) =>
+        eb
+          .selectFrom('user')
+          .select('user.id')
+          .where('user.clusterGroupId', '=', (eb2) =>
+            eb2.selectFrom('user as caller').select('caller.clusterGroupId').where('caller.id', '=', userId),
+          ),
+      )
       .execute();
   }
 }

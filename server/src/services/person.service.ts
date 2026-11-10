@@ -843,7 +843,7 @@ export class PersonService extends BaseService {
 
     const orderedIds = ids.filter((id) => allowedIds.has(id));
     const [targetId, ...sourceIds] = orderedIds;
-    const people = targetId ? await this.personRepository.getForMergePerson(orderedIds) : [];
+    const people = targetId ? await this.personRepository.getForMergePerson(orderedIds, auth.user.id) : [];
     const lookup = new Map(people.map((person) => [personKey(person), person]));
     const ownerIds = new Set([auth.user.id, ...people.map((person) => person.ownerId)]);
     const targets = new Map(

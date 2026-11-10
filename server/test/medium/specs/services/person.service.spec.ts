@@ -2676,6 +2676,85 @@ describe(PersonService.name, () => {
       await expect(groupOf(ctx, memberFaces[1])).resolves.toBe(assigned);
     });
 
+    it("recognition never matches a group of another cluster through an owner's preserved hidden faces (R74)", async () => {
+      const { sut, ctx } = setup();
+      mockJobs(ctx);
+      const { user: oldMember } = await ctx.newUser();
+      const { user: newMember } = await ctx.newUser();
+      const owner = await lockedByPerson(ctx, { clusterGroupId: oldMember.clusterGroupId });
+      // shared with the old member, so the group stays in the old cluster when the owner moves on
+      await ctx.newPerson({ ownerId: oldMember.id, personGroupId: owner.groupId });
+      const request = await ctx
+        .get(ClusterGroupRepository)
+        .createRequest({ clusterGroupId: newMember.clusterGroupId, userId: owner.user.id });
+      await BaseService.create(ClusterGroupService, sut).acceptRequest(owner.ordinary, request!.id);
+      // the owner's hidden faces keep the old group, which still has the old member's person
+      await expect(groupOf(ctx, owner.protectedOnly.face.id)).resolves.toBe(owner.groupId);
+      await expect(
+        ctx.database.selectFrom('person_group').select('clusterGroupId').where('id', '=', owner.groupId).execute(),
+      ).resolves.toEqual([{ clusterGroupId: oldMember.clusterGroupId }]);
+
+      // faces of a user in the owner's NEW cluster that look exactly like the owner's hidden ones
+      const embedding = newEmbedding();
+      const newFaces: string[] = [];
+      for (let index = 0; index < 3; index++) {
+        const { face } = await newFaceOn(ctx, { ownerId: newMember.id, personGroupId: null as unknown as string });
+        newFaces.push(face.id);
+      }
+      await ctx.database
+        .insertInto('face_search')
+        .values(
+          [owner.protectedOnly.face.id, owner.alsoLocked.face.id, ...newFaces].map((faceId) => ({ faceId, embedding })),
+        )
+        .execute();
+
+      await sut.handleRecognizeFaces({ id: newFaces[0], deferred: true });
+
+      // a person of their own cluster, never the old cluster's group
+      const assigned = await groupOf(ctx, newFaces[0]);
+      expect(assigned).toEqual(expect.any(String));
+      expect(assigned).not.toBe(owner.groupId);
+      await expect(
+        ctx.database.selectFrom('person_group').select('clusterGroupId').where('id', '=', assigned!).execute(),
+      ).resolves.toEqual([{ clusterGroupId: newMember.clusterGroupId }]);
+      await expect(
+        ctx.database.selectFrom('person').select('ownerId').where('personGroupId', '=', owner.groupId).execute(),
+      ).resolves.toEqual([{ ownerId: oldMember.id }]);
+      await expect(readableAssetIds(ctx, owner.ordinary, owner.ids)).resolves.toEqual([owner.visible.asset.id]);
+      await expect(readableAssetIds(ctx, owner.partnerAuth, owner.ids)).resolves.toEqual([owner.visible.asset.id]);
+
+      // same-cluster recognition is unchanged: the next matching face joins that person
+      await sut.handleRecognizeFaces({ id: newFaces[1], deferred: true });
+      await expect(groupOf(ctx, newFaces[1])).resolves.toBe(assigned);
+    });
+
+    it("a merge only touches the people of users in the caller's cluster (R74)", async () => {
+      const { sut, ctx } = setup();
+      mockJobs(ctx);
+      const { user: caller } = await ctx.newUser();
+      const { user: outsider } = await ctx.newUser();
+      const { person: target } = await ctx.newPerson({ ownerId: caller.id });
+      const { person: source } = await ctx.newPerson({ ownerId: caller.id });
+      // a stray person of a user in another cluster in the same groups (no API creates one)
+      await ctx.newPerson({ ownerId: outsider.id, personGroupId: source.personGroupId, name: '' });
+      const { face: outsiderFace } = await newFaceOn(ctx, {
+        ownerId: outsider.id,
+        personGroupId: source.personGroupId,
+      });
+
+      await expect(
+        sut.mergePeople(factory.auth({ user: caller }), { ids: [target.personGroupId, source.personGroupId] }),
+      ).resolves.toEqual([
+        { id: target.personGroupId, success: true },
+        { id: source.personGroupId, success: true },
+      ]);
+
+      await expect(groupOf(ctx, outsiderFace.id)).resolves.toBe(source.personGroupId);
+      await expect(
+        ctx.database.selectFrom('person').select('ownerId').where('personGroupId', '=', source.personGroupId).execute(),
+      ).resolves.toEqual([{ ownerId: outsider.id }]);
+    });
+
     it("an elevated owner's unrelated person delete keeps the group their hidden photos use", async () => {
       const { sut, ctx } = setup();
       mockJobs(ctx);

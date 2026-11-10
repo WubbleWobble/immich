@@ -240,13 +240,21 @@ export interface GetCameraLensModelsOptions {
   model?: string;
 }
 
-/** Whether anyone has a person in the face's group. */
-const hasPersonRow = (eb: ExpressionBuilder<DB, 'asset_face'>) =>
+/**
+ * Fork (rulings R71, R74): whether recognition in `clusterGroupId` may attach a face to the candidate face's group.
+ * The group must belong to that cluster and somebody must have a person in it. Faces on photos hidden for their owner
+ * keep their group through merges and cluster changes, so a candidate can sit in a group nobody has a person in any
+ * more, or in a group of the cluster its owner has left. Attaching another face there would hand a merged-away id
+ * back, or link users across clusters.
+ */
+const inMatchableGroup = (clusterGroupId: string) => (eb: ExpressionBuilder<DB, 'asset_face'>) =>
   eb.exists(
     eb
-      .selectFrom('person')
-      .select('person.personGroupId')
-      .whereRef('person.personGroupId', '=', 'asset_face.personGroupId'),
+      .selectFrom('person_group')
+      .innerJoin('person', 'person.personGroupId', 'person_group.id')
+      .select('person_group.id')
+      .whereRef('person_group.id', '=', 'asset_face.personGroupId')
+      .where('person_group.clusterGroupId', '=', clusterGroupId),
   );
 
 @Injectable()
@@ -418,6 +426,7 @@ export class SearchRepository {
       throw new Error(`Invalid value for 'numResults': ${numResults}`);
     }
 
+    const matchable = inMatchableGroup(clusterGroupId);
     return this.db.transaction().execute(async (trx) => {
       await sql`set local vchordrq.probes = ${sql.lit(probes[VectorIndex.Face])}`.execute(trx);
       return await trx
@@ -428,17 +437,15 @@ export class SearchRepository {
             .innerJoin('face_search', 'face_search.faceId', 'asset_face.id')
             .select((eb) => [
               'asset_face.id',
-              // Fork (ruling R71): a group nobody has a person in only exists for faces on photos hidden for their
-              // owner. Its faces count as unassigned here, so recognition never puts another face into it - that
-              // would hand the id back to someone who merged or deleted the person, and show it is still in use.
-              eb.case().when(hasPersonRow(eb)).then(eb.ref('asset_face.personGroupId')).end().as('personGroupId'),
+              // candidates outside a matchable group count as unassigned (see inMatchableGroup)
+              eb.case().when(matchable(eb)).then(eb.ref('asset_face.personGroupId')).end().as('personGroupId'),
               sql<number>`face_search.embedding <=> ${embedding}`.as('distance'),
             ])
             .where('asset.ownerId', 'in', (eb) =>
               eb.selectFrom('user').select('user.id').where('user.clusterGroupId', '=', clusterGroupId),
             )
             .where('asset.deletedAt', 'is', null)
-            .$if(!!hasPerson, (qb) => qb.where('asset_face.personGroupId', 'is not', null).where(hasPersonRow))
+            .$if(!!hasPerson, (qb) => qb.where('asset_face.personGroupId', 'is not', null).where(matchable))
             .$if(!!minBirthDate, (qb) =>
               qb.where((eb) =>
                 eb.not(
