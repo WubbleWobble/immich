@@ -532,6 +532,23 @@ where
 order by
   "asset_face_audit"."id" asc
 
+-- SyncRepository.assetFace.getClusterPeerIds
+select
+  "user"."id"
+from
+  "user"
+where
+  "user"."deletedAt" is null
+  and "user"."id" != $1
+  and "user"."clusterGroupId" = (
+    select
+      "requester"."clusterGroupId"
+    from
+      "user" as "requester"
+    where
+      "requester"."id" = $2
+  )
+
 -- SyncRepository.assetFace.getDeletesV3
 select
   "asset_face_audit"."id",
