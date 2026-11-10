@@ -93,6 +93,9 @@ commits.
 | Per-asset `visibility=locked` | Retired and rejected; enforced by a DB CHECK constraint |
 | Album responses (`AlbumResponseDto`) | New required field `viewerRole` (`owner`, `editor`, `viewer` or `null`): the requesting user's effective role, the strongest of their direct album role and any role inherited from a shared ancestor folder. `albumUsers` still lists direct members only; the folder share graph is not exposed. `null` for shared-link visitors |
 | Upload duplicate of an asset hidden for a non-elevated session (R49) | `x-immich-checksum` pre-check falls through; `bulk-upload-check` answers `accept`; the upload answers `201 { id: <fresh uuid>, status: created }` and stores nothing. Elevated sessions get the real `duplicate` + id |
+| Create a smart album, or change a smart album's `filter`, when the album owner holds any lock (R70) | Needs an elevated (PIN) session; otherwise 401 `Elevated permission is required`. Decided on the owner's lock state alone, never on what the filter matches. Owners without locks, renames, re-sending the stored filter and sharing are unchanged |
+| Delete a tag, delete a person, merge people, when the caller holds any lock (R71) | Needs an elevated session; otherwise 401 `Elevated permission is required` |
+| `DELETE /tags/:id/assets` for a photo hidden for a non-elevated caller (R71) | That id answers `{ success: false, error: "not_found" }`, like a photo that does not carry the tag; the other ids are untagged as usual |
 | Asset bytes (thumbnail, preview, original, video playback, asset files, HLS segments) (R50) | `Cache-Control: private, no-cache, no-transform` (was `private, max-age=86400, ... stale-while-revalidate=2592000, stale-if-error=2592000`) |
 
 ## Shared folders in the web app
@@ -221,6 +224,42 @@ State these plainly to users.
     opened with a hard reload (Shift+Reload) is not controlled, so locking
     an album from it purges nothing. The exposure is limited to requests
     already in flight; nothing completed is reused.
+
+- **Changing what a smart album matches needs the PIN once you hold a
+  lock (R70, R71).** An unlocked smart album shows every photo it matches,
+  and a locked one hides them, so the filter, the tags and the people
+  behind it decide what a lock protects. For a user with at least one
+  lock, these need an elevated (PIN) session: creating a smart album,
+  changing a smart album's filter, deleting a tag (or a parent tag),
+  deleting a person and merging people. Removing a tag from single photos
+  needs no PIN, but skips photos that are hidden in that session. Users
+  without locks see no change. The rule looks only at whether the user
+  holds a lock, never at what a filter, tag or person matches, so a
+  refusal says nothing about hidden photos. It does tell whoever holds the
+  unlocked device that this account has locks.
+- **Other people's actions and background jobs leave the faces on hidden
+  photos alone (R71).** These rewrite face data for several users at once:
+  a cluster member's "regenerate people", the admin's forced face
+  detection and forced facial recognition jobs, a people merge by another
+  cluster member, and joining or leaving a recognition cluster. None of
+  them is refused because of someone's locks (that would reveal the
+  locks), and nobody's PIN counts for another user. Instead, faces on a
+  photo that is hidden for its owner keep their person. Consequences:
+  - **Forced resets do not re-cluster hidden photos.** They keep the faces
+    and people they had before the reset. After a face model change they
+    keep the old detections. To rebuild them, the owner unlocks the albums
+    and the job is run again.
+  - After another member's merge, or after joining or leaving a cluster,
+    the faces on your hidden photos stay in the old person group while
+    your visible photos move to the new one. The person page then lists
+    only the visible photos; the hidden ones show the face without a name
+    when you open them elevated. Smart-album filters keep the old id
+    (D12), so a locked smart album keeps hiding the same photos.
+  - A person group with no person left is kept while it still carries a
+    face on a hidden photo.
+  Not covered: tags and face regions read from the photo file or its
+  sidecar. A user who can edit those files outside Immich can still change
+  what a filter matches on the next metadata scan.
 
 ## Deploy checklist
 
