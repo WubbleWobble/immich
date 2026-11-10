@@ -84,8 +84,9 @@ export class AlbumService extends BaseService {
       ? [
           ...(await this.albumRepository.getByAssetId(ownerId, assetId)),
           // Smart membership is computed, not stored: include reachable smart albums whose
-          // filter matches, so "appears in" is complete (the web locked-move flow relies on
-          // this to detect that an unlocked saved search still rescues the asset).
+          // filter matches, so the "appears in" panel lists them too. Display only and
+          // live-only: a trashed asset lists no smart album. Lock verdicts (including the
+          // move-to-locked report) are judged by the lock predicate, which includes trash (R79).
           ...(await this.albumRepository.getMatchingSmartAlbumsByAssetId(ownerId, assetId)),
         ]
       : await this.albumRepository.getAll(ownerId, rest);

@@ -93,9 +93,8 @@ export class LockService extends BaseService {
   /**
    * Server-side "move to locked album": add the assets, remove their other viewer-visible
    * regular memberships (an unlocked membership would rescue them from the lock), and
-   * report which assets a viewer-reachable unlocked smart album still matches - all in one
-   * request, with smart filters evaluated once over the whole batch rather than per asset.
-   * Requires an elevated session and a destination the user has actually locked.
+   * report which assets are still visible afterwards - all in one request. Requires an
+   * elevated session and a destination the user has actually locked.
    */
   async moveAssetsToLockedAlbum(auth: AuthDto, dto: MoveToLockedAlbumDto): Promise<MoveToLockedAlbumResponseDto> {
     requireElevatedPermission(auth);
@@ -132,7 +131,6 @@ export class LockService extends BaseService {
     // Memberships in albums the viewer has hidden are skipped outright: a hidden membership
     // cannot rescue the asset, so it neither needs removal nor counts as still-visible.
     const hiddenAlbumIds = new Set(await this.lockRepository.getHiddenAlbumIds(auth.user.id, NO_REVEALED_LOCKS));
-    const stillVisible = new Set<string>();
     const memberships = await this.albumRepository.getVisibleMembershipsByAssetIds(auth.user.id, addedIds);
     const removalsPerAlbum = new Map<string, string[]>();
     for (const { assetId, albumId } of memberships) {
@@ -145,25 +143,24 @@ export class LockService extends BaseService {
     }
     for (const [albumId, ids] of removalsPerAlbum) {
       try {
-        const results = await albumService.removeAssets(auth, albumId, { ids });
-        for (const result of results) {
-          if (!result.success) {
-            stillVisible.add(result.id);
-          }
-        }
+        await albumService.removeAssets(auth, albumId, { ids });
       } catch {
-        for (const id of ids) {
-          stillVisible.add(id);
-        }
+        // A failed removal leaves the membership in place; the verdict below reports it.
       }
     }
 
-    // Saved-search rescues, evaluated once for the whole batch: each viewer-reachable
-    // unlocked smart album's filter runs a single query over all moved ids.
-    const smartMatched = await this.accessRepository.asset.checkSmartAlbumAccess(auth.user.id, new Set(addedIds));
-    for (const id of smartMatched) {
-      stillVisible.add(id);
-    }
+    // Fork (R79 fix round 1): report the real verdict after the move - the moved assets that still pass the owner's
+    // own locks with no reveal and no elevation, as partners and cluster peers judge them. This covers every rescue
+    // at once: an unremovable regular membership and a matching unlocked smart album, trashed assets included (R79).
+    const stillVisible = await this.lockRepository.getVisibleAssetIds(
+      addedIds,
+      await this.lockRepository.getOwnerLockVisibility({
+        viewerId: auth.user.id,
+        ownerIds: [auth.user.id],
+        revealed: NO_REVEALED_LOCKS,
+        isElevated: false,
+      }),
+    );
 
     return {
       moved: addedIds.filter((id) => !stillVisible.has(id)),

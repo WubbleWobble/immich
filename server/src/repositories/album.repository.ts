@@ -193,8 +193,9 @@ export class AlbumRepository {
   /**
    * Smart albums reachable by the user (directly or via folder share) whose filter matches
    * the asset. Smart membership is computed, so getByAssetId's album_asset join cannot see
-   * it; callers merging the two get the complete "appears in" answer - which the locked
-   * "move" flow needs to know an unlocked saved search still rescues the asset.
+   * it; callers merging the two get the complete "appears in" answer. Display only and
+   * live-only (a trashed asset matches nothing here); it is not a lock verdict - those
+   * include trashed assets (R79).
    */
   async getMatchingSmartAlbumsByAssetId(ownerId: string, assetId: string): Promise<MapAlbumDto[]> {
     const candidates = await this.buildAlbumBaseQuery(ownerId, {})

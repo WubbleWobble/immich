@@ -214,7 +214,7 @@ State these plainly to users.
 - **Trashing a photo does not change whether it is hidden (R79).** A smart
   album's filter is judged over trashed photos too when locks decide what is
   hidden. A photo hidden only by a locked smart album (by tag, person,
-  favorite or any other criterion) stays hidden once trashed: from partners
+  favorite and the like) stays hidden once trashed: from partners
   and other cluster members (shared person portraits, face sync, partner
   sync), from "Restore all" and "Empty trash" (R65), and, when it is later
   deleted, from the partner delete stream (R66). A photo that an unlocked
@@ -226,6 +226,15 @@ State these plainly to users.
   locked smart album hides. Elevate (PIN) and reveal that smart album to see
   them in the Trash. Before this release they appeared in every session's
   Trash, the only place a smart-album-locked photo showed outside the lock.
+  **Exception: "updated before/after" criteria (R80).** A photo's
+  `updatedAt` changes on every write to the photo's own record, including
+  trash, restore, favorite and archive. A smart album filtering on it can
+  therefore start or stop matching a photo after any such edit, trash
+  included: trash never changes a verdict except through such a criterion.
+  Do not use "updated before/after" to lock-protect photos; use criteria
+  that trash and restore leave alone (tag, person, favorite, date taken).
+  Moving photos to a locked album reports a photo as still visible whenever
+  it still is after the move, by any rescue, trashed photos included.
 - **Person portraits follow the reveal (T6).** A portrait cropped from a
   photo in your locked album shows only in an elevated session with that
   lock revealed. The web app now loads portraits with the session's reveal
