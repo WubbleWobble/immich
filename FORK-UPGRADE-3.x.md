@@ -211,6 +211,21 @@ State these plainly to users.
   scheduled trash retention job (automatic deletion after the configured
   number of days) is a separate policy and is unchanged: it still removes
   every expired trashed photo, hidden or not.
+- **Trashing a photo does not change whether it is hidden (R79).** A smart
+  album's filter is judged over trashed photos too when locks decide what is
+  hidden. A photo hidden only by a locked smart album (by tag, person,
+  favorite or any other criterion) stays hidden once trashed: from partners
+  and other cluster members (shared person portraits, face sync, partner
+  sync), from "Restore all" and "Empty trash" (R65), and, when it is later
+  deleted, from the partner delete stream (R66). A photo that an unlocked
+  smart album rescues stays visible once trashed. Smart albums themselves
+  still never show trashed photos: their contents, counts, sharing and
+  timelines are unchanged.
+  **User-visible change in the Trash view:** an ordinary session, and an
+  elevated one without the reveal, no longer lists trashed photos that a
+  locked smart album hides. Elevate (PIN) and reveal that smart album to see
+  them in the Trash. Before this release they appeared in every session's
+  Trash, the only place a smart-album-locked photo showed outside the lock.
 - **Person portraits follow the reveal (T6).** A portrait cropped from a
   photo in your locked album shows only in an elevated session with that
   lock revealed. The web app now loads portraits with the session's reveal

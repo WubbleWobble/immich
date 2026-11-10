@@ -464,9 +464,9 @@ export interface OwnerLockVisibility {
   ownerId: string;
   /** Effectively hidden album row ids (regular and smart), after reveal subtraction. */
   hiddenAlbumIds: string[];
-  /** Owner-scoped, evaluable filters of the owner's HIDDEN smart albums. */
+  /** Owner-scoped, evaluable filters of the owner's HIDDEN smart albums (trash included, ruling R79). */
   hiddenSmartFilters: AssetSearchBuilderOptions[];
-  /** Owner-scoped, evaluable filters of the owner's VISIBLE smart albums. */
+  /** Owner-scoped, evaluable filters of the owner's VISIBLE smart albums (trash included, ruling R79). */
   visibleSmartFilters: AssetSearchBuilderOptions[];
 }
 

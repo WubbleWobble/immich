@@ -141,6 +141,8 @@ export interface LockVisibilityRequest {
  *
  * Only an owner's own smart albums participate: a smart album shared IN from another user
  * matches that other user's assets, which never appear among this owner's rows.
+ *
+ * Smart criteria are judged over trashed rows too (ruling R79): privacy does not depend on trash state.
  */
 export async function getOwnerLockVisibility(
   db: Kysely<DB>,
@@ -183,7 +185,11 @@ export async function getOwnerLockVisibility(
         // Fails closed for asset matching: matches nothing whether hidden or visible.
         continue;
       }
-      const options = { ...evaluable, userIds: [ownerId] };
+      // Fork (ruling R79): lock derivation includes trashed rows (`withDeleted` drops only the search builder's
+      // `deletedAt IS NULL` condition), so trashing a photo never changes its hidden/visible verdict - for the hiding
+      // and the rescuing side alike. Displayed smart-album contents, counts and sharing evaluate the filter elsewhere
+      // and stay live-only.
+      const options = { ...evaluable, userIds: [ownerId], withDeleted: true };
       (hiddenSet.has(smartAlbum.id) ? hiddenSmartFilters : visibleSmartFilters).push(options);
     }
 
