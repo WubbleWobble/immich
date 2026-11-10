@@ -403,6 +403,7 @@ export const getMocks = () => {
   mocks.lock.hasAnyLocks.mockResolvedValue(false);
   mocks.lock.getOwnerLockVisibility.mockResolvedValue([]);
   mocks.lock.getLockHolderVisibility.mockResolvedValue([]);
+  mocks.clusterGroup.deleteRequestsForMemberlessClusters.mockResolvedValue();
   mocks.lock.getHiddenAlbumIds.mockResolvedValue([]);
   mocks.lock.getHiddenContainerIds.mockResolvedValue([]);
   mocks.lock.getLocks.mockResolvedValue({ lockedAlbumIds: [], lockedContainerIds: [] });

@@ -492,7 +492,8 @@ export class PersonService extends BaseService {
     // mergePeople and the forced resets); deleting it would unassign them.
     const guard = await this.getHiddenFaceGuard();
     const personGroups = await this.personRepository.deleteEmptyGroups(guard);
-    // a memberless cluster can still hold such a group: deleting it cascades to the group
+    // a memberless cluster can still hold such a group: deleting it cascades to the group. Its invites go either way.
+    await this.clusterGroupRepository.deleteRequestsForMemberlessClusters();
     const clusterGroups = await this.personRepository.deleteOrphanedClusterGroups(guard);
 
     this.logger.debug(`Deleted ${personGroups} empty person groups and ${clusterGroups} orphaned cluster groups`);

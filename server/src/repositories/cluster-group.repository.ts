@@ -28,6 +28,40 @@ export class ClusterGroupRepository {
     return !!member;
   }
 
+  /** Fork: whether the cluster has any user row at all - the definition the orphaned-cluster cleanup uses. */
+  @GenerateSql({ params: [DummyValue.UUID] })
+  async hasMembers(clusterGroupId: string): Promise<boolean> {
+    const member = await this.db
+      .selectFrom('user')
+      .select('user.id')
+      .where('user.clusterGroupId', '=', clusterGroupId)
+      .limit(1)
+      .executeTakeFirst();
+
+    return !!member;
+  }
+
+  /**
+   * Fork: invites to clusters without a single user row. Run by the cleanup job for every such cluster, whether the
+   * cluster itself is then deleted or kept (see PersonRepository.deleteOrphanedClusterGroups), so a surviving invite
+   * never says which of the two happened.
+   */
+  @GenerateSql()
+  async deleteRequestsForMemberlessClusters(): Promise<void> {
+    await this.db
+      .deleteFrom('cluster_group_request')
+      .where(({ not, exists, selectFrom }) =>
+        not(
+          exists(
+            selectFrom('user')
+              .select('user.id')
+              .whereRef('user.clusterGroupId', '=', 'cluster_group_request.clusterGroupId'),
+          ),
+        ),
+      )
+      .execute();
+  }
+
   @GenerateSql({ params: [{ clusterGroupId: DummyValue.UUID, userId: DummyValue.UUID }] })
   createRequest(request: Insertable<ClusterGroupRequestTable>) {
     return this.db

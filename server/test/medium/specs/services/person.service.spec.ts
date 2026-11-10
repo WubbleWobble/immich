@@ -1,4 +1,4 @@
-import { NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { Kysely } from 'kysely';
 import { DateTime } from 'luxon';
 import { AuthDto } from 'src/dtos/auth.dto.js';
@@ -2753,6 +2753,56 @@ describe(PersonService.name, () => {
       await expect(
         ctx.database.selectFrom('person').select('ownerId').where('personGroupId', '=', source.personGroupId).execute(),
       ).resolves.toEqual([{ ownerId: outsider.id }]);
+    });
+
+    it('cleanup drops the invites of every memberless cluster, kept or not, and neither invite can be accepted', async () => {
+      const { sut, ctx } = setup();
+      mockJobs(ctx);
+      const clusters = BaseService.create(ClusterGroupService, sut);
+      const repository = ctx.get(ClusterGroupRepository);
+      const { user: invitee } = await ctx.newUser();
+      const inviteeAuth = factory.auth({ user: invitee });
+      // `kept` is memberless but holds a group with faces on hidden photos; `abandoned` is simply memberless
+      const owner = await lockedByPerson(ctx);
+      const kept = owner.user.clusterGroupId;
+      const elsewhere = await repository.create();
+      await ctx.database
+        .updateTable('user')
+        .set({ clusterGroupId: elsewhere.id })
+        .where('id', '=', owner.user.id)
+        .execute();
+      const abandoned = await repository.create();
+      const invites = [
+        await repository.createRequest({ clusterGroupId: kept, userId: invitee.id }),
+        await repository.createRequest({ clusterGroupId: abandoned.id, userId: invitee.id }),
+      ];
+      const clusterIds = () =>
+        ctx.database.selectFrom('cluster_group').select('id').where('id', 'in', [kept, abandoned.id]).execute();
+      const inviteIds = () =>
+        ctx.database
+          .selectFrom('cluster_group_request')
+          .select('id')
+          .where('clusterGroupId', 'in', [kept, abandoned.id])
+          .execute();
+
+      // before cleanup: both invites are refused exactly like an invite that does not exist
+      const missing = await clusters.acceptRequest(inviteeAuth, newUuid()).catch((error) => error);
+      for (const invite of invites) {
+        const refused = await clusters.acceptRequest(inviteeAuth, invite!.id).catch((error) => error);
+        expect(refused).toBeInstanceOf(BadRequestException);
+        expect(refused.getResponse()).toEqual(missing.getResponse());
+      }
+      await expect(
+        ctx.database.selectFrom('user').select('clusterGroupId').where('id', '=', invitee.id).execute(),
+      ).resolves.toEqual([{ clusterGroupId: invitee.clusterGroupId }]);
+
+      await sut.handlePersonCleanup();
+
+      // the invites are gone for both, so they say nothing about why one cluster is still there
+      await expect(inviteIds()).resolves.toEqual([]);
+      await expect(clusterIds()).resolves.toEqual([{ id: kept }]);
+      await expect(clusters.getRequests(inviteeAuth)).resolves.toEqual([]);
+      await expect(readableAssetIds(ctx, owner.ordinary, owner.ids)).resolves.toEqual([owner.visible.asset.id]);
     });
 
     it("an elevated owner's unrelated person delete keeps the group their hidden photos use", async () => {

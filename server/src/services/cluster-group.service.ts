@@ -63,6 +63,12 @@ export class ClusterGroupService extends BaseService {
 
     const request = await findOrFail(() => this.clusterGroupRepository.getRequest(id), 'Request');
 
+    // Fork: a cluster nobody is in any more cannot be joined. Such a cluster may still exist only because it holds
+    // people of photos hidden for a former member (ruling R71), so its invite is answered exactly like a missing one.
+    if (!(await this.clusterGroupRepository.hasMembers(request.clusterGroupId))) {
+      throw new BadRequestException(`Not found or no ${Permission.ClusterGroupRequestRead} access`);
+    }
+
     await this.reassignCluster(auth.user.id, request.clusterGroupId);
     await this.userRepository.update(auth.user.id, { clusterGroupId: request.clusterGroupId });
     await this.invalidatePersonFilteredSmartAlbums(auth.user.id);
