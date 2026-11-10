@@ -3,8 +3,8 @@
   import { lockManager } from '$lib/managers/lock-manager.svelte';
   import { handleError } from '$lib/utils/handle-error';
   import { getAuthStatus, unlockAuthSession } from '@immich/sdk';
-  import { BasicModal, Icon, PinInput } from '@immich/ui';
-  import { mdiLockOutline, mdiLockSmart } from '@mdi/js';
+  import { BasicModal, Icon, LoadingSpinner, PinInput } from '@immich/ui';
+  import { mdiAlertCircleOutline, mdiLockOutline, mdiLockSmart } from '@mdi/js';
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
 
@@ -16,7 +16,9 @@
 
   let { onClose }: Props = $props();
 
-  let hasPinCode = $state(true);
+  // 'loading' until the PIN status arrives; 'error' if it cannot be read. Neither offers a way to elevate, so a failed
+  // status call leaves only Cancel (fail closed).
+  let status = $state<'loading' | 'error' | 'pin' | 'create'>('loading');
   let isBadPinCode = $state(false);
   let pinCode = $state('');
 
@@ -25,9 +27,10 @@
     // without a PIN (after a PIN reset); like the PIN page, let them create one first.
     try {
       const { pinCode: isPinCodeSet } = await getAuthStatus();
-      hasPinCode = isPinCodeSet;
-    } catch {
-      // Keep the PIN input; unlocking reports its own errors.
+      status = isPinCodeSet ? 'pin' : 'create';
+    } catch (error) {
+      console.error('[PinPromptModal] unable to read the PIN status', error);
+      status = 'error';
     }
   });
 
@@ -50,7 +53,14 @@
 
 <BasicModal title={$t('pin_verification')} icon={mdiLockOutline} closeText={$t('cancel')} onClose={() => onClose()}>
   <div class="flex flex-col items-center gap-6 py-2">
-    {#if hasPinCode}
+    {#if status === 'loading'}
+      <LoadingSpinner size="large" />
+    {:else if status === 'error'}
+      <div class="text-danger">
+        <Icon icon={mdiAlertCircleOutline} size="48" />
+      </div>
+      <p class="text-center text-sm text-danger" role="alert">{$t('errors.something_went_wrong')}</p>
+    {:else if status === 'pin'}
       <div class:text-danger={isBadPinCode} class:text-primary={!isBadPinCode}>
         <Icon icon={mdiLockOutline} size="48" />
       </div>
@@ -61,7 +71,7 @@
         <Icon icon={mdiLockSmart} size="48" />
       </div>
       <p class="text-center text-sm" style="text-wrap: pretty;">{$t('new_pin_code_subtitle')}</p>
-      <PinCodeCreateForm showLabel={false} onCreated={() => (hasPinCode = true)} />
+      <PinCodeCreateForm showLabel={false} onCreated={() => (status = 'pin')} />
     {/if}
   </div>
 </BasicModal>
