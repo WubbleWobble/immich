@@ -238,6 +238,11 @@ State these plainly to users.
   so the refusal is the same with or without locks and says nothing about
   locks or hidden photos. A user whose PIN was removed while locks remain
   is treated like a user with a PIN.
+  **API keys cannot do these five things for a user with a PIN.** An API
+  key session is never elevated, so smart-album create, filter change,
+  tag delete, person delete and people merge answer 401 for it. Scripts
+  and integrations that used a key for them need a logged-in session
+  with the PIN entered, or an account without a PIN.
 - **Other people's actions and background jobs leave the faces on hidden
   photos alone (R71).** These rewrite face data for several users at once:
   a cluster member's "regenerate people", the admin's forced face
@@ -257,7 +262,10 @@ State these plainly to users.
     when you open them elevated. Smart-album filters keep the old id
     (D12), so a locked smart album keeps hiding the same photos.
   - A person group with no person left is kept while it still carries a
-    face on a hidden photo.
+    face on a hidden photo, and so is a recognition cluster with no
+    members left that holds such a group. Facial recognition treats the
+    faces in such a group as unassigned, so it never adds new faces to
+    it.
 - **External file or sidecar edits can change classification.** Tags and
   face regions are read from the photo file and its sidecar on metadata
   extraction and replace the stored ones. Someone who can edit those
