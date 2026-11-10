@@ -592,6 +592,54 @@ describe(TagService.name, () => {
     });
   });
 
+  describe('repeated ids in one request', () => {
+    it('tags and untags an id sent twice once, answers per position and keeps the exif tags in sync', async () => {
+      const { sut, ctx } = setup();
+      const events = ctx.getMock(EventRepository).emit;
+      events.mockResolvedValue();
+      const { user } = await ctx.newUser();
+      const auth = factory.auth({ user });
+      const [tag] = await upsertTags(ctx.get(TagRepository), { userId: user.id, tags: ['trip'] });
+      const { asset } = await ctx.newAsset({ ownerId: user.id });
+      const { asset: other } = await ctx.newAsset({ ownerId: user.id });
+      await ctx.newExif({ assetId: asset.id, tags: [] });
+      const { user: stranger } = await ctx.newUser();
+      const { asset: foreign } = await ctx.newAsset({ ownerId: stranger.id });
+      const exifTags = async () => {
+        const row = await ctx.database
+          .selectFrom('asset_exif')
+          .select('tags')
+          .where('assetId', '=', asset.id)
+          .executeTakeFirstOrThrow();
+        return row.tags;
+      };
+
+      await expect(
+        sut.addAssets(auth, tag.id, { ids: [asset.id, foreign.id, asset.id, other.id, foreign.id] }),
+      ).resolves.toEqual([
+        { id: asset.id, success: true },
+        { id: foreign.id, success: false, error: BulkIdErrorReason.NO_PERMISSION },
+        { id: asset.id, success: false, error: BulkIdErrorReason.DUPLICATE },
+        { id: other.id, success: true },
+        { id: foreign.id, success: false, error: BulkIdErrorReason.NO_PERMISSION },
+      ]);
+      await expect(exifTags()).resolves.toEqual(['trip']);
+      expect(events.mock.calls).toEqual([
+        ['AssetTag', { assetId: asset.id, userId: user.id }],
+        ['AssetTag', { assetId: other.id, userId: user.id }],
+      ]);
+
+      events.mockClear();
+      await expect(sut.removeAssets(auth, tag.id, { ids: [asset.id, foreign.id, asset.id] })).resolves.toEqual([
+        { id: asset.id, success: true },
+        { id: foreign.id, success: false, error: BulkIdErrorReason.NOT_FOUND },
+        { id: asset.id, success: false, error: BulkIdErrorReason.NOT_FOUND },
+      ]);
+      await expect(exifTags()).resolves.toEqual([]);
+      expect(events.mock.calls).toEqual([['AssetUntag', { assetId: asset.id }]]);
+    });
+  });
+
   describe('removeAssets', () => {
     it('should not remove assets from a tag of another user', async () => {
       const { sut, ctx } = setup();

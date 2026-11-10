@@ -152,10 +152,7 @@ export class TagService extends BaseService {
         permission: Permission.AssetUpdate,
       },
     );
-    const addedById = new Map(added.map((result) => [result.id, result]));
-    const results: BulkIdResponseDto[] = dto.ids.map(
-      (assetId) => addedById.get(assetId) ?? { id: assetId, success: false, error: BulkIdErrorReason.NO_PERMISSION },
-    );
+    const results = this.mergeBulkResults(dto.ids, updatableIds, added, BulkIdErrorReason.NO_PERMISSION);
 
     const taggedAssetIds: string[] = [];
     for (const { id: assetId, success } of results) {
@@ -190,10 +187,7 @@ export class TagService extends BaseService {
         canAlwaysRemove: Permission.TagDelete,
       },
     );
-    const removedById = new Map(removed.map((result) => [result.id, result]));
-    const results: BulkIdResponseDto[] = dto.ids.map(
-      (assetId) => removedById.get(assetId) ?? { id: assetId, success: false, error: BulkIdErrorReason.NOT_FOUND },
-    );
+    const results = this.mergeBulkResults(dto.ids, updatableIds, removed, BulkIdErrorReason.NOT_FOUND);
 
     const untaggedAssetIds: string[] = [];
     for (const { id: assetId, success } of results) {
@@ -217,6 +211,21 @@ export class TagService extends BaseService {
     // no smart album's membership or cache changes.
     await this.tagRepository.deleteEmptyTags();
     return JobStatus.Success;
+  }
+
+  /**
+   * One result per requested id, in request order: the bulk helper's answer for the ids that were passed on to it
+   * (it answers in the order given, repeats included), `denied` for every other id. Positional on purpose - an id
+   * can appear more than once in a request, and its first and later occurrences get different answers.
+   */
+  private mergeBulkResults(
+    ids: string[],
+    passedOn: Set<string>,
+    helperResults: BulkIdResponseDto[],
+    denied: BulkIdErrorReason,
+  ): BulkIdResponseDto[] {
+    let next = 0;
+    return ids.map((id) => (passedOn.has(id) ? helperResults[next++] : { id, success: false, error: denied }));
   }
 
   private findOrFail(id: string) {
