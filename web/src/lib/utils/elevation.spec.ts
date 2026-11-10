@@ -1,8 +1,8 @@
 import { deleteTag, mergePeople } from '@immich/sdk';
 import { modalManager, toastManager } from '@immich/ui';
 import PinPromptModal from '$lib/modals/PinPromptModal.svelte';
-import { handleError } from '$lib/utils/handle-error';
 import { isElevationRequiredError, withElevationRetry } from '$lib/utils/elevation';
+import { handleError } from '$lib/utils/handle-error';
 
 vi.mock('@immich/ui', async (importOriginal) => {
   const original = await importOriginal<typeof import('@immich/ui')>();
@@ -15,11 +15,19 @@ vi.mock('@immich/ui', async (importOriginal) => {
 
 // Real SDK calls against a fake fetch, so the errors are the HttpErrors the SDK really throws: a void endpoint
 // (deleteTag) surfaces the body as text, a JSON one (mergePeople) as parsed JSON.
-const json = (status: number, body: unknown) =>
-  new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+const json = (status: number, body: unknown) => Response.json(body, { status });
 const elevationRequired = () =>
   json(401, { message: 'Elevated permission is required', error: 'Unauthorized', statusCode: 401 });
 const noContent = () => new Response(null, { status: 204 });
+
+/** Resolve to whatever the promise rejects with (undefined if it resolves). */
+const rejection = async (promise: Promise<unknown>) => {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+};
 
 const fakeFetch = (...responses: Array<() => Response>) => {
   const fetch = vi.fn<typeof globalThis.fetch>();
@@ -31,24 +39,27 @@ const fakeFetch = (...responses: Array<() => Response>) => {
 
 describe('isElevationRequiredError', () => {
   it('recognises the elevation-required 401 from text and JSON endpoints', async () => {
-    const textError = await deleteTag({ id: 'tag-1' }, { fetch: fakeFetch(elevationRequired) }).catch((e) => e);
-    const jsonError = await mergePeople(
-      { mergePersonDto: { ids: ['a', 'b'] } },
-      { fetch: fakeFetch(elevationRequired) },
-    ).catch((e) => e);
+    const textError = await rejection(deleteTag({ id: 'tag-1' }, { fetch: fakeFetch(elevationRequired) }));
+    const jsonError = await rejection(
+      mergePeople({ mergePersonDto: { ids: ['a', 'b'] } }, { fetch: fakeFetch(elevationRequired) }),
+    );
     expect(isElevationRequiredError(textError)).toBe(true);
     expect(isElevationRequiredError(jsonError)).toBe(true);
   });
 
   it('ignores other 401s, other statuses with the same message, and non-HTTP errors', async () => {
-    const otherUnauthorized = await deleteTag(
-      { id: 'tag-1' },
-      { fetch: fakeFetch(() => json(401, { message: 'Invalid user token', statusCode: 401 })) },
-    ).catch((e) => e);
-    const forbidden = await deleteTag(
-      { id: 'tag-1' },
-      { fetch: fakeFetch(() => json(403, { message: 'Elevated permission is required', statusCode: 403 })) },
-    ).catch((e) => e);
+    const otherUnauthorized = await rejection(
+      deleteTag(
+        { id: 'tag-1' },
+        { fetch: fakeFetch(() => json(401, { message: 'Invalid user token', statusCode: 401 })) },
+      ),
+    );
+    const forbidden = await rejection(
+      deleteTag(
+        { id: 'tag-1' },
+        { fetch: fakeFetch(() => json(403, { message: 'Elevated permission is required', statusCode: 403 })) },
+      ),
+    );
     expect(isElevationRequiredError(otherUnauthorized)).toBe(false);
     expect(isElevationRequiredError(forbidden)).toBe(false);
     expect(isElevationRequiredError(new Error('Elevated permission is required'))).toBe(false);
@@ -70,7 +81,7 @@ describe('withElevationRetry', () => {
   });
 
   it('prompts for the PIN after the refusal and retries once when it is accepted', async () => {
-    vi.mocked(modalManager.show).mockResolvedValue(true);
+    vi.mocked(modalManager.show).mockResolvedValue(true as never);
     const fetch = fakeFetch(elevationRequired, () => json(200, [{ id: 'b', success: true }]));
 
     const result = await withElevationRetry(() => mergePeople({ mergePersonDto: { ids: ['a', 'b'] } }, { fetch }));
@@ -81,10 +92,10 @@ describe('withElevationRetry', () => {
   });
 
   it('retries only once: a second refusal is thrown to the caller', async () => {
-    vi.mocked(modalManager.show).mockResolvedValue(true);
+    vi.mocked(modalManager.show).mockResolvedValue(true as never);
     const fetch = fakeFetch(elevationRequired, elevationRequired);
 
-    const error = await withElevationRetry(() => deleteTag({ id: 'tag-1' }, { fetch })).catch((e) => e);
+    const error = await rejection(withElevationRetry(() => deleteTag({ id: 'tag-1' }, { fetch })));
 
     expect(isElevationRequiredError(error)).toBe(true);
     expect(modalManager.show).toHaveBeenCalledOnce();
@@ -92,11 +103,11 @@ describe('withElevationRetry', () => {
   });
 
   it('aborts quietly when the PIN prompt is cancelled: no retry and no error toast', async () => {
-    vi.mocked(modalManager.show).mockResolvedValue(undefined);
+    vi.mocked(modalManager.show).mockResolvedValue(undefined as never);
     const fetch = fakeFetch(elevationRequired);
 
     // The call sites route failures through handleError; a cancelled prompt must not toast there.
-    const error = await withElevationRetry(() => deleteTag({ id: 'tag-1' }, { fetch })).catch((e) => e);
+    const error = await rejection(withElevationRetry(() => deleteTag({ id: 'tag-1' }, { fetch })));
     handleError(error, 'something went wrong');
 
     expect(error).toBeInstanceOf(Error);
@@ -114,9 +125,9 @@ describe('withElevationRetry', () => {
         throw error;
       });
 
-    const error = await withElevationRetry(action).catch((e) => e);
+    const error = await rejection(withElevationRetry(action));
     expect(error).toBe(thrown);
-    expect(error.status).toBe(400);
+    expect(error).toMatchObject({ status: 400 });
     expect(fetch).toHaveBeenCalledOnce();
     expect(modalManager.show).not.toHaveBeenCalled();
 

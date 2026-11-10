@@ -1,6 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { Route } from '$lib/route';
+  import { withElevationRetry } from '$lib/utils/elevation';
   import { handleError } from '$lib/utils/handle-error';
   import { getAllPeople, getPerson, mergePeople, type PersonResponseDto } from '@immich/sdk';
   import { Button, Icon, IconButton, modalManager, toastManager } from '@immich/ui';
@@ -67,7 +68,8 @@
     }
 
     try {
-      let results = await mergePeople({ mergePersonDto: { ids: [person.id, ...selectedPeople.map(({ id }) => id)] } });
+      const ids = [person.id, ...selectedPeople.map(({ id }) => id)];
+      const results = await withElevationRetry(() => mergePeople({ mergePersonDto: { ids } }));
       const mergedPerson = await getPerson({ id: person.id });
       const count = results.filter(({ success }) => success).length;
       toastManager.primary($t('merged_people_count', { values: { count } }));

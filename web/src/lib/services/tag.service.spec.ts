@@ -23,10 +23,7 @@ const $t = ((key: string) => key) as never;
 const tag = { id: 'tag-1', value: 'Holiday', path: 'Holiday' } as TreeNode;
 
 const elevationRequired = () =>
-  new Response(JSON.stringify({ message: 'Elevated permission is required', statusCode: 401 }), {
-    status: 401,
-    headers: { 'Content-Type': 'application/json' },
-  });
+  Response.json({ message: 'Elevated permission is required', statusCode: 401 }, { status: 401 });
 
 describe('tag delete (lock-sensitive write)', () => {
   const fetch = vi.fn<typeof globalThis.fetch>();
@@ -45,7 +42,7 @@ describe('tag delete (lock-sensitive write)', () => {
 
   it('asks for the PIN when the server refuses, then deletes the tag on the retry', async () => {
     fetch.mockResolvedValueOnce(elevationRequired()).mockResolvedValueOnce(new Response(null, { status: 204 }));
-    vi.mocked(modalManager.show).mockResolvedValue(true);
+    vi.mocked(modalManager.show).mockResolvedValue(true as never);
     const emit = vi.spyOn(eventManager, 'emit');
 
     await getTagActions($t, tag).Delete.onAction?.(undefined as never);
@@ -58,7 +55,7 @@ describe('tag delete (lock-sensitive write)', () => {
 
   it('keeps the tag and shows no error when the PIN prompt is cancelled', async () => {
     fetch.mockResolvedValueOnce(elevationRequired());
-    vi.mocked(modalManager.show).mockResolvedValue(undefined);
+    vi.mocked(modalManager.show).mockResolvedValue(undefined as never);
     const emit = vi.spyOn(eventManager, 'emit');
 
     await getTagActions($t, tag).Delete.onAction?.(undefined as never);

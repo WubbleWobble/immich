@@ -4,6 +4,7 @@
   import { eventManager } from '$lib/managers/event-manager.svelte';
   import { Route } from '$lib/route';
   import type { SearchFilter } from '$lib/types';
+  import { withElevationRetry } from '$lib/utils/elevation';
   import { handleError } from '$lib/utils/handle-error';
   import {
     hiddenSmartAlbumFilterKeys,
@@ -50,13 +51,15 @@
       return;
     }
     try {
-      const album = await createAlbum({
-        createAlbumDto: {
-          albumName: trimmedName,
-          kind: AlbumKind.Smart,
-          filter: payload,
-        },
-      });
+      const album = await withElevationRetry(() =>
+        createAlbum({
+          createAlbumDto: {
+            albumName: trimmedName,
+            kind: AlbumKind.Smart,
+            filter: payload,
+          },
+        }),
+      );
       eventManager.emit('AlbumCreate', album);
       onClose(album);
       await goto(Route.viewAlbum({ id: album.id }));

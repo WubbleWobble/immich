@@ -259,6 +259,8 @@ State these plainly to users.
   so the refusal is the same with or without locks and says nothing about
   locks or hidden photos. A user whose PIN was removed while locks remain
   is treated like a user with a PIN.
+  The web app now asks for the PIN in place when the server refuses one
+  of these five actions, and retries the action once it is entered (R73).
   **API keys cannot do these five things for a user with a PIN.** An API
   key session is never elevated, so smart-album create, filter change,
   tag delete, person delete and people merge answer 401 for it. Scripts

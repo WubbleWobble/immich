@@ -5,6 +5,7 @@ import { type MessageFormatter } from 'svelte-i18n';
 import { eventManager } from '$lib/managers/event-manager.svelte';
 import TagCreateModal from '$lib/modals/TagCreateModal.svelte';
 import TagEditModal from '$lib/modals/TagEditModal.svelte';
+import { withElevationRetry } from '$lib/utils/elevation';
 import { handleError } from '$lib/utils/handle-error';
 import { getFormatter } from '$lib/utils/i18n';
 import type { TreeNode } from '$lib/utils/tree-utils';
@@ -89,7 +90,7 @@ const handleDeleteTag = async (tag: TreeNode) => {
   }
 
   try {
-    await deleteTag({ id: tagId });
+    await withElevationRetry(() => deleteTag({ id: tagId }));
     eventManager.emit('TagDelete', tag);
     toastManager.primary();
   } catch (error) {

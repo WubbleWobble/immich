@@ -55,6 +55,7 @@ import { Route } from '$lib/route';
 import { userInteraction } from '$lib/stores/user.svelte';
 import { createAlbumAndRedirect } from '$lib/utils/album-utils';
 import { downloadArchive } from '$lib/utils/asset-utils';
+import { withElevationRetry } from '$lib/utils/elevation';
 import { openFileUploadDialog } from '$lib/utils/file-uploader';
 import { handleError } from '$lib/utils/handle-error';
 import { getFormatter } from '$lib/utils/i18n';
@@ -554,7 +555,8 @@ export const handleUpdateAlbum = async ({ id }: { id: string }, dto: UpdateAlbum
   const $t = await getFormatter();
 
   try {
-    const response = await updateAlbumInfo({ id, updateAlbumDto: dto });
+    // A smart-album filter change is a lock-sensitive write (R70, R72): the server may ask for the PIN first (R73).
+    const response = await withElevationRetry(() => updateAlbumInfo({ id, updateAlbumDto: dto }));
     eventManager.emit('AlbumUpdate', response);
     toastManager.primary({
       description: $t('album_info_updated'),

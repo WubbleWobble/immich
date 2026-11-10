@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { withElevationRetry } from '$lib/utils/elevation';
   import { handleError } from '$lib/utils/handle-error';
   import { mergePeople, type PersonResponseDto } from '@immich/sdk';
   import { FormModal, Icon, IconButton, toastManager } from '@immich/ui';
@@ -34,7 +35,9 @@
 
   const onSubmit = async () => {
     try {
-      await mergePeople({ mergePersonDto: { ids: [personToBeMergedInto.id, personToMerge.id] } });
+      await withElevationRetry(() =>
+        mergePeople({ mergePersonDto: { ids: [personToBeMergedInto.id, personToMerge.id] } }),
+      );
       toastManager.primary($t('merge_people_successfully'));
       onClose([personToMerge, personToBeMergedInto]);
     } catch (error) {
